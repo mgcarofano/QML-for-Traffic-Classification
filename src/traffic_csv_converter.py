@@ -9,7 +9,7 @@
     machine learning.
 """
 
-#   ####################################################################    #
+#   ########################################################################    #
 #   LIBRERIE
 
 import os
@@ -17,12 +17,18 @@ import csv
 import sessions_plotter as sp
 import re
 import numpy as np
+import pickle
+import pprint
 
-#   ####################################################################    #
+#   ########################################################################    #
 #   COSTANTI
 
-INPUT       = "../dataset/classes_csvs/browsing/reg/CICNTTor_browsing.raw.csv"
-INPUT_DIR   = "../dataset/classes_csvs/browsing/reg/"
+# INPUT       = "../dataset/classes_csvs/browsing/reg/CICNTTor_browsing.raw.csv"
+# INPUT_DIR   = "../dataset/classes_csvs/browsing/reg/"
+
+# INPUT = "../dataset/mirage/2024/act/mirage2024_act_LOPEZ_lopez_lopez_36P_4F_APP_xST_PAD_cf1a9527.pickle"
+INPUT = "../dataset/mirage/2024/app/mirage2024_app_LOPEZ_lopez_lopez_36P_4F_APP_xST_PAD_cf1a9527 1.pickle"
+INPUT_DIR   = "../dataset/mirage/2024/app/"
 
 TPS = 60
 """ TimePerSession in secs. """
@@ -37,10 +43,10 @@ MIN_TPS = 50
 MIN_DIM = 100000
 """ Minimum number of packets in a session. """
 
-#   ####################################################################    #
+#   ########################################################################    #
 #   FUNZIONI
 
-def export_class_dataset(dataset, class_dir):
+def export_class_dataset(dataset, class_dir, metadata=None):
     """ Salva su disco un array NumPy di istogrammi 2D per una singola classe
     di traffico, in un file .npy con nome che identifica la classe.
 
@@ -51,6 +57,7 @@ def export_class_dataset(dataset, class_dir):
             - N : il numero di sessioni.
             - H, W : le dimensioni dell'istogramma (tipicamente 1500x1500 in FlowPic).
         class_dir (str): Percorso della cartella della classe.
+        metadata (dict, optional): Dizionario di metadati da includere nel nome del file. Defaults to None.
     """
 
     print("Start export dataset")
@@ -61,14 +68,18 @@ def export_class_dataset(dataset, class_dir):
     # Esempio: "browsing_reg" da "../dataset/classes_csvs/browsing/reg/"
     type_name = re.findall(r"[\w']+", class_dir)[-2:]
 
+    # Recupera le chiavi con valori non nulli dal dizionario dei metadati e
+    # costruisce un suffisso da aggiungere al nome del file.
+    metadata_suffix = "".join(f"_{k}{v}" for k, v in metadata.items() if v is not None)
+
     # Salva l'array NumPy nella stessa cartella della classe, con il nome costruito sopra.
-    np.save(class_dir + "/" + "_".join(type_name) + "_TPS" + str(TPS) + "_DELTA_T" + str(DELTA_T), dataset)
+    np.save(class_dir + "_".join(type_name) + metadata_suffix, dataset)
 
     print(dataset.shape)
 
     # end
 
-def traffic_csv_converter(file_path):
+def traffic_csv_converter(file_path, tps=TPS, delta_t=DELTA_T, min_tps=MIN_TPS, min_dim=MIN_DIM):
     """ Converte un file CSV di traffico di rete in un dataset
     adatto all'architettura FlowPic, da utilizzare come input alla CNN.
 
@@ -82,6 +93,10 @@ def traffic_csv_converter(file_path):
 
     Args:
         file_path (str): Percorso del file CSV da convertire.
+        tps (int, optional): Durata in secondi da usare come riferimento per la finestratura. Defaults to TPS.
+        delta_t (int, optional): Durata in secondi tra l'inizio di due finestre temporali. Defaults to DELTA_T.
+        min_tps (int, optional): Durata minima in secondi che una finestra deve coprire per essere considerata valida. Defaults to MIN_TPS.
+        min_dim (int, optional): Numero minimo di byte che una finestra deve contenere per essere considerata valida. Defaults to MIN_DIM.
 
     Returns:
         numpy.ndarray: Array di shape (N, 1, 1500, 1500) contenente gli
@@ -111,6 +126,13 @@ def traffic_csv_converter(file_path):
         # I restanti campi contengono metadati aggiuntivi sulla sessione,
         # come il nome dell'applicazione, il timestamp di inizio e il numero di pacchetti totali.
         for (i, row) in enumerate(reader):
+
+            #   ############################################################    #
+            #   STAMPA DI DEBUG
+            #   Stampa un messaggio ogni 100 sessioni processate per monitorare l'avanzamento.
+
+            if i % 100 == 0:
+                print(i)
 
             #   ############################################################    #
             #   ESTRAZIONE DELLA 5-TUPLA E DEI METADATI
@@ -149,6 +171,10 @@ def traffic_csv_converter(file_path):
 
             # Array delle dimensioni in byte di ciascun pacchetto, nell'ordine corrispondente ai timestamp.
             sizes = np.array(row[9+session_tuple_key["length"]:], dtype=int)
+
+            # print(i, ts.shape, sizes.shape)
+            # print(ts)
+            # print(sizes)
 
             """
             NOTA BENE
@@ -193,6 +219,7 @@ def traffic_csv_converter(file_path):
             # Scarta le sessioni con 10 o meno pacchetti (oltre ai primi 8 campi di metadati),
             # troppo corte per costruire un istogramma 2D significativo.
             if not(session_tuple_key["length"] > 10):
+                print(f"Flusso n.{i} scartato per pochi pacchetti ({session_tuple_key['length']}).")
                 continue
 
             # print("Filtro SESSION : OK")
@@ -202,7 +229,7 @@ def traffic_csv_converter(file_path):
 
             # Calcola quante finestre temporali scorrevoli è possibile
             # estrarre dalla sessione, in base ai valori costanti e la sua durata totale.
-            num_windows = int(ts[-1]/DELTA_T - TPS/DELTA_T) + 1
+            num_windows = int(ts[-1]/delta_t - tps/delta_t) + 1
 
             # Itera su ciascuna finestra temporale scorrevole.
             # Ogni finestra 't' inizia a 't * DELTA_T' secondi e dura 'TPS' secondi.
@@ -212,7 +239,7 @@ def traffic_csv_converter(file_path):
                 #   Applicazione di una maschera booleana.
                 #   Seleziona solo i pacchetti il cui timestamp cade all'interno della finestra corrente.
 
-                mask = ((ts >= t * DELTA_T) & (ts <= (t * DELTA_T + TPS)))
+                mask = ((ts >= t * delta_t) & (ts <= (t * delta_t + tps)))
                 ts_mask = ts[mask]
                 sizes_mask = sizes[mask]
 
@@ -222,20 +249,23 @@ def traffic_csv_converter(file_path):
                 # La finestra deve contenere più di 10 pacchetti,
                 # altrimenti l'istogramma è troppo sparso per essere utile.
                 if not(len(ts_mask) > 10):
+                    print(f"Finestra n.{t} della sessione n.{i} scartata per pochi pacchetti ({len(ts_mask)}).")
                     continue
 
                 # print("Filtro WIN_1 : OK")
 
                 # La finestra deve coprire almeno 'MIN_TPS' secondi di traffico effettivo,
                 # evitando finestre in cui i pacchetti sono tutti concentrati in pochi secondi.
-                if not(ts_mask[-1] - ts_mask[0] > MIN_TPS):
+                if not(ts_mask[-1] - ts_mask[0] > min_tps):
+                    print(f"Finestra n.{t} della sessione n.{i} scartata per durata insufficiente ({ts_mask[-1] - ts_mask[0]}s).")
                     continue
 
                 # print("Filtro WIN_2 : OK")
 
                 # La finestra deve contenere almeno 'MIN_DIM' pacchetti,
                 # altrimenti l'istogramma è troppo vuoto per essere utile.
-                if not(np.sum(sizes_mask) > MIN_DIM):
+                if not(np.sum(sizes_mask) > min_dim):
+                    print(f"Finestra n.{t} della sessione n.{i} scartata per dimensione insufficiente ({np.sum(sizes_mask)}).")
                     continue
 
                 # print("Filtro WIN_3 : OK")
@@ -243,21 +273,13 @@ def traffic_csv_converter(file_path):
                 #   ########################################################    #
                 #   Costruzione dell'istogramma 2D.
                 
-                h = sp.session_2d_histogram(ts_mask, sizes_mask, plot=True)
+                h = sp.session_2d_histogram(ts_mask, sizes_mask)
 
                 #   ########################################################    #
                 #   Aggiunta dell'istogramma al dataset.
 
                 dataset.append([h])
-
-                #   ########################################################    #
-                #   Stampa di debug.
-
                 counter += 1
-
-                #   Stampa un messaggio ogni 100 sessioni processate per monitorare l'avanzamento.
-                if counter % 100 == 0:
-                    print(counter)
                 
             # end for t
 
@@ -266,6 +288,7 @@ def traffic_csv_converter(file_path):
     #   ####################################################################    #
     #   RITORNO DEL DATASET
 
+    print(counter)
     return np.asarray(dataset)
 
     # end
@@ -325,21 +348,169 @@ def traffic_class_converter(dir_path):
 
     # end
 
-#   ####################################################################    #
+def mirage_pickle_converter(file_path, tps=TPS, delta_t=DELTA_T, min_tps=MIN_TPS, min_dim=MIN_DIM):
+    """ Converte un file .pickle di traffico di rete in un dataset
+    adatto all'architettura FlowPic, da utilizzare come input alla CNN.
+
+    ## Formato atteso del file .pickle
+    Deve contenere una lista di array NumPy con la seguente struttura:
+    - p         : una lista di np.ndarray di lunghezza N.
+    - p[i]      : un np.ndarray di shape (T, 4), di tipo float64, dove T è il numero di pacchetti per flusso.
+    - p[i][j]   : il j-esimo pacchetto dell'i-esimo flusso.
+
+    ## Features per pacchetto
+    - DIR                       : Direzione del pacchetto (0.0 = upstream, 1.0 = downstream).
+    - PL (Packet Length)        : Dimensione del payload IP in byte
+    - WIN (TCP Window Size)     : Dimensione finestra TCP (0.0 per UDP).
+    - IAT (Inter-Arrival Time)  : Tempo tra pacchetti consecutivi in secondi.
+
+    Args:
+        file_path (str): Percorso del file CSV da convertire.
+        tps (int, optional): Durata in secondi da usare come riferimento per la finestratura. Defaults to TPS.
+        delta_t (int, optional): Durata in secondi tra l'inizio di due finestre temporali. Defaults to DELTA_T.
+        min_tps (int, optional): Durata minima in secondi che una finestra deve coprire per essere considerata valida. Defaults to MIN_TPS.
+        min_dim (int, optional): Numero minimo di byte che una finestra deve contenere per essere considerata valida. Defaults to MIN_DIM.
+
+    Returns:
+        numpy.ndarray: Array di shape (N, 1, 1500, 1500) contenente gli
+        istogrammi 2D delle sessioni di traffico, dove N è il numero di
+        finestre temporali valide.
+        Restituisce un array vuoto di shape (0,) se nessuna finestra valida
+        viene trovata nel file.
+    """
+
+    #   ####################################################################    #
+    #   INIZIALIZZAZIONE
+
+    print("Running on " + file_path)
+
+    dataset = []
+    counter = 0
+
+    #   ####################################################################    #
+    #   LETTURA DEL FILE PICKLE
+
+    with open(INPUT, 'rb') as handle:
+
+        p = pickle.load(handle)
+
+        for (i, row) in enumerate(p):
+
+            #   ############################################################    #
+            #   STAMPA DI DEBUG
+            #   Stampa un messaggio ogni 100 sessioni processate per monitorare l'avanzamento.
+
+            if i % 100 == 0:
+                print(i)
+
+            #   ############################################################    #
+            #   VERIFICA E CANCELLAZIONE DEL PADDING
+
+            # Crea una maschera che salva i metadati dei pacchetti che
+            # compaiono prima della prima riga di padding nel flusso.
+            # Usando ".all(axis=1)" si identifica solo le righe interamente a -1,
+            # che sono inequivocabilmente padding.
+            padding_mask = (row == -1).all(axis=1)
+
+            # Si tronca l'array al primo indice di padding trovato.
+            padding_indices = np.where(padding_mask)[0]
+
+            # Se esistono righe di padding, il taglio avviene al primo indice di padding;
+            # # altrimenti il flusso è completo (nessun padding) e si conservano tutte le T righe.
+            cutoff = padding_indices[0] if len(padding_indices) > 0 else len(row)
+            real_rows = row[:cutoff]
+
+            # Si salta il flusso se non contiene pacchetti reali.
+            if len(real_rows) == 0:
+                print(f"Flusso n.{i} vuoto.")
+                continue
+
+            #   ############################################################    #
+            #   ESTRAZIONE DEI TIMESTAMP E DELLE DIMENSIONI DEI PACCHETTI
+
+            # Array dei timestamp di arrivo di ciascun pacchetto, espressi in secondi assoluti dall'inizio della cattura.
+            ts = np.cumsum(real_rows[:, 3])
+
+            # Array delle dimensioni in byte di ciascun pacchetto, nell'ordine corrispondente ai timestamp.
+            sizes = real_rows[:, 1].astype(int)
+            
+            # if (i==2):
+            #     pprint.pprint(row)
+            #     pprint.pprint(real_rows)
+            #     print(i, sizes.shape, ts.shape)
+            #     print(sizes)
+            #     print(ts)
+            #     break
+
+            #   ############################################################    #
+            #   FILTRI DI QUALITÀ
+
+            # Scarta le sessioni con 3 o meno pacchetti,
+            # troppo corte per costruire un istogramma 2D significativo.
+            if not(sizes.shape[0] > 3):
+                print(f"Flusso n.{i} scartato per pochi pacchetti ({sizes.shape[0]}).")
+                continue
+
+            # print("Filtro SESSION : OK")
+
+            # La finestra deve contenere almeno 'MIN_DIM' pacchetti,
+            # altrimenti l'istogramma è troppo vuoto per essere utile.
+            if not(np.sum(sizes) > min_dim):
+                print(f"Flusso n.{i} scartato per dimensione insufficiente ({np.sum(sizes)}).")
+                continue
+
+            # print("Filtro WIN_3 : OK")
+
+            #   ########################################################    #
+            #   Costruzione dell'istogramma 2D.
+            
+            h = sp.session_2d_histogram(ts, sizes)
+
+            #   ########################################################    #
+            #   Aggiunta dell'istogramma al dataset.
+
+            dataset.append([h])
+            counter += 1
+
+        # end for (i, row)
+
+    #   ####################################################################    #
+    #   RITORNO DEL DATASET
+
+    print(counter)
+    return np.asarray(dataset)
+
+    # end
+
+#   ########################################################################    #
 #   MAIN
 
 if __name__ == '__main__':
 
-    # Per l'intera classe
+    # np.set_printoptions(suppress=True, precision=6)
+
+    # # Per l'intera classe
     # print("working on " + INPUT_DIR)
     # dataset = traffic_class_converter(INPUT_DIR)
     # print(dataset.shape)
     # export_class_dataset(dataset, INPUT_DIR)
 
-    # Per CSV specifico
+    # # Per CSV specifico
+    # print("working on " + INPUT)
+    # dataset = traffic_csv_converter(INPUT)
+    # print(dataset.shape)
+    # export_class_dataset(dataset, INPUT_DIR, {
+    #     "TPS" : TPS,
+    #     "DELTA_T" : DELTA_T,
+    # })
+
+    # # Su file PICKLE (Mirage)
     print("working on " + INPUT)
-    dataset = traffic_csv_converter(INPUT)
+    dataset = mirage_pickle_converter(INPUT, min_dim=10000)
     print(dataset.shape)
-    export_class_dataset(dataset, INPUT_DIR)
+    export_class_dataset(dataset, INPUT_DIR, {
+        "NP" : "36P",
+        "NF" : "4F",
+    })
 
     # end

@@ -4,7 +4,8 @@
     sessions_plotter.py
     by talshapira
 
-    ...
+    Questo modulo contiene la funzione session_2d_histogram()
+    che costruisce un FlowPic.
 """
 
 #   ####################################################################    #
@@ -19,7 +20,7 @@ import numpy as np
 MTU = 1500
 """ Maximum Transmission Unit di Ethernet. """
 
-BIN_SIZE = 20
+BIN_SIZE = 15
 """ Dimensione in byte di ogni bin sull'asse Y dell'istogramma 2D. """
 
 #   ####################################################################    #
@@ -105,7 +106,9 @@ def session_2d_histogram(ts, sizes, plot=False, tps=None):
 
         # plt.colorbar()
         plt.xlim(0, MTU)
+        plt.xlabel(f"IAT normalizzato [0 - {MTU}]")
         plt.ylim(0, MTU)
+        plt.ylabel(f"PL (Packet Length)")
         plt.set_cmap('binary')
         plt.show()
 
