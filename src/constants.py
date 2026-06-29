@@ -38,7 +38,7 @@ VAL_SIZE = 0.14
 TEST_SIZE = 0.15
 """ Proportion of the dataset to be used for testing. """
 
-BATCH_SIZE = 50
+BATCH_SIZE = 32
 """ Size of the mini-batches used during training. """
 
 NEW_TRAIN_SIZE = 30000
@@ -56,6 +56,25 @@ PREPROCESSING_STRATEGY = 4
 	3. Min-Max Scaling + Fusione DIR/PL
 	4. Masking del padding + Log1p + Fusione DIR/PL
 """
+
+#	Model selection
+#   ####################################################################    #
+
+MODEL_REGISTRY = {
+    "AmplitudeEmbedding": ("../models.nn_models", "AmpHybridModel"),
+    "AngleEmbedding": ("../models.nn_models", "AngleHybridModel"),
+    "RingEmbedding": ("../models.nn_models", "RingHybridModel"),
+    "WaterfallEmbedding": ("../models.nn_models", "WaterfallHybridModel"),
+    "TrafficCNN": ("../models.nn_models", "TrafficCNN"),
+    "AmpCnn": ("../models.complex_hybrid_models", "AmpCnn"),
+    "ClassicalTwin": ("../models.complex_hybrid_models", "ClassicalTwinModel"),
+    "ClassicalLight": ("../models.complex_hybrid_models", "ClassicalLight"),
+    "CnnAmpCnn": ("../models.complex_hybrid_models", "CnnAmpCnn"),
+    "Dense": ("../models.complex_hybrid_models", "Dense"),
+}
+""" A dictionary mapping model names to their corresponding module and class names. """
+
+SELECTED_MODEL = "TrafficCNN"
 
 #   ####################################################################    #
 #   Training configuration
