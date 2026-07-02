@@ -8,16 +8,16 @@
 #   ####################################################################    #
 #   Dataset configuration
 
-DATA_PATH = "../dataset/mirage/2024/act/mirage2024_act_LOPEZ_lopez_lopez_36P_4F_APP_xST_PAD_cf1a9527.pickle"
+DATA_PATH = "../dataset/mirage/2019/mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata.pickle"
 """ Path to the dataset file. """
 
-DATASET_PACKETS = 36
+DATASET_PACKETS = 100
 """ Number of packets available at most in each flow. """
 
 PADDING_VALUE = -1
 """ This value is used in the dataset to denote padding packets. """
 
-N_PACKETS = 10
+N_PACKETS = 100
 """ Number of packets to consider in each flow. """
 
 N_FEATURES = 4
@@ -89,7 +89,7 @@ LOSS_REGISTRY = {
 RANDOM_SEED = 2025
 """ Random seed for reproducibility. """
 
-EPOCHS = 50
+EPOCHS = 10
 """ Number of training epochs. """
 
 LEARNING_RATE = 1e-3
