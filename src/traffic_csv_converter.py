@@ -20,14 +20,15 @@ import numpy as np
 import pickle
 import pprint
 
+from constants import DATA_PATH, FEATURES_LIST
+
 #   ########################################################################    #
 #   COSTANTI
 
-# INPUT       = "../dataset/classes_csvs/browsing/reg/CICNTTor_browsing.raw.csv"
+# DATA_PATH       = "../dataset/classes_csvs/browsing/reg/CICNTTor_browsing.raw.csv"
 # INPUT_DIR   = "../dataset/classes_csvs/browsing/reg/"
 
-# INPUT = "../dataset/mirage/2024/act/mirage2024_act_LOPEZ_lopez_lopez_36P_4F_APP_xST_PAD_cf1a9527.pickle"
-INPUT = "../dataset/mirage/2024/app/mirage2024_app_LOPEZ_lopez_lopez_36P_4F_APP_xST_PAD_cf1a9527 1.pickle"
+# DATA_PATH = "../dataset/mirage/2024/act/mirage2024_act_LOPEZ_lopez_lopez_36P_4F_APP_xST_PAD_cf1a9527.pickle"
 INPUT_DIR   = "../dataset/mirage/2024/app/"
 
 TPS = 60
@@ -348,7 +349,15 @@ def traffic_class_converter(dir_path):
 
     # end
 
-def mirage_pickle_converter(file_path, tps=TPS, delta_t=DELTA_T, min_tps=MIN_TPS, min_dim=MIN_DIM):
+def mirage_pickle_converter(
+    file_path, 
+    tps=TPS, 
+    delta_t=DELTA_T, 
+    min_tps=MIN_TPS, 
+    min_dim=MIN_DIM,
+    biflusso=None
+):
+    
     """ Converte un file .pickle di traffico di rete in un dataset
     adatto all'architettura FlowPic, da utilizzare come input alla CNN.
 
@@ -370,6 +379,7 @@ def mirage_pickle_converter(file_path, tps=TPS, delta_t=DELTA_T, min_tps=MIN_TPS
         delta_t (int, optional): Durata in secondi tra l'inizio di due finestre temporali. Defaults to DELTA_T.
         min_tps (int, optional): Durata minima in secondi che una finestra deve coprire per essere considerata valida. Defaults to MIN_TPS.
         min_dim (int, optional): Numero minimo di byte che una finestra deve contenere per essere considerata valida. Defaults to MIN_DIM.
+        biflusso (int, optional): Indice del flusso da selezionare per il debug. Defaults to None.
 
     Returns:
         numpy.ndarray: Array di shape (N, 1, 1500, 1500) contenente gli
@@ -390,12 +400,18 @@ def mirage_pickle_converter(file_path, tps=TPS, delta_t=DELTA_T, min_tps=MIN_TPS
     #   ####################################################################    #
     #   LETTURA DEL FILE PICKLE
 
-    with open(INPUT, 'rb') as handle:
+    with open(DATA_PATH, 'rb') as handle:
 
         p = pickle.load(handle)
         y_raw = np.array(pickle.load(handle))
 
         for (i, (row, y)) in enumerate(zip(p, y_raw)):
+
+            #   ############################################################    #
+            #   RECUPERO DEL BIFLUSSO SELEZIONATO
+
+            if biflusso is not None and i != biflusso:
+                continue
 
             #   ############################################################    #
             #   STAMPA DI DEBUG
@@ -464,7 +480,19 @@ def mirage_pickle_converter(file_path, tps=TPS, delta_t=DELTA_T, min_tps=MIN_TPS
 
             #   ########################################################    #
             #   Costruzione dell'istogramma 2D.
+
+            # Aggiungi 'padding_indices' zeri all'inizio di ts e sizes
+            if len(real_rows) != len(row):
+                ts = np.pad(ts, (len(padding_indices), 0), mode='constant', constant_values=0.0)
+                sizes = np.pad(sizes, (len(padding_indices), 0), mode='constant', constant_values=0)
+
+                # print(f"Flusso n.{i} contiene {len(real_rows)} pacchetti reali e {len(padding_indices)} pacchetti di padding.")
+                # print(f"ts.shape = {ts.shape}, sizes.shape = {sizes.shape}")
             
+            # print(FEATURES_LIST)
+            # print(real_rows)
+            # print("\n\n")
+
             h = sp.session_2d_histogram(y, ts, sizes)
 
             #   ########################################################    #
@@ -497,8 +525,8 @@ if __name__ == '__main__':
     # export_class_dataset(dataset, INPUT_DIR)
 
     # # Per CSV specifico
-    # print("working on " + INPUT)
-    # dataset = traffic_csv_converter(INPUT)
+    # print("working on " + DATA_PATH)
+    # dataset = traffic_csv_converter(DATA_PATH)
     # print(dataset.shape)
     # export_class_dataset(dataset, INPUT_DIR, {
     #     "TPS" : TPS,
@@ -506,11 +534,15 @@ if __name__ == '__main__':
     # })
 
     # # Su file PICKLE (Mirage)
-    print("working on " + INPUT)
-    dataset = mirage_pickle_converter(INPUT, min_dim=10000)
+    print("working on " + DATA_PATH)
+    dataset = mirage_pickle_converter(
+        DATA_PATH,
+        min_dim=10000,
+        biflusso=52180
+    )
     print(dataset.shape)
     export_class_dataset(dataset, INPUT_DIR, {
-        "NP" : "36P",
+        "NP" : "100P",
         "NF" : "4F",
     })
 
