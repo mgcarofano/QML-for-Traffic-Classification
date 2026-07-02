@@ -26,7 +26,7 @@ BIN_SIZE = 15
 #   ####################################################################    #
 #   FUNZIONI
 
-def session_2d_histogram(ts, sizes, plot=False, tps=None):
+def session_2d_histogram(title, ts, sizes, plot=False, tps=None):
     """ È la funzione chiave che costruisce un FlowPic, cioè un istogramma
     2D 1500x1500 che rappresenta la distribuzione spazio-temporale dei pacchetti
     di una finestra di traffico di rete.
@@ -35,6 +35,7 @@ def session_2d_histogram(ts, sizes, plot=False, tps=None):
     L'asse Y rappresenta la dimensione dei pacchetti in byte, da 0 a 1500 (MTU).
 
     Args:
+        title (str): Titolo della finestra di traffico, usato per il plot.
         ts (numpy.ndarray): Array 1D dei timestamp di arrivo dei pacchetti,
             espressi in secondi relativi all'inizio della finestra. Shape: (N,).
         sizes (numpy.ndarray): Array 1D delle dimensioni in byte dei pacchetti,
@@ -105,10 +106,11 @@ def session_2d_histogram(ts, sizes, plot=False, tps=None):
         )
 
         # plt.colorbar()
+        plt.title(f"FlowPic - {title}")
         plt.xlim(0, MTU)
-        plt.xlabel(f"IAT normalizzato [0 - {MTU}]")
+        plt.xlabel(f"Tempo normalizzato [0 - {MTU}]")
         plt.ylim(0, MTU)
-        plt.ylabel(f"PL (Packet Length)")
+        plt.ylabel(f"PL (Packet Length) [Byte]")
         plt.set_cmap('binary')
         plt.show()
 

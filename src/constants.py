@@ -45,27 +45,18 @@ NEW_TRAIN_SIZE = 30000
 """ Limit on the number of training samples to use, to reduce training time.
 	If the training set is larger than this, it will be randomly sampled down to this size. """
 
-#   Preprocessing configuration
-#   ####################################################################    #
-
-PREPROCESSING_STRATEGY = 4
-""" Specifies the preprocessing strategy to apply to the dataset. \n
-	Options:
-	1. Masking del padding + Log1p
-	2. Min-Max Scaling standard
-	3. Min-Max Scaling + Fusione DIR/PL
-	4. Masking del padding + Log1p + Fusione DIR/PL
-"""
-
 #	Model selection
 #   ####################################################################    #
 
 MODEL_REGISTRY = {
+    # nn_models
     "AmplitudeEmbedding": ("../models.nn_models", "AmpHybridModel"),
     "AngleEmbedding": ("../models.nn_models", "AngleHybridModel"),
     "RingEmbedding": ("../models.nn_models", "RingHybridModel"),
     "WaterfallEmbedding": ("../models.nn_models", "WaterfallHybridModel"),
     "TrafficCNN": ("../models.nn_models", "TrafficCNN"),
+
+    # complex_hybrid_models
     "AmpCnn": ("../models.complex_hybrid_models", "AmpCnn"),
     "ClassicalTwin": ("../models.complex_hybrid_models", "ClassicalTwinModel"),
     "ClassicalLight": ("../models.complex_hybrid_models", "ClassicalLight"),
@@ -74,24 +65,40 @@ MODEL_REGISTRY = {
 }
 """ A dictionary mapping model names to their corresponding module and class names. """
 
-SELECTED_MODEL = "TrafficCNN"
-
 #   ####################################################################    #
 #   Training configuration
+
+LOSS_REGISTRY = {
+	"CrossEntropy" : {
+		"params" : {}
+	},
+	"WeightedCrossEntropy" : {
+		"params" : {}
+	},
+	"Focal" : {
+		"params" : {
+			# ALPHA : può essere "class_weights", "uniform" o "custom".
+			"ALPHA" : "class_weights",
+
+			# GAMMA : parametro di focalizzazione, tipicamente tra 1 e 5.
+			"GAMMA" : 2.0
+		}
+	}
+}
 
 RANDOM_SEED = 2025
 """ Random seed for reproducibility. """
 
-EPOCHS = 100
+EPOCHS = 50
 """ Number of training epochs. """
 
 LEARNING_RATE = 1e-3
 """ Learning rate for the optimizer. """
 
-EARLY_STOPPING = False
+EARLY_STOPPING = True
 """ Whether to use early stopping during training. """
 
-PATIENCE = 15
+PATIENCE = 10
 """ Number of epochs to wait for improvement before stopping training. """
 
 #   ####################################################################    #

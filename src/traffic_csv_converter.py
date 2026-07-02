@@ -393,8 +393,9 @@ def mirage_pickle_converter(file_path, tps=TPS, delta_t=DELTA_T, min_tps=MIN_TPS
     with open(INPUT, 'rb') as handle:
 
         p = pickle.load(handle)
+        y_raw = np.array(pickle.load(handle))
 
-        for (i, row) in enumerate(p):
+        for (i, (row, y)) in enumerate(zip(p, y_raw)):
 
             #   ############################################################    #
             #   STAMPA DI DEBUG
@@ -455,16 +456,16 @@ def mirage_pickle_converter(file_path, tps=TPS, delta_t=DELTA_T, min_tps=MIN_TPS
 
             # La finestra deve contenere almeno 'MIN_DIM' pacchetti,
             # altrimenti l'istogramma è troppo vuoto per essere utile.
-            if not(np.sum(sizes) > min_dim):
-                print(f"Flusso n.{i} scartato per dimensione insufficiente ({np.sum(sizes)}).")
-                continue
+            # if not(np.sum(sizes) > min_dim):
+            #     print(f"Flusso n.{i} scartato per dimensione insufficiente ({np.sum(sizes)}).")
+            #     continue
 
             # print("Filtro WIN_3 : OK")
 
             #   ########################################################    #
             #   Costruzione dell'istogramma 2D.
             
-            h = sp.session_2d_histogram(ts, sizes)
+            h = sp.session_2d_histogram(y, ts, sizes)
 
             #   ########################################################    #
             #   Aggiunta dell'istogramma al dataset.
