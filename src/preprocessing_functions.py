@@ -11,7 +11,7 @@
 #   LIBRARIES
 
 import numpy as np
-import constants
+from constants import N_PACKETS, N_FEATURES
 
 # La classe MinMaxScaler serve per scalare le caratteristiche in un intervallo specifico, tipicamente tra 0 e 1.
 # Questo è utile per normalizzare i dati prima di applicare algoritmi di machine learning,
@@ -70,7 +70,7 @@ def combine_dir_pl(X : np.ndarray) -> np.ndarray:
 
 def log1pPreprocessing(
 		X : np.ndarray,
-		num_packets : int = constants.N_PACKETS,
+		num_packets : int = N_PACKETS,
 		combine_dir_pl_flag : bool = False
 	) -> np.ndarray:
 
@@ -122,8 +122,8 @@ def log1pPreprocessing(
 
 def minMaxPreprocessing(
 		X : np.ndarray,
-		num_packets : int = constants.N_PACKETS,
-		num_features : int = constants.N_FEATURES,
+		num_packets : int = N_PACKETS,
+		num_features : int = N_FEATURES,
 		combine_dir_pl_flag : bool = False
     ) -> np.ndarray:
 

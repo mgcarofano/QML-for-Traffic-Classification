@@ -6,10 +6,38 @@
 """
 
 #   ####################################################################    #
+#   Traffic converter configuration
+
+TPS = 60
+""" Duration of each session in seconds (TimePerSession) """
+
+DELTA_T = 15
+""" Difference in seconds between the start of two consecutive sessions (DeltaT) """
+
+MIN_TPS = 50
+""" Minimum duration of a session in seconds. Sessions shorter than this will be discarded. """
+
+MIN_PACKETS = 3
+""" Minimum number of packets in a session. Sessions with fewer packets will be discarded. """
+
+MIN_DIM = 10000
+""" Minimum flow dimension (payload) in bytes. Flows smaller than this will be discarded. """
+
+MTU = 1500
+""" Maximum Transmission Unit (Ethernet). """
+
+BIN_SIZE = 15
+""" Dimension in byte of each bin on the Y-axis of the 2D histogram. This means
+    that the Y-axis will be divided into 100 bins, each representing a range of 15 bytes. """
+
+#   ####################################################################    #
 #   Dataset configuration
 
-DATA_PATH = "../dataset/mirage/2019/mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata.pickle"
+DATA_PATH = "../dataset/mirage/2019/"
 """ Path to the dataset file. """
+
+DATASET_NAME = "mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata.pickle"
+""" Name of the dataset file. """
 
 DATASET_PACKETS = 100
 """ Number of packets available at most in each flow. """
@@ -20,11 +48,11 @@ PADDING_VALUE = -1
 N_PACKETS = 100
 """ Number of packets to consider in each flow. """
 
-N_FEATURES = 4
-""" Number of features for each packet. """
-
 FEATURES_LIST = ['DIR', 'PL', 'TCPWIN', 'IAT']
 """ List of names of available features. """
+
+N_FEATURES = len(FEATURES_LIST)
+""" Number of features for each packet. """
 
 #   ####################################################################    #
 #   Dataset split configuration
