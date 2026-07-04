@@ -32,7 +32,7 @@ def mirage_pickle_converter(
     file_path: str,
     filters: dict = None,
     debug : bool = False,
-    biflusso: int = None
+    flows_to_inspect: list[int] = None
 ):
     
     """ Converte un file .pickle di traffico di rete in un dataset
@@ -58,7 +58,7 @@ def mirage_pickle_converter(
         file_path (str): Percorso del file PICKLE da convertire.
         filters (dict, optional): Dizionario contenente i filtri da applicare ai flussi. Defaults to None. Può contenere le seguenti chiavi: 'min_tps', 'min_packets', 'min_dim'.
         debug (bool, optional): Se True, stampa informazioni di debug e il plot dell'istogramma 2D durante la conversione. Defaults to False.
-        biflusso (int, optional): Indice del flusso da selezionare per il debug. Defaults to None.
+        flows_to_inspect (list, optional): Lista di indici dei flussi da selezionare per il debug. Defaults to None.
 
     Returns:
         numpy.ndarray: Array di shape (N, 1, 1500, 1500) contenente gli
@@ -67,6 +67,17 @@ def mirage_pickle_converter(
         Restituisce un array vuoto di shape (0,) se nessuna finestra valida
         viene trovata nel file.
     """
+
+    #   ####################################################################    #
+    #   VALIDITÀ DEI PARAMETRI
+
+    if flows_to_inspect is not None and not isinstance(flows_to_inspect, list):
+        raise ValueError("Il parametro 'flows_to_inspect' deve essere una lista di indici.")
+    
+    if filters and not isinstance(filters, dict):
+        raise ValueError("Il parametro 'filters' deve essere un dizionario.")
+    
+    debug = debug or (flows_to_inspect is not None)
 
     #   ####################################################################    #
     #   INIZIALIZZAZIONE
@@ -80,9 +91,6 @@ def mirage_pickle_converter(
     min_packets = None
     min_dim = None
     min_tps = None
-
-    if filters and not isinstance(filters, dict):
-        raise ValueError("Il parametro 'filters' deve essere un dizionario.")
     
     if filters:
         # Numero minimo di pacchetti che una finestra deve contenere per essere considerata valida.
@@ -96,9 +104,9 @@ def mirage_pickle_converter(
 
     if debug:
         print(f"[DEBUG] Parametri di filtro\n")
-        print(f"{'MIN_PACKETS : {min_packets}' if min_packets else ''}\t", end="")
-        print(f"{'MIN_DIM : {min_dim}' if min_dim else ''}\t", end="")
-        print(f"{'MIN_TPS : {min_tps}' if min_tps else ''}\t", end="")
+        print(f"MIN_PACKETS: {min_packets}" if min_packets is not None else "")
+        print(f"MIN_DIM: {min_dim}" if min_dim is not None else "")
+        print(f"MIN_TPS: {min_tps}" if min_tps is not None else "")
         print("\n")
 
     #   ####################################################################    #
@@ -113,27 +121,48 @@ def mirage_pickle_converter(
         x_raw = pickle.load(file)
         y_raw = np.array(pickle.load(file))
 
-        progress = tqdm(zip(x_raw, y_raw), total=len(x_raw), desc="Elaborazione flussi") if not debug else zip(x_raw, y_raw)
+        #   ################################################################    #
+        #   Recupero dei biflussi selezionati.
 
-        for i, (flow, label) in enumerate(progress):
+        if flows_to_inspect is not None:
+            iterable = (
+                (id, x_raw[id], y_raw[id])
+                for id in flows_to_inspect
+            )
+            total = len(flows_to_inspect)
+        else:
+            iterable = (
+                (id, flow, label)
+                for id, (flow, label)
+                in enumerate(zip(x_raw, y_raw))
+            )
+            total = len(x_raw)
+
+        #   ################################################################    #
+        #   Definizione della barra di avanzamento con tqdm.
+
+        progress = tqdm(
+            iterable,
+            total = total,
+            desc = "Elaborazione flussi",
+
+            # Nasconde la barra di avanzamento se il debug è attivo, per evitare output ridondanti.
+            disable = debug
+        )
+
+        #   ################################################################    #
+        #   Inizio del ciclo di elaborazione dei flussi.
+
+        for (i, flow, label) in progress:
 
             #   ############################################################    #
-            #   Recupero del biflusso selezionato.
-
-            if biflusso is not None and i != biflusso:
-                continue
-
-            #   ############################################################    #
-            #   Stampa un messaggio ogni 100 sessioni processate
+            #   Stampa un messaggio di debug all'inizio
             #   per monitorare l'avanzamento.
 
-            if i % 100 == 0:
-                if debug:
-                    print(f"[DEBUG] Elaborazione del flusso n.{i}")
-                    print(f"[DEBUG] Etichetta: {label}")
-                    print(f"[DEBUG] Numero di pacchetti nel flusso: {flow.shape[0]}")
-                else:
-                    tqdm.write(f"Flusso {i} | Etichetta: {label} | Pacchetti: {flow.shape[0]}")
+            if debug:
+                print(f"[DEBUG] Elaborazione del flusso n.{i}")
+                print(f"[DEBUG] Etichetta: {label}")
+                print(f"[DEBUG] Numero di pacchetti nel flusso: {flow.shape[0]}\n")
 
             #   ############################################################    #
             #   Cancellazione dei pacchetti di padding
@@ -153,8 +182,9 @@ def mirage_pickle_converter(
             real_rows = flow[:cutoff]
 
             # Si salta il flusso se non contiene pacchetti reali.
-            if debug and len(real_rows) == 0:
-                print(f"[DEBUG] Flusso n.{i} scartato: nessun pacchetto reale trovato.")
+            if len(real_rows) == 0:
+                if debug:
+                    print(f"[DEBUG] Flusso n.{i} scartato: nessun pacchetto reale trovato.")
                 continue
 
             #   ############################################################    #
@@ -220,7 +250,11 @@ def mirage_pickle_converter(
                 print(f"[DEBUG] Pacchetti reali del flusso n.{i}:")
                 print(pd.DataFrame(real_rows, columns=FEATURES_LIST), "\n")
             
-            hist = session_2d_histogram(ts, sizes, plot=debug, title=label)
+            hist = session_2d_histogram(
+                ts, sizes,
+                plot = (debug or flows_to_inspect is not None),
+                title = label
+            )
 
             #   ########################################################    #
             #   Aggiunta dell'istogramma al dataset.
@@ -399,31 +433,5 @@ def export_dataset(dataset, dir_path, dataset_name, debug=False):
         print(f"[DEBUG] Nome del percorso completo di salvataggio: {dir_path}{ret_name}.npy")
 
     np.save(f"{dir_path}{ret_name}", dataset)
-
-    # end
-
-#   ########################################################################    #
-#   MAIN
-
-if __name__ == '__main__':
-
-    from constants import DATA_PATH, DATASET_NAME
-    from constants import MIN_TPS, MIN_PACKETS, MIN_DIM
-
-    filters = {
-        'min_tps': MIN_TPS,
-        # 'min_dim': MIN_DIM,
-        # 'min_packets': MIN_PACKETS,
-    }
-
-    debug = False
-    biflusso = None
-
-    dataset = mirage_pickle_converter(
-        DATA_PATH + DATASET_NAME,
-        filters, debug, biflusso
-    )
-
-    export_dataset(dataset, DATA_PATH, DATASET_NAME, debug)
 
     # end
