@@ -28,7 +28,9 @@ MTU = 1500
 
 BIN_SIZE = 15
 """ Dimension in byte of each bin on the Y-axis of the 2D histogram. This means
-    that the Y-axis will be divided into 100 bins, each representing a range of 15 bytes. """
+    that the Y-axis will be divided into 100 bins, each representing a range of 15 bytes.
+    This constant is used only for plotting purposes, to reduce the size of the image.
+    The actual FlowPic will always be 1500x1500. """
 
 #   ####################################################################    #
 #   Dataset configuration

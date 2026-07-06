@@ -15,6 +15,7 @@
 #   LIBRERIE
 
 from tqdm import tqdm
+from typing import Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -26,14 +27,14 @@ from constants import (
 )
 
 #   ########################################################################    #
-#   FUNZIONI di CONVERSIONE del traffico in FLOWPIC
+#   FUNZIONI di ANALISI del traffico
 
 def mirage_pickle_converter(
     file_path: str,
     filters: dict = None,
     debug : bool = False,
     flows_to_inspect: list[int] = None
-):
+) -> Tuple[np.ndarray, pd.DataFrame]:
     
     """ Converte un file .pickle di traffico di rete in un dataset
     adatto all'architettura FlowPic, da utilizzare come input alla CNN.
@@ -65,7 +66,10 @@ def mirage_pickle_converter(
         istogrammi 2D delle sessioni di traffico, dove N è il numero di
         finestre temporali valide.
         Restituisce un array vuoto di shape (0,) se nessuna finestra valida
-        viene trovata nel file.
+        viene trovata nel file. \n
+
+        **pd.DataFrame** \n
+        DataFrame contenente i metadati dei flussi validi, con le colonne "FlowID", "DatasetID" e "Label".
     """
 
     #   ####################################################################    #
@@ -86,7 +90,11 @@ def mirage_pickle_converter(
         print(f"[DEBUG] Inizio conversione del file: {file_path}")
 
     dataset = []
+
     counter = 0
+    flow_ids = []
+    dataset_ids = []
+    labels = []
 
     min_packets = None
     min_dim = None
@@ -201,7 +209,7 @@ def mirage_pickle_converter(
 
             if debug:
                 print(f"[DEBUG] Timestamp e dimensioni pacchetti:")
-                print(pd.DataFrame({'Timestamp': ts, 'Size': sizes}), "\n")
+                print(pd.DataFrame({'Size': sizes, 'Timestamp': ts}), "\n")
 
             #   ############################################################    #
             #   Applicazione di filtri di qualità
@@ -242,7 +250,7 @@ def mirage_pickle_converter(
 
                 if debug:
                     print(f"[DEBUG] Flusso n.{i} contiene {len(real_rows)} pacchetti reali e {len(padding_indices)} pacchetti di padding.")
-                    print(f"[DEBUG] ts.shape = {ts.shape}, sizes.shape = {sizes.shape}")
+                    print(f"[DEBUG] sizes.shape = {sizes.shape}, ts.shape = {ts.shape}")
                 
                 # end if
             
@@ -251,13 +259,17 @@ def mirage_pickle_converter(
                 print(pd.DataFrame(real_rows, columns=FEATURES_LIST), "\n")
             
             hist = session_2d_histogram(
-                ts, sizes,
+                sizes, ts,
                 plot = (debug or flows_to_inspect is not None),
                 title = label
             )
 
             #   ########################################################    #
             #   Aggiunta dell'istogramma al dataset.
+
+            flow_ids.append(i)
+            dataset_ids.append(counter)
+            labels.append(label)
 
             dataset.append([hist])
             counter += 1
@@ -266,20 +278,26 @@ def mirage_pickle_converter(
         # end open
     
     #   ####################################################################    #
-    #   RITORNO DEL DATASET
+    #   RITORNO DEL DATASET e dei METADATI
 
     ret = np.asarray(dataset)
+
+    metadata = pd.DataFrame({
+        "FlowID": flow_ids,
+        "DatasetID": dataset_ids,
+        "Label": labels,
+    })
 
     if debug:
         print(f"[DEBUG] Conversione completata.")
         print(f"[DEBUG] Percentuale di finestre temporali valide: {counter/len(x_raw) * 100:.2f}%")
         print(f"[DEBUG] Dimensione del dataset risultante: {ret.shape}")
 
-    return ret
+    return ret, metadata
 
     # end
 
-def session_2d_histogram(ts, sizes, plot=False, title=None):
+def session_2d_histogram(sizes, ts, plot=False, title=None):
     """ È la funzione chiave che costruisce un FlowPic, cioè un istogramma
     2D 1500x1500 che rappresenta la distribuzione spazio-temporale dei pacchetti
     di una finestra di traffico di rete.
@@ -288,11 +306,11 @@ def session_2d_histogram(ts, sizes, plot=False, title=None):
     L'asse Y rappresenta la dimensione dei pacchetti in byte, da 0 a 1500 (MTU).
 
     Args:
-        ts (numpy.ndarray): Array 1D dei timestamp di arrivo dei pacchetti,
-            espressi in secondi relativi all'inizio della finestra. Shape: (N,).
         sizes (numpy.ndarray): Array 1D delle dimensioni in byte dei pacchetti,
             allineato per indice con ts: cioè, sizes[i] è la dimensione del
             pacchetto ts[i]. Shape: (N,).
+        ts (numpy.ndarray): Array 1D dei timestamp di arrivo dei pacchetti,
+            espressi in secondi relativi all'inizio della finestra. Shape: (N,).
         plot (bool, optional): Se True, visualizza l'istogramma con matplotlib
             usando una colormap binaria (cioè, bianco se 0 pacchetti, nero se 1+
             pacchetti). Defaults to False.
@@ -307,14 +325,13 @@ def session_2d_histogram(ts, sizes, plot=False, title=None):
     #   ####################################################################    #
     #   INIZIALIZZAZIONE
 
-    # Costruisce una griglia di bins 1500x1500 per l'istogramma 2D,
-    # con 1 byte per bin sull'asse Y e 1 pixel per bin sull'asse X.
-    b = (range(0, MTU + 1, BIN_SIZE), range(0, MTU + 1, BIN_SIZE))
+    sizes = np.asarray(sizes)
+    ts = np.asarray(ts)
 
     #   ####################################################################    #
     #   CONTROLLO DI VALIDITÀ DEGLI ARGOMENTI
 
-    if len(ts) != len(sizes):
+    if sizes.shape[0] != ts.shape[0]:
         raise ValueError("Gli array 'ts' e 'sizes' devono avere la stessa lunghezza.")
 
     #   ####################################################################    #
@@ -323,7 +340,7 @@ def session_2d_histogram(ts, sizes, plot=False, title=None):
     #   indipendentemente da quanto dura in secondi.
 
     # 1. Rende i timestamp relativi all'inizio della finestra.
-    ts_norm = np.array(ts) - ts[0]
+    ts_norm = ts - ts[0]
 
     # 2. Scala nell'intervallo [0.0, 1.0].
     ts_norm = ts_norm / (ts.max() - ts.min())
@@ -334,10 +351,21 @@ def session_2d_histogram(ts, sizes, plot=False, title=None):
     #   ####################################################################    #
     #   COSTRUZIONE DEL FLOWPIC
 
-    H, xedges, yedges = np.histogram2d(
-        sizes,
-        ts_norm,
-        bins=b
+    H, _, _ = np.histogram2d(
+        # Gli assi X e Y dell'istogramma 2D rappresentano rispettivamente il tempo normalizzato e le dimensioni dei pacchetti.
+        sizes, ts_norm,
+
+        # Costruisce una griglia di bins 1500x1500 per l'istogramma 2D.
+        bins = (MTU, MTU),
+
+        # Fissa esplicitamente i limiti dei bin a [0, MTU] su entrambi gli assi.
+        # Senza questo parametro il calcolo dei limiti dipende dai valori
+        # min/max dei dati, portando a risultati incoerenti tra dataset
+        # e istogramma.
+        # ESEMPIO : con PL_max = 1448, un pacchetto di dimensione PL=1200
+        # finirebbe nel bin ~1243 invece che 1200, e il pacchetto più grande
+        # verrebbe sempre spinto al bin 1499.
+        range=[[0, MTU], [0, MTU]]
     )
 
     #   ####################################################################    #
@@ -345,9 +373,27 @@ def session_2d_histogram(ts, sizes, plot=False, title=None):
 
     if plot:
 
+        H_plot = H
+
+        # Si riduce la risoluzione dell'istogramma per il plot,
+        # raggruppando i pixel in blocchi di dimensione BIN_SIZE x BIN_SIZE.
+        # Dopo il reshape, le colonne 0, 2 indicizzano i blocchi originali,
+        # mentre le colonne 1, 3 contano il totale dei pacchetti in ciascun blocco.
+        if BIN_SIZE > 1:
+            n = MTU // BIN_SIZE
+            H_plot = H[:n*BIN_SIZE, :n*BIN_SIZE] \
+                .reshape(n, BIN_SIZE, n, BIN_SIZE) \
+                .sum(axis=(1, 3))
+
         plt.pcolormesh(
-            xedges, yedges,
-            (H > 0).astype(np.uint8),
+            # Costruisce la griglia di coordinate per il plot.
+            np.linspace(0, MTU, H_plot.shape[1] + 1),
+            np.linspace(0, MTU, H_plot.shape[0] + 1),
+
+            # L'array 2D da visualizzare, convertito in uint8 per ridurre l'uso di memoria. Sono rappresentati solo le celle contenenti almeno un pacchetto.
+            (H_plot > 0).astype(np.uint8),
+
+            # Imposta la colormap binaria inversa (bianco = 0 pacchetti, nero = 1+ pacchetti) e i limiti di visualizzazione.
             cmap='binary_r',
             vmin=0, vmax=1
         )
@@ -374,64 +420,16 @@ def session_2d_histogram(ts, sizes, plot=False, title=None):
 
     # end
 
-#   ########################################################################    #
-#   Altre FUNZIONI
+def normalize_dataset(
+        
+) -> np.ndarray:
+    
+    """_summary_
 
-def export_dataset(dataset, dir_path, dataset_name, debug=False):
-    """ Salva su disco un array NumPy di istogrammi 2D,
-    in un file .npy il cui nome identifica le caratteristiche
-    del dataset elaborato.
-
-    Args:
-        dataset (numpy.ndarray): Array di shape (N, 1, H, W) contenente
-            gli istogrammi 2D delle sessioni di traffico, dove:
-            - N : il numero di sessioni.
-            - H, W : le dimensioni dell'istogramma (tipicamente 1500x1500 in FlowPic).
-        dir_path (str): Percorso della cartella in cui salvare il file .npy.
-        dataset_name (str): Nome del file PICKLE elaborato per costruire il dataset. Viene utilizzato per estrarre metadati e costruire il nome del file .npy.
-        debug (bool, optional): Se True, stampa informazioni di debug durante il salvataggio. Defaults to False.
+    Returns:
+        _type_: _description_
     """
 
-    #   ####################################################################    #
-    #   INIZIALIZZAZIONE
-
-    if debug:
-        print(f"[DEBUG] Cartella di salvataggio: {dir_path}")
-        print(f"[DEBUG] Nome del file originale: {dataset_name}")
-
-    counter = 0
-    campi = []
-    indices = [
-        0, # dataset name
-        4, # number of packets
-        5, # number of features
-        6, # traffic type
-        8, # padding
-        # 9  # hash code
-    ]
-
-    #   ####################################################################    #
-    #   ESTRAZIONE DEI METADATI DAL NOME DEL FILE
-
-    ret_name = dataset_name.split('.')[0]
-    metadata = ret_name.split('_')
-
-    for idx in indices:
-        if idx < len(metadata) and metadata[idx]:
-            campi.append(metadata[idx])
-            counter += 1
-        elif debug:
-            print(f"[DEBUG] Campo metadata[{idx}] non trovato.")
-    
-    if counter == len(indices):
-        ret_name = "_".join(campi)
-
-    #   ####################################################################    #
-    #   SALVATAGGIO DEL DATASET SU DISCO
-
-    if debug:
-        print(f"[DEBUG] Nome del percorso completo di salvataggio: {dir_path}{ret_name}.npy")
-
-    np.save(f"{dir_path}{ret_name}", dataset)
+    pass
 
     # end
