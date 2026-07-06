@@ -26,19 +26,17 @@ MIN_DIM = 10000
 MTU = 1500
 """ Maximum Transmission Unit (Ethernet). """
 
-BIN_SIZE = 15
+BIN_SIZE = 10
 """ Dimension in byte of each bin on the Y-axis of the 2D histogram. This means
-    that the Y-axis will be divided into 100 bins, each representing a range of 15 bytes.
-    This constant is used only for plotting purposes, to reduce the size of the image.
-    The actual FlowPic will always be 1500x1500. """
+    that the Y-axis will be divided into 150 bins, each representing a range of 10 bytes. """
 
 #   ####################################################################    #
 #   Dataset configuration
 
-DATA_PATH = "../dataset/mirage/2019/"
+DATA_PATH = "../dataset/mirage/2024/appxact/"
 """ Path to the dataset file. """
 
-DATASET_NAME = "mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata.pickle"
+DATASET_NAME = "mirage2024_appxact_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_cf1a9527.pickle"
 """ Name of the dataset file. """
 
 DATASET_PACKETS = 100

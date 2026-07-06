@@ -33,6 +33,7 @@ def mirage_pickle_converter(
     file_path: str,
     filters: dict = None,
     debug : bool = False,
+    debug_cycle : bool = False,
     flows_to_inspect: list[int] = None
 ) -> Tuple[np.ndarray, pd.DataFrame]:
     
@@ -59,12 +60,13 @@ def mirage_pickle_converter(
         file_path (str): Percorso del file PICKLE da convertire.
         filters (dict, optional): Dizionario contenente i filtri da applicare ai flussi. Defaults to None. Può contenere le seguenti chiavi: 'min_tps', 'min_packets', 'min_dim'.
         debug (bool, optional): Se True, stampa informazioni di debug e il plot dell'istogramma 2D durante la conversione. Defaults to False.
+        debug_cycle (bool, optional): Se True, stampa informazioni di debug per ogni ciclo di elaborazione. Defaults to False.
         flows_to_inspect (list, optional): Lista di indici dei flussi da selezionare per il debug. Defaults to None.
 
     Returns:
-        numpy.ndarray: Array di shape (N, 1, 1500, 1500) contenente gli
+        numpy.ndarray: Array di shape (N, 1, D, D) contenente gli
         istogrammi 2D delle sessioni di traffico, dove N è il numero di
-        finestre temporali valide.
+        finestre temporali valide e D è la dimensione dell'istogramma, calcolata in base ai parametri MTU e BIN_SIZE.
         Restituisce un array vuoto di shape (0,) se nessuna finestra valida
         viene trovata nel file. \n
 
@@ -82,6 +84,7 @@ def mirage_pickle_converter(
         raise ValueError("Il parametro 'filters' deve essere un dizionario.")
     
     debug = debug or (flows_to_inspect is not None)
+    debug_cycle = debug_cycle or (flows_to_inspect is not None)
 
     #   ####################################################################    #
     #   INIZIALIZZAZIONE
@@ -155,7 +158,7 @@ def mirage_pickle_converter(
             desc = "Elaborazione flussi",
 
             # Nasconde la barra di avanzamento se il debug è attivo, per evitare output ridondanti.
-            disable = debug
+            disable = debug_cycle
         )
 
         #   ################################################################    #
@@ -167,7 +170,7 @@ def mirage_pickle_converter(
             #   Stampa un messaggio di debug all'inizio
             #   per monitorare l'avanzamento.
 
-            if debug:
+            if debug_cycle:
                 print(f"[DEBUG] Elaborazione del flusso n.{i}")
                 print(f"[DEBUG] Etichetta: {label}")
                 print(f"[DEBUG] Numero di pacchetti nel flusso: {flow.shape[0]}\n")
@@ -191,7 +194,7 @@ def mirage_pickle_converter(
 
             # Si salta il flusso se non contiene pacchetti reali.
             if len(real_rows) == 0:
-                if debug:
+                if debug_cycle:
                     print(f"[DEBUG] Flusso n.{i} scartato: nessun pacchetto reale trovato.")
                 continue
 
@@ -207,7 +210,7 @@ def mirage_pickle_converter(
             # nell'ordine corrispondente ai timestamp.
             sizes = real_rows[:, 1].astype(int)
 
-            if debug:
+            if debug_cycle:
                 print(f"[DEBUG] Timestamp e dimensioni pacchetti:")
                 print(pd.DataFrame({'Size': sizes, 'Timestamp': ts}), "\n")
 
@@ -215,28 +218,28 @@ def mirage_pickle_converter(
             #   Applicazione di filtri di qualità
 
             if ts.max() - ts.min() <= 0:
-                if debug:
+                if debug_cycle:
                     print(f"[DEBUG] Flusso n.{i} scartato per durata non valida.")
                 continue
 
             if min_packets:
                 filter_1 = sizes.shape[0]
                 if not(filter_1 > min_packets):
-                    if debug:
+                    if debug_cycle:
                         print(f"[DEBUG] Flusso n.{i} scartato per numero pacchetti insufficiente ({filter_1}).")
                     continue
 
             if min_dim:
                 filter_2 = np.sum(sizes)
                 if not(filter_2 > min_dim):
-                    if debug:
+                    if debug_cycle:
                         print(f"[DEBUG] Flusso n.{i} scartato per dimensione insufficiente ({filter_2} byte).")
                     continue
 
             if min_tps:
                 filter_3 = ts[-1] - ts[0]
                 if not(filter_3 > min_tps):
-                    if debug:
+                    if debug_cycle:
                         print(f"[DEBUG] Flusso n.{i} scartato per durata insufficiente ({filter_3:.2f} secondi).")
                     continue
 
@@ -248,19 +251,19 @@ def mirage_pickle_converter(
                 ts = np.pad(ts, (len(padding_indices), 0), mode='constant', constant_values=0.0)
                 sizes = np.pad(sizes, (len(padding_indices), 0), mode='constant', constant_values=0)
 
-                if debug:
+                if debug_cycle:
                     print(f"[DEBUG] Flusso n.{i} contiene {len(real_rows)} pacchetti reali e {len(padding_indices)} pacchetti di padding.")
                     print(f"[DEBUG] sizes.shape = {sizes.shape}, ts.shape = {ts.shape}")
                 
                 # end if
             
-            if debug:
+            if debug_cycle:
                 print(f"[DEBUG] Pacchetti reali del flusso n.{i}:")
                 print(pd.DataFrame(real_rows, columns=FEATURES_LIST), "\n")
             
             hist = session_2d_histogram(
                 sizes, ts,
-                plot = (debug or flows_to_inspect is not None),
+                plot = debug_cycle,
                 title = label
             )
 
@@ -289,8 +292,8 @@ def mirage_pickle_converter(
     })
 
     if debug:
-        print(f"[DEBUG] Conversione completata.")
-        print(f"[DEBUG] Percentuale di finestre temporali valide: {counter/len(x_raw) * 100:.2f}%")
+        print(f"\n[DEBUG] Conversione completata.")
+        print(f"[DEBUG] Percentuale di finestre temporali valide: {counter}/{len(x_raw)} = {counter/len(x_raw) * 100:.2f}%")
         print(f"[DEBUG] Dimensione del dataset risultante: {ret.shape}")
 
     return ret, metadata
@@ -299,7 +302,7 @@ def mirage_pickle_converter(
 
 def session_2d_histogram(sizes, ts, plot=False, title=None):
     """ È la funzione chiave che costruisce un FlowPic, cioè un istogramma
-    2D 1500x1500 che rappresenta la distribuzione spazio-temporale dei pacchetti
+    2D che rappresenta la distribuzione spazio-temporale dei pacchetti
     di una finestra di traffico di rete.
 
     L'asse X rappresenta il tempo normalizzato nell'intervallo [0, 1500].
@@ -317,9 +320,9 @@ def session_2d_histogram(sizes, ts, plot=False, title=None):
         title (str, optional): Titolo della finestra di traffico, usato per il plot. Defaults to None.
 
     Returns:
-        numpy.ndarray: Matrice 2D di shape (1500, 1500) e dtype uint16,
+        numpy.ndarray: Matrice 2D di shape (D, D) e dtype uint16,
             dove H[y, x] è il numero di pacchetti con dimensione y byte arrivati
-            al tempo normalizzato x.
+            al tempo normalizzato x. La dimensione D è calcolata in base ai parametri MTU e BIN_SIZE.
     """
 
     #   ####################################################################    #
@@ -352,21 +355,26 @@ def session_2d_histogram(sizes, ts, plot=False, title=None):
     #   COSTRUZIONE DEL FLOWPIC
 
     H, _, _ = np.histogram2d(
-        # Gli assi X e Y dell'istogramma 2D rappresentano rispettivamente il tempo normalizzato e le dimensioni dei pacchetti.
-        sizes, ts_norm,
+
+        # Gli assi X e Y dell'istogramma 2D rappresentano rispettivamente le
+        # dimensioni dei pacchetti e il tempo normalizzato.
+        sizes,
+        ts_norm,
 
         # Costruisce una griglia di bins 1500x1500 per l'istogramma 2D.
-        bins = (MTU, MTU),
-
         # Fissa esplicitamente i limiti dei bin a [0, MTU] su entrambi gli assi.
         # Senza questo parametro il calcolo dei limiti dipende dai valori
         # min/max dei dati, portando a risultati incoerenti tra dataset
         # e istogramma.
-        # ESEMPIO : con PL_max = 1448, un pacchetto di dimensione PL=1200
-        # finirebbe nel bin ~1243 invece che 1200, e il pacchetto più grande
-        # verrebbe sempre spinto al bin 1499.
-        range=[[0, MTU], [0, MTU]]
+        bins = (range(0, MTU + 1, BIN_SIZE), range(0, MTU + 1, BIN_SIZE)),
     )
+
+    #   ####################################################################    #
+    #   NORMALIZZAZIONE RISPETTO AL NUMERO DI PACCHETTI
+    #   Normalizza l'istogramma in modo che la somma di tutti i pixel sia 1.
+
+    if H.sum() > 0:
+        H = H / H.sum()
 
     #   ####################################################################    #
     #   VISUALIZZAZIONE OPZIONALE DELL'ISTOGRAMMA
@@ -379,11 +387,11 @@ def session_2d_histogram(sizes, ts, plot=False, title=None):
         # raggruppando i pixel in blocchi di dimensione BIN_SIZE x BIN_SIZE.
         # Dopo il reshape, le colonne 0, 2 indicizzano i blocchi originali,
         # mentre le colonne 1, 3 contano il totale dei pacchetti in ciascun blocco.
-        if BIN_SIZE > 1:
-            n = MTU // BIN_SIZE
-            H_plot = H[:n*BIN_SIZE, :n*BIN_SIZE] \
-                .reshape(n, BIN_SIZE, n, BIN_SIZE) \
-                .sum(axis=(1, 3))
+        # if BIN_SIZE > 1:
+        #     n = MTU // BIN_SIZE
+        #     H_plot = H[:n*BIN_SIZE, :n*BIN_SIZE] \
+        #         .reshape(n, BIN_SIZE, n, BIN_SIZE) \
+        #         .sum(axis=(1, 3))
 
         plt.pcolormesh(
             # Costruisce la griglia di coordinate per il plot.
@@ -414,22 +422,7 @@ def session_2d_histogram(sizes, ts, plot=False, title=None):
     #   ####################################################################    #
     #   RITORNO DELLA MATRICE 2D
 
-    # Converte i conteggi in interi a 16 bit senza segno
-    # per occupare meno spazio in memoria.
-    return H.astype(np.uint16)
-
-    # end
-
-def normalize_dataset(
-        
-) -> np.ndarray:
-    
-    """_summary_
-
-    Returns:
-        _type_: _description_
-    """
-
-    pass
+    # Converte i conteggi in numeri a virgola mobile a 16 bit per ridurre l'uso di memoria, dato che i valori sono normalizzati tra 0 e 1.
+    return H.astype(np.float16)
 
     # end
