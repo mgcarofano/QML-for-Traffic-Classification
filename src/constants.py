@@ -6,6 +6,23 @@
 """
 
 #   ####################################################################    #
+#   Miscellaneous
+
+EXEC_MODE_TRAIN = False
+""" Set this flag to choose between training a new model
+or running validation on an already saved model. \n
+- True  : Execute the training loop.
+- False : Skip training and run validation only on a pre-saved model. \n
+This allows running "Run All" in the notebook and automatically selecting
+the appropriate branch without manually skipping cells. """
+
+OUTPUT_DIR = "../results"
+""" Directory where the model and training history will be saved. """
+
+SAVE_OUTPUT = False
+""" Whether to save the output of the notebook. """
+
+#   ####################################################################    #
 #   Traffic converter configuration
 
 TPS = 60
@@ -33,10 +50,10 @@ BIN_SIZE = 10
 #   ####################################################################    #
 #   Dataset configuration
 
-DATA_PATH = "../dataset/mirage/2024/appxact/"
+DATA_PATH = "../dataset/mirage/2019"
 """ Path to the dataset file. """
 
-DATASET_NAME = "mirage2024_appxact_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_cf1a9527.pickle"
+DATASET_NAME = "mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata.pickle"
 """ Name of the dataset file. """
 
 DATASET_PACKETS = 100
@@ -73,8 +90,8 @@ NEW_TRAIN_SIZE = 30000
 """ Limit on the number of training samples to use, to reduce training time.
 	If the training set is larger than this, it will be randomly sampled down to this size. """
 
-#	Model selection
 #   ####################################################################    #
+#	Model selection
 
 MODEL_REGISTRY = {
     # nn_models
@@ -92,6 +109,13 @@ MODEL_REGISTRY = {
     "Dense": ("../models.complex_hybrid_models", "Dense"),
 }
 """ A dictionary mapping model names to their corresponding module and class names. """
+
+MODEL_TIMESTAMP_ID = "2026-07-02_11-56"
+""" Timestamp identifier for the model, used for saving and loading. """
+
+MODEL_NAME = "10E_Focal_MinMax_TrafficCNN"
+""" Name of the model, used for saving and loading. \n
+The name format is *"{epochs}E\_{loss}\_{preprocessing}\_{model}"*. """
 
 #   ####################################################################    #
 #   Training configuration
