@@ -16,6 +16,11 @@ or running validation on an already saved model. \n
 This allows running "Run All" in the notebook and automatically selecting
 the appropriate branch without manually skipping cells. """
 
+USE_PRECOMPUTED_DATASET = True
+""" Whether to use a precomputed FlowPic dataset. \n
+- False  : Generate the dataset from raw data using the `traffic_converter` module.
+- True   : Load the dataset from a precomputed .npy file. """
+
 OUTPUT_DIR = "../results"
 """ Directory where the model and training history will be saved. """
 

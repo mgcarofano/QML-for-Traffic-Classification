@@ -48,7 +48,8 @@ def mirage_pickle_converter(
         - p[i][j]   : il j-esimo pacchetto dell'i-esimo flusso.
     -   SECONDA SCANSIONE
         Deve contenere un array NumPy di shape (N, ) di etichette dei flussi.
-        Ogni etichetta rappresenta il nome dell'applicazione o dell'attività associata al flusso corrispondente.
+        Ogni etichetta rappresenta il nome dell'applicazione o dell'attività
+        associata al flusso corrispondente.
 
     ## Features per pacchetto
     - DIR                       : Direzione del pacchetto (0.0 = upstream, 1.0 = downstream).
@@ -58,10 +59,17 @@ def mirage_pickle_converter(
 
     Args:
         file_path (str): Percorso del file PICKLE da convertire.
-        filters (dict, optional): Dizionario contenente i filtri da applicare ai flussi. Defaults to None. Può contenere le seguenti chiavi: 'min_tps', 'min_packets', 'min_dim'.
-        debug (bool, optional): Se True, stampa informazioni di debug e il plot dell'istogramma 2D durante la conversione. Defaults to False.
-        debug_cycle (bool, optional): Se True, stampa informazioni di debug per ogni ciclo di elaborazione. Defaults to False.
-        flows_to_inspect (list, optional): Lista di indici dei flussi da selezionare per il debug. Defaults to None.
+        filters (dict, optional): 
+        Dizionario contenente i filtri da applicare ai flussi. Defaults to None.
+        Può contenere le seguenti chiavi: 'min_tps', 'min_packets', 'min_dim'.
+        debug (bool, optional):
+        Se True, stampa informazioni di debug e il plot dell'istogramma 2D
+        durante la conversione. Defaults to False.
+        debug_cycle (bool, optional):
+        Se True, stampa informazioni di debug per ogni ciclo di elaborazione.
+        Defaults to False.
+        flows_to_inspect (list, optional):
+        Lista di indici dei flussi da selezionare per il debug. Defaults to None.
 
     Returns:
         numpy.ndarray: Array di shape (N, 1, D, D) contenente gli
@@ -283,6 +291,9 @@ def mirage_pickle_converter(
     #   ####################################################################    #
     #   RITORNO DEL DATASET e dei METADATI
 
+    # TODO: utilizzare scipy per salvare il dataset in formato compresso .npz, riducendo lo spazio su disco.
+    # ...
+
     ret = np.asarray(dataset)
 
     metadata = pd.DataFrame({
@@ -424,5 +435,64 @@ def session_2d_histogram(sizes, ts, plot=False, title=None):
 
     # Converte i conteggi in numeri a virgola mobile a 16 bit per ridurre l'uso di memoria, dato che i valori sono normalizzati tra 0 e 1.
     return H.astype(np.float16)
+
+    # end
+
+#   ########################################################################    #
+#   ALTRE FUNZIONI
+
+def get_dataset_name(dir_path, raw_pickle_name, debug=False):
+    """ Estrae i metadati dal nome del file PICKLE e costruisce il nuovo nome
+    del file .npy in cui salvare il dataset di istogrammi 2D (FlowPics).
+
+    Args:
+        dir_path (str): Percorso della cartella originale in cui salvare il file .npy.
+        raw_pickle_name (str): Nome del file PICKLE elaborato per costruire il dataset.
+        Viene utilizzato per estrarre i metadati necessari.
+        debug (bool, optional): Se True, stampa informazioni di debug durante
+        il salvataggio. Defaults to False.
+    """
+
+    #   ####################################################################    #
+    #   INIZIALIZZAZIONE
+
+    if debug:
+        print(f"[DEBUG] Cartella di salvataggio: {dir_path}")
+        print(f"[DEBUG] Nome del file originale: {raw_pickle_name}")
+
+    counter = 0
+    campi = []
+    indices = [
+        0, # dataset name
+        4, # number of packets
+        5, # number of features
+        6, # traffic type
+        8, # padding
+        # 9  # hash code
+    ]
+
+    #   ####################################################################    #
+    #   ESTRAZIONE DEI METADATI DAL NOME DEL FILE
+
+    dataset_name = raw_pickle_name.split('.')[0]
+    metadata = dataset_name.split('_')
+
+    for idx in indices:
+        if idx < len(metadata) and metadata[idx]:
+            campi.append(metadata[idx])
+            counter += 1
+        elif debug:
+            print(f"[DEBUG] Campo metadata[{idx}] non trovato.")
+
+    if counter == len(indices):
+        dataset_name = "_".join(campi)
+
+    #   ####################################################################    #
+    #   RITORNO DEL NOME DEL FILE
+
+    if debug:
+        print(f"[DEBUG] Nome del percorso completo di salvataggio: {dir_path}/{dataset_name}.npy")
+
+    return dataset_name
 
     # end
