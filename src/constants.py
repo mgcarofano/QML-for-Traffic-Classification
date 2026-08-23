@@ -8,7 +8,7 @@
 #   ####################################################################    #
 #   Miscellaneous
 
-EXEC_MODE_TRAIN = False
+EXEC_MODE_TRAIN = True
 """ Set this flag to choose between training a new model
 or running validation on an already saved model. \n
 - True  : Execute the training loop.
@@ -24,7 +24,7 @@ USE_PRECOMPUTED_DATASET = True
 OUTPUT_DIR = "../results"
 """ Directory where the model and training history will be saved. """
 
-SAVE_OUTPUT = False
+SAVE_OUTPUT = True
 """ Whether to save the output of the notebook. """
 
 #   ####################################################################    #
@@ -91,6 +91,9 @@ TEST_SIZE = 0.15
 BATCH_SIZE = 32
 """ Size of the mini-batches used during training. """
 
+USE_NEW_SIZE = False
+""" Whether to limit the number of training samples to a new size. """
+
 NEW_TRAIN_SIZE = 30000
 """ Limit on the number of training samples to use, to reduce training time.
 	If the training set is larger than this, it will be randomly sampled down to this size. """
@@ -112,6 +115,10 @@ MODEL_REGISTRY = {
     "ClassicalLight": ("../models.complex_hybrid_models", "ClassicalLight"),
     "CnnAmpCnn": ("../models.complex_hybrid_models", "CnnAmpCnn"),
     "Dense": ("../models.complex_hybrid_models", "Dense"),
+
+    # flowpic_models
+    "FlowPicCNN": ("../models.flowpic_models", "FlowPicCNN"),
+    "AmpHybridFlowPicCNN": ("../models.flowpic_models", "AmpHybridFlowPicCNN"),
 }
 """ A dictionary mapping model names to their corresponding module and class names. """
 

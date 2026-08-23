@@ -291,10 +291,7 @@ def mirage_pickle_converter(
     #   ####################################################################    #
     #   RITORNO DEL DATASET e dei METADATI
 
-    # TODO: utilizzare scipy per salvare il dataset in formato compresso .npz, riducendo lo spazio su disco.
-    # ...
-
-    ret = np.asarray(dataset)
+    ret = np.asarray(dataset, dtype=np.float32)
 
     metadata = pd.DataFrame({
         "FlowID": flow_ids,
@@ -433,8 +430,9 @@ def session_2d_histogram(sizes, ts, plot=False, title=None):
     #   ####################################################################    #
     #   RITORNO DELLA MATRICE 2D
 
-    # Converte i conteggi in numeri a virgola mobile a 16 bit per ridurre l'uso di memoria, dato che i valori sono normalizzati tra 0 e 1.
-    return H.astype(np.float16)
+    # Converte i conteggi in numeri a virgola mobile a 32 bit per ridurre
+    # l'uso di memoria, dato che i valori sono normalizzati tra 0 e 1.
+    return H.astype(np.float32)
 
     # end
 
