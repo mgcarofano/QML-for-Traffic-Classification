@@ -11,6 +11,8 @@
 #   ########################################################################    #
 #   LIBRERIE
 
+import torch.nn as nn
+
 import importlib
 import os
 import sys
@@ -98,4 +100,29 @@ def check_model_compatibility(model, weights):
 		)
 
 		# end if
+	# end
+
+def weight_init(m: nn.Module) -> None:
+	"""Fills-in weights and biases for convolutional and linear layers. Uses Kaiming uniform initialization for weights (suitable for ReLU/non-linearities) and sets biases to zero. This function is meant to be used with model.apply(), which will call it on every sub-module.
+
+	Args:
+		m (nn.Module): a module of the model.
+	"""	
+
+	if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+
+		# Good idea would be to use kaiming initialization of scaled orthonormal initialization.
+		nn.init.kaiming_uniform_(
+			m.weight,
+			a=0,
+			mode='fan_in',
+			nonlinearity='leaky_relu'
+		)
+
+		# Check if m.bias is enabled.
+		if m.bias is not None:
+			nn.init.zeros_(m.bias)
+	
+	return
+
 	# end
