@@ -11,7 +11,7 @@
 RANDOM_SEED = 2025
 """ Random seed for reproducibility. """
 
-EXEC_MODE_TRAIN = False
+EXEC_MODE_TRAIN = True
 """ Set this flag to choose between training a new model
 or running validation on an already saved model. \n
 - True  : Execute the training loop.
@@ -29,7 +29,7 @@ and whether to use a precomputed version of it. \n
 OUTPUT_DIR = "../results"
 """ Directory where the model and training history will be saved. """
 
-SAVE_OUTPUT = False
+SAVE_OUTPUT = True
 """ Whether to save the output of the notebook. """
 
 #   ####################################################################    #
@@ -146,7 +146,7 @@ LEARNING_RATE = 1e-2
 EARLY_STOPPING = True
 """ Whether to use early stopping during training. """
 
-PATIENCE = 7
+PATIENCE = EPOCHS // 10 if EPOCHS <= 100 else 10
 """ Number of epochs to wait for improvement before stopping training. """
 
 #   ####################################################################    #
