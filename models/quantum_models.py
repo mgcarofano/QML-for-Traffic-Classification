@@ -1,9 +1,23 @@
 ﻿"""
 
     quantum_models.py
-    di MatteoRichardGaudino
+    di Mario Gabriele Carofano
 
-    ...
+    Questo modulo raccoglie i modelli ibridi quantistico-classici basati su
+    PennyLane, che combinano diverse strategie di embedding, con ansatz variazionali
+    e strati classici di pre/post-processing.
+
+    Le classi mantengono la stessa interfaccia delle classi dei modelli quantistici,
+    in modo da poter essere utilizzate in modo intercambiabile nel notebook principale.
+
+    Args:
+        n_qubits (int): Numero di qubit per il circuito quantistico.
+        n_layers (int): Numero di layer per StronglyEntanglingLayers.
+        n_packets (int): Numero di pacchetti nell'input.
+        n_features (int): Numero di feature per pacchetto.
+        num_classes (int): Numero di classi per la classificazione.
+        n_shots (int, optional): Numero di misurazioni da eseguire (default: None).
+        random_seed (int): Seed per il dispositivo quantistico (default: 42).
 
 """
 
@@ -11,41 +25,92 @@
 #   LIBRERIE e IMPORT
 
 import pennylane as qml
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from constants import SIMULATOR
 from model_selection import compute_model_name
+from classic_models import _DenseCnn1DBackbone
+
+#   ####################################################################    #
+#   FUNZIONI di utilità
+
+# Author : Vincenzo Spadari
+def meas_qoutputsize_mapping(n_qubits : int) -> dict:
+    """Restituisce la dimensione dell'output di misurazione in base al numero di qubit.
+
+    Args:
+        n_qubits (int): Numero di qubit per il circuito quantistico.
+
+    Returns:
+        dict: Mappa tra tipo di misurazione e dimensione dell'output.
+    """
+
+    return {
+        "pauli": n_qubits,
+        "probs": 2**n_qubits
+    }
+
+    # end
 
 #   ####################################################################    #
 #   Amplitude embedding quantum model
 
-class AmpHybridModel(nn.Module):
-    def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
-        """
-        Modello ibrido quantistico-classico con Amplitude Embedding.
+# Author : Vincenzo Spadari
+class AmpeDenseModel(nn.Module):
+    """_summary_
 
-        Args:
-            n_qubits (int): Numero di qubit per il circuito quantistico.
-            n_layers (int): Numero di layer per StronglyEntanglingLayers.
-            n_packets (int): Numero di pacchetti nell'input.
-            n_features (int): Numero di feature per pacchetto.
-            num_classes (int): Numero di classi per la classificazione.
-            random_seed (int): Seed per il dispositivo quantistico. Default è 42.
-        """
+    Args:
+        nn (_type_): _description_
+    """
 
-        super(AmpHybridModel, self).__init__()
+    def __init__(self,
+            n_qubits, n_layers,
+            n_packets, n_features,
+            num_classes, n_shots=None,
+            random_seed=42,
+        ):
 
-        # Salva i parametri come attributi
+        #   ############################################################    #
+        #   Inizializzazione degli attributi del modello
+
+        super(AmpeDenseModel, self).__init__()
+
         self.n_qubits = n_qubits
         self.n_layers = n_layers
+
         self.n_packets = n_packets
         self.n_features = n_features
         self.num_classes = num_classes
+
         self.random_seed = random_seed
+        self.n_shots = n_shots
 
-        # Definizione del dispositivo quantistico
-        self.dev = qml.device(SIMULATOR, wires=n_qubits, seed=random_seed)
+        # Si inizializza il dispositivo quantistico
+        # con il numero di qubit e il seed specificato.
+        self.dev = qml.device(
+            SIMULATOR,
+            wires=n_qubits,
 
-        # Definizione del QNode
+            # Siccome le misurazioni in un circuito quantistico
+            # sono non-deterministiche, si può specificare il numero
+            # di "shots" (misurazioni) da eseguire per ottenere
+            # una stima più accurata delle probabilità di output.
+            shots=n_shots,
+
+            seed=random_seed
+        )
+
+        #   ############################################################    #
+        #   Calcolo delle variabili
+
+        q_output_size = meas_qoutputsize_mapping(n_qubits)["probs"]
+        weight_shapes = {"weights": (n_layers, n_qubits, 3)}
+        input_dim = n_packets * n_features
+
+        #   ############################################################    #
+        #   Definizione del circuito quantistico
+
         @qml.qnode(self.dev, interface="torch")
         def qnode(inputs, weights):
             # Feature map
@@ -57,30 +122,20 @@ class AmpHybridModel(nn.Module):
             # Processo di misurazione
             return qml.probs(wires=range(n_qubits))
 
+            # end
+
         self.qnode = qnode
+        # if self.dev_name.startswith("fake"):
+        #     self.qnode = qml.set_shots(self.qnode, self.n_shots)
 
-        # Definizione delle forme dei pesi per il layer quantistico
-        weight_shapes = {"weights": (n_layers, n_qubits, 3)}
+        #   ############################################################    #
+        #   Architettura del modello
 
-        # 1. Flatten
-        # Input shape originale: (n_packets, n_features)
-        # Dimensione appiattita: n_packets * n_features
         self.flatten = nn.Flatten()
-
-        # 2. Dense Layer (Pre-processing per il quantum layer)
-        # Output dim deve essere 2^n_qubits per l'AmplitudeEmbedding
-        input_dim = n_packets * n_features
         self.dense1 = nn.Linear(input_dim, 2**n_qubits)
         self.sigmoid = nn.Sigmoid()
-
-        # 3. Quantum Layer
-        # Sostituisce qml.qnn.KerasLayer
         self.q_layer = qml.qnn.TorchLayer(self.qnode, weight_shapes)
-
-        # 4. Output Dense Layer
-        # Input dim è 2^n_qubits (output di qml.probs)
-        self.dense2 = nn.Linear(2**n_qubits, num_classes)
-        # self.softmax = nn.Softmax(dim=1)
+        self.dense2 = nn.Linear(q_output_size, num_classes)
 
         # end
 
@@ -92,21 +147,19 @@ class AmpHybridModel(nn.Module):
         x = self.q_layer(x)
 
         return self.dense2(x)
-    
-        # return self.softmax(x)
 
         # end
 
     def quantum_forward(self, x):
         """
-        Metodo per eseguire solo il passaggio attraverso il layer quantistico.
-        Utile per l'estrazione delle caratteristiche quantistiche.
+        Method to execute only the forward pass through the quantum layer.
+        Useful for extracting quantum statevector (simulation).
 
         Args:
-            x (torch.Tensor): Input tensor
+            x (torch.Tensor): Input tensor.
 
         Returns:
-            torch.Tensor: Output del layer quantistico
+            torch.Tensor: Quantum layer output (statevector)
         """
 
         x = self.flatten(x)
@@ -120,7 +173,7 @@ class AmpHybridModel(nn.Module):
 
     def get_model_name(self):
         return compute_model_name(
-            "AmpHybrid",
+            "AmpeDense",
             self.n_qubits, self.n_layers,
             self.n_packets, self.n_features, self.num_classes
         )
@@ -129,7 +182,7 @@ class AmpHybridModel(nn.Module):
 
     def get_model_name_short(self):
         return compute_model_name(
-            "AmpHybrid",
+            "AmpeDense",
             self.n_qubits, self.n_layers
         )
 
@@ -140,33 +193,45 @@ class AmpHybridModel(nn.Module):
 #   ####################################################################    #
 #   Angle embedding quantum model 
 
-class AngleHybridModel(nn.Module):
-    def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
-        """
-        Modello ibrido quantistico-classico con Angle Embedding.
+# Author : Vincenzo Spadari
+class AngeDenseModel(nn.Module):
+    """_summary_
 
-        Args:
-            n_qubits (int): Numero di qubit per il circuito quantistico
-            n_layers (int): Numero di layer per StronglyEntanglingLayers
-            n_packets (int): Numero di pacchetti nell'input
-            n_features (int): Numero di feature per pacchetto
-            num_classes (int): Numero di classi per la classificazione
-            random_seed (int): Seed per il dispositivo quantistico (default: 42)
-        """
-        super(AngleHybridModel, self).__init__()
+    Args:
+        nn (_type_): _description_
+    """
 
-        # Salva i parametri come attributi
+    def __init__(self,
+            n_qubits, n_layers,
+            n_packets, n_features,
+            num_classes, n_shots=None,
+            random_seed=42,
+        ):
+
+        super(AngeDenseModel, self).__init__()
+
         self.n_qubits = n_qubits
         self.n_layers = n_layers
+
         self.n_packets = n_packets
         self.n_features = n_features
         self.num_classes = num_classes
+
         self.random_seed = random_seed
+        self.n_shots = n_shots
 
-        # Definizione del dispositivo quantistico
-        self.dev = qml.device(SIMULATOR, wires=n_qubits, seed=random_seed)
+        self.dev = qml.device(
+            SIMULATOR,
+            wires=n_qubits,
+            shots=n_shots,
+            seed=random_seed
+        )
 
-        # Definizione del QNode
+        q_output_size = meas_qoutputsize_mapping(n_qubits)["probs"]
+        weight_shapes = {"weights": (n_layers, n_qubits, 3)}
+        input_dim = n_packets * n_features
+
+        # @qml.qnode(self.dev, interface="torch", diff_method="finite-diff")
         @qml.qnode(self.dev, interface="torch")
         def qnode(inputs, weights):
             # Feature map
@@ -176,39 +241,48 @@ class AngleHybridModel(nn.Module):
             qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
 
             # Processo di misurazione
+            # return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
             return qml.probs(wires=range(n_qubits))
 
+            # end
+
         self.qnode = qnode
+        # if self.dev_name.startswith("fake"):
+        #     self.qnode = qml.set_shots(self.qnode, self.n_shots)
 
-        # Definizione delle forme dei pesi per il layer quantistico
-        weight_shapes = {"weights": (n_layers, n_qubits, 3)}
-
-        # 1. Flatten
         self.flatten = nn.Flatten()
-
-        # 2. Dense Layer (Pre-processing per il quantum layer)
-        # Output dim deve essere n_qubits per l'AngleEmbedding
-        input_dim = n_packets * n_features
         self.dense1 = nn.Linear(input_dim, n_qubits)
         self.relu = nn.ReLU()
-
-        # 3. Quantum Layer
         self.q_layer = qml.qnn.TorchLayer(self.qnode, weight_shapes)
+        self.dense2 = nn.Linear(q_output_size, num_classes)
 
-        # 4. Output Dense Layer
-        # Input dim è 2^n_qubits (output di qml.probs)
-        self.dense2 = nn.Linear(2**n_qubits, num_classes)
+        # end
 
     def forward(self, x):
+
         x = self.flatten(x)
         x = self.dense1(x)
         x = self.relu(x)
         x = self.q_layer(x)
+
         return self.dense2(x)
+
+        # end
+
+    def quantum_forward(self, x):
+
+        x = self.flatten(x)
+        x = self.dense1(x)
+        x = self.relu(x)
+        x = self.q_layer(x)
+
+        return x
+
+        # end
 
     def get_model_name(self):
         return compute_model_name(
-            "AngleHybrid",
+            "AngeDense",
             self.n_qubits, self.n_layers,
             self.n_packets, self.n_features, self.num_classes
         )
@@ -217,7 +291,7 @@ class AngleHybridModel(nn.Module):
 
     def get_model_name_short(self):
         return compute_model_name(
-            "AngleHybrid",
+            "AngeDense",
             self.n_qubits, self.n_layers
         )
 
@@ -228,19 +302,21 @@ class AngleHybridModel(nn.Module):
 #   ####################################################################    #
 #   Ring quantum model
 
+# Author : MatteoRichardGaudino
 class RingHybridModel(nn.Module):
-    def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
-        """
-        Modello ibrido quantistico-classico con Ring Embedding.
+    """_summary_
 
-        Args:
-            n_qubits (int): Numero di qubit per il circuito quantistico
-            n_layers (int): Numero di layer per StronglyEntanglingLayers
-            n_packets (int): Numero di pacchetti nell'input
-            n_features (int): Numero di feature per pacchetto
-            num_classes (int): Numero di classi per la classificazione
-            random_seed (int): Seed per il dispositivo quantistico (default: 42)
-        """
+    Args:
+        nn (_type_): _description_
+    """
+
+    def __init__(self,
+            n_qubits, n_layers,
+            n_packets, n_features,
+            num_classes, n_shots=None,
+            random_seed=42,
+        ):
+
         super(RingHybridModel, self).__init__()
 
         # Salva i parametri come attributi
@@ -249,10 +325,16 @@ class RingHybridModel(nn.Module):
         self.n_packets = n_packets
         self.n_features = n_features
         self.num_classes = num_classes
+        self.n_shots = n_shots
         self.random_seed = random_seed
 
         # Definizione del dispositivo quantistico
-        self.dev = qml.device(SIMULATOR, wires=n_qubits, seed=random_seed)
+        self.dev = qml.device(
+            SIMULATOR,
+            wires=n_qubits,
+            shots=n_shots,
+            seed=random_seed
+        )
 
         # Definizione del QNode
         @qml.qnode(self.dev, interface="torch")
@@ -329,36 +411,44 @@ class RingHybridModel(nn.Module):
 #   ####################################################################    #
 #   Waterfall quantum model
 
+# Author : MatteoRichardGaudino
 class WaterfallHybridModel(nn.Module):
-    def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
-        """
-        Modello ibrido quantistico-classico con Waterfall Embedding.
+    """_summary_
 
-        Args:
-            n_qubits (int): Numero di qubit per il circuito quantistico
-            n_layers (int): Numero di layer per StronglyEntanglingLayers
-            n_packets (int): Numero di pacchetti nell'input
-            n_features (int): Numero di feature per pacchetto
-            num_classes (int): Numero di classi per la classificazione
-            random_seed (int): Seed per il dispositivo quantistico (default: 42)
-        """
+    Args:
+        nn (_type_): _description_
+    """
+
+    def __init__(self,
+            n_qubits, n_layers,
+            n_packets, n_features,
+            num_classes, n_shots=None,
+            random_seed=42,
+        ):
+
         super(WaterfallHybridModel, self).__init__()
 
-        # Salva i parametri come attributi
         self.n_qubits = n_qubits
         self.n_layers = n_layers
         self.n_packets = n_packets
         self.n_features = n_features
         self.num_classes = num_classes
+        self.n_shots = n_shots
         self.random_seed = random_seed
 
-        # Definizione del dispositivo quantistico
-        self.dev = qml.device(SIMULATOR, wires=n_qubits, seed=random_seed)
+        self.dev = qml.device(
+            SIMULATOR,
+            wires=n_qubits,
+            shots=n_shots,
+            seed=random_seed
+        )
 
-        # Definizione del QNode
+        input_dim = n_packets * n_features
+        weight_shapes = {"weights": (n_layers, n_qubits, 3)}
+
         @qml.qnode(self.dev, interface="torch")
         def qnode(inputs, weights):
-            # Feature map - split inputs in two parts
+            # Feature map - split inputs in two parts.
             inputs1 = inputs[..., :n_qubits]
             inputs2 = inputs[..., n_qubits:]
 
@@ -377,17 +467,15 @@ class WaterfallHybridModel(nn.Module):
             # Processo di misurazione
             return qml.probs(wires=range(n_qubits))
 
-        self.qnode = qnode
+            # end
 
-        # Definizione delle forme dei pesi per il layer quantistico
-        weight_shapes = {"weights": (n_layers, n_qubits, 3)}
+        self.qnode = qnode
 
         # 1. Flatten
         self.flatten = nn.Flatten()
 
         # 2. Dense Layer (Pre-processing per il quantum layer)
-        # Output dim deve essere 2*n_qubits per il Waterfall embedding
-        input_dim = n_packets * n_features
+        # Output dim deve essere 2*n_qubits per il Waterfall embedding.
         self.dense1 = nn.Linear(input_dim, 2 * n_qubits)
         self.relu = nn.ReLU()
 
@@ -398,12 +486,30 @@ class WaterfallHybridModel(nn.Module):
         # Input dim è 2^n_qubits (output di qml.probs)
         self.dense2 = nn.Linear(2**n_qubits, num_classes)
 
+        # end
+
     def forward(self, x):
+
         x = self.flatten(x)
         x = self.dense1(x)
         x = self.relu(x)
         x = self.q_layer(x)
-        return self.dense2(x)
+        x = self.dense2(x)
+
+        return x
+
+        # end
+
+    def quantum_forward(self, x):
+
+        x = self.flatten(x)
+        x = self.dense1(x)
+        x = self.relu(x)
+        x = self.q_layer(x)
+
+        return x
+
+        # end
 
     def get_model_name(self):
         return compute_model_name(
@@ -427,29 +533,45 @@ class WaterfallHybridModel(nn.Module):
 #   ####################################################################    #
 #   AmplitudeEmbedding + CNN1D + Dense
 
+# Author : MatteoRichardGaudino
 class AmpCnn(nn.Module):
-    """_summary_
+    """Variante quantistica implementata come wrapper di _DenseCnn1DBackbone:
+    il blocco intermedio è un quantum layer con AmplitudeEmbedding
+    + StronglyEntanglingLayers.
 
     Args:
-        nn (_type_): _description_
+        nn.Module: Base class for all neural network modules in PyTorch.
     """
 
-    def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
+    def __init__(self,
+            n_qubits, n_layers,
+            n_packets, n_features,
+            num_classes, n_shots=None,
+            random_seed=42,
+        ):
+
+        #   ############################################################    #
+        #   Inizializzazione degli attributi del modello
+
         super(AmpCnn, self).__init__()
 
-        # Parametri
         self.n_qubits = n_qubits
-
-        # Dimensione output quantistico (es. 2^5 = 32)
-        self.q_output_dim = 2**n_qubits
-
         self.n_layers = n_layers
         self.n_packets = n_packets
         self.n_features = n_features
         self.num_classes = num_classes
+        self.n_shots = n_shots
+        self.random_seed = random_seed
 
-        # Configurazione Pennylane
-        self.dev = qml.device(SIMULATOR, wires=n_qubits, seed=random_seed)
+        self.dev = qml.device(
+            SIMULATOR,
+            wires=n_qubits,
+            shots=n_shots,
+            seed=random_seed
+        )
+
+        #   ############################################################    #
+        #   Definizione del circuito quantistico
 
         @qml.qnode(self.dev, interface="torch")
         def qnode(inputs, weights):
@@ -457,58 +579,25 @@ class AmpCnn(nn.Module):
             qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
             return qml.probs(wires=range(n_qubits))
 
-        weight_shapes = {"weights": (n_layers, n_qubits, 3)}
+            # end
+        
+        self.q_layer = qml.qnn.TorchLayer(
+            qnode,
+            {"weights": (n_layers, n_qubits, 3)}
+        )
 
-        # --- ARCHITETTURA ---
+        #   ############################################################    #
+        #   Architettura del modello
 
-        # 1. Pre-processing Classico
-        self.flatten_in = nn.Flatten()
-        self.dense_pre = nn.Linear(n_packets * n_features, self.q_output_dim)
-        self.activation_pre = nn.Sigmoid()
-
-        # 2. Quantum Layer
-        self.q_layer = qml.qnn.TorchLayer(qnode, weight_shapes)
-
-        # 3. Strati Convoluzionali 1D (Aggiunti)
-        # Input shape per Conv1d: (Batch, Channels, Length) -> (Batch, 1, 2^n_qubits)
-        self.conv1 = nn.Conv1d(in_channels=1, out_channels=16, kernel_size=3, padding=1)
-        self.relu1 = nn.ReLU()
-        self.conv2 = nn.Conv1d(in_channels=16, out_channels=32, kernel_size=3, padding=1)
-        self.relu2 = nn.ReLU()
-        self.pool = nn.MaxPool1d(kernel_size=2) # Riduce la lunghezza della sequenza a metà
-
-        # 4. Strati Densi Finali (Aggiunti)
-        # Calcolo della dimensione dopo convoluzioni e pooling:
-        # La lunghezza cala da 2^n_qubits a (2^n_qubits / 2) a causa del MaxPool1d
-        self.flatten_conv = nn.Flatten()
-        flattened_size = 32 * (self.q_output_dim // 2)
-
-        self.fc1 = nn.Linear(flattened_size, 64)
-        self.relu3 = nn.ReLU()
-        self.fc2 = nn.Linear(64, num_classes)
+        self.backbone = _DenseCnn1DBackbone(
+            n_qubits, n_packets, n_features, num_classes,
+            middle_block=self.q_layer
+        )
 
         # end
 
     def forward(self, x):
-        # Input -> Dense -> Quantum
-        x = self.flatten_in(x)
-        x = self.dense_pre(x)
-        x = self.activation_pre(x)
-        x = self.q_layer(x)
-
-        # Reshape per Conv1d: (Batch, 1, 2^n_qubits)
-        x = x.view(-1, 1, self.q_output_dim)
-
-        # Fase Convoluzionale 1D
-        x = self.relu1(self.conv1(x))
-        x = self.pool(self.relu2(self.conv2(x)))
-
-        # Fase Densa
-        x = self.flatten_conv(x)
-        x = self.relu3(self.fc1(x))
-        x = self.fc2(x)
-
-        return x
+        return self.backbone(x)
 
         # end
 
@@ -534,6 +623,7 @@ class AmpCnn(nn.Module):
 #   ####################################################################    #
 #   CNN1D + Quantum + CNN1D + Dense
 
+# Author : MatteoRichardGaudino
 class CnnAmpCnn(nn.Module):
     """_summary_
 
@@ -541,16 +631,25 @@ class CnnAmpCnn(nn.Module):
         nn (_type_): _description_
     """
 
-    def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
+    def __init__(self,
+            n_qubits, n_layers,
+            n_packets, n_features,
+            num_classes, n_shots=None,
+            random_seed=42,
+        ):
+
         super(CnnAmpCnn, self).__init__()
 
         # Parametri
         self.n_qubits = n_qubits
-        self.q_input_dim = 2**n_qubits  # Dimensione necessaria per AmplitudeEmbedding
         self.n_layers = n_layers
         self.n_packets = n_packets
         self.n_features = n_features
         self.num_classes = num_classes
+        self.n_shots = n_shots
+        self.random_seed = random_seed
+
+        self.q_input_dim = 2**n_qubits
 
         # --- 1. PRIMA CNN (Input -> CNN1D) ---
         # Input shape: (Batch, n_features, n_packets)
@@ -570,7 +669,14 @@ class CnnAmpCnn(nn.Module):
         self.pre_quantum_act = nn.Sigmoid()
 
         # --- 2. QUANTUM LAYER ---
-        self.dev = qml.device(SIMULATOR, wires=n_qubits)
+        self.dev = qml.device(
+            SIMULATOR,
+            wires=n_qubits,
+            shots=n_shots,
+            seed=random_seed
+        )
+
+        weight_shapes = {"weights": (n_layers, n_qubits, 3)}
 
         @qml.qnode(self.dev, interface="torch")
         def qnode(inputs, weights):
@@ -579,7 +685,8 @@ class CnnAmpCnn(nn.Module):
             qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
             return qml.probs(wires=range(n_qubits))
 
-        weight_shapes = {"weights": (n_layers, n_qubits, 3)}
+            # end
+
         self.quantum_layer = qml.qnn.TorchLayer(qnode, weight_shapes)
 
         # --- 3. SECONDA CNN (Quantum -> CNN1D) ---
@@ -645,3 +752,191 @@ class CnnAmpCnn(nn.Module):
         # end
     
     # end class
+
+#   ####################################################################    #
+#   AmplitudeEmbedding + CNN1D + LSTM + Dense
+
+# Author : Vincenzo Spadari
+class AmpeCNNLSTMModel(nn.Module):
+    """_summary_
+
+    Args:
+        nn (_type_): _description_
+    """
+    
+    def __init__(self,
+            n_qubits, n_layers,
+            n_packets, n_features,
+            num_classes, n_shots=None,
+            random_seed=42,
+        ):
+
+        super(AmpeCNNLSTMModel, self).__init__()
+
+        self.n_qubits = n_qubits
+        self.n_layers = n_layers
+        self.n_packets = n_packets
+        self.n_features = n_features
+        self.num_classes = num_classes
+        self.random_seed = random_seed
+        self.n_shots = n_shots
+
+        in_channels = 1
+        out_features_size = 2**n_qubits
+        filters = [32, 64]
+        kernel = (4, 2)
+        stride = (1, 1)
+
+        self.dev = qml.device(
+            SIMULATOR,
+            wires=n_qubits,
+            shots=n_shots,
+            seed=random_seed
+        )
+
+        hidden_size = max([100, 50])
+        q_output_size = meas_qoutputsize_mapping(n_qubits)["probs"]
+        weight_shapes = {"weights": (n_layers, n_qubits, 3)}
+
+        @qml.qnode(self.dev, interface="torch")
+        def qnode(inputs, weights):
+            # Feature map
+            qml.AmplitudeEmbedding(inputs, wires=range(n_qubits), normalize=True, pad_with=0.0)
+
+            # Ansatz
+            qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
+
+            # Processo di misurazione
+            return qml.probs(wires=range(n_qubits))
+
+            # end
+
+        self.qnode = qnode
+        # if self.dev_name.startswith("fake"):
+        #     self.qnode = qml.set_shots(self.qnode, self.n_shots)
+
+        self.conv1 = nn.Conv2d(in_channels, filters[0], kernel, stride=stride, padding=0)
+        self.bn1 = nn.BatchNorm2d(filters[0])
+        self.conv2 = nn.Conv2d(filters[0], filters[1], kernel, stride=stride, padding=0)
+        self.bn2 = nn.BatchNorm2d(filters[1])
+
+        # Calcolo dinamico della dimensione di input per l'LSTM.
+        # Si esegue un forward "a vuoto" sui soli layer convoluzionali,
+        # con le dimensioni reali di input, per ricavare la shape effettiva.
+        with torch.no_grad():
+            dummy = torch.zeros(1, in_channels, n_packets, n_features)
+            dummy_out = self.bn2(self.conv2(self.bn1(self.conv1(dummy))))
+            _, c, h, w = dummy_out.shape
+            lstm_input_size = c * h
+
+        self.lstm = nn.LSTM(
+            input_size=lstm_input_size,
+            hidden_size=hidden_size,
+            batch_first=True
+        )
+
+        self.fc1 = nn.Linear(hidden_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, out_features_size)
+
+        self.q_layer = qml.qnn.TorchLayer(self.qnode, weight_shapes)
+        self.fc = nn.Linear(q_output_size, num_classes)
+
+        self.dropout1 = nn.Dropout(0.2)
+        self.dropout2 = nn.Dropout(0.4)
+
+        self.relu = nn.ReLU()
+        self.sigmoid = nn.Sigmoid()
+
+        # end
+
+    def forward(self, x):
+
+        x = x.unsqueeze(1)
+
+        out = F.relu(self.conv1(x))
+        out = self.bn1(out)
+
+        out = F.relu(self.conv2(out))
+        out = self.bn2(out)
+
+        size_interm = out.size()
+        out = out.transpose(1, 2)
+        out = out.reshape(
+            size_interm[0], size_interm[3],
+            size_interm[1] * size_interm[2]
+        )
+
+        out, _ = self.lstm(out)
+        out = out[:, -1, :]
+
+        out = self.dropout1(out)
+        out = self.fc1(out)
+        out = self.relu(out)
+
+        out = self.dropout2(out)
+        out = self.fc2(out)
+        out = self.sigmoid(out)
+
+        out = self.q_layer(out)
+
+        out = self.fc(out)
+
+        return out
+
+        # end
+
+    def quantum_forward(self, x):
+
+        x = x.unsqueeze(1)
+
+        out = F.relu(self.conv1(x))
+        out = self.bn1(out)
+
+        out = F.relu(self.conv2(out))
+        out = self.bn2(out)
+
+        size_interm = out.size()
+        out = out.transpose(1, 2)
+        out = out.reshape(
+            size_interm[0], size_interm[3],
+            size_interm[1] * size_interm[2]
+        )
+
+        out, _ = self.lstm(out)
+        out = out[:, -1, :]
+
+        out = self.dropout1(out)
+        out = self.fc1(out)
+        out = self.relu(out)
+
+        out = self.dropout2(out)
+        out = self.fc2(out)
+        out = self.sigmoid(out)
+
+        return self.q_layer(out)
+
+        # end
+
+    def get_model_name(self):
+        return compute_model_name(
+            "AmpeCNNLSTM",
+            self.n_qubits, self.n_layers,
+            self.n_packets, self.n_features, self.num_classes
+        )
+
+        # end
+
+    def get_model_name_short(self):
+        return compute_model_name(
+            "AmpeCNNLSTM",
+            self.n_qubits, self.n_layers
+        )
+
+        # end
+    
+    # end class
+
+#   ####################################################################    #
+#   REFERENCES
+
+#   https://www.quantum-inspire.com/kbase/number-of-shots

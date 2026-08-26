@@ -9,6 +9,18 @@
     feature spaziali dagli istogrammi, seguiti da strati fully-connected
     per la classificazione.
 
+    Le classi mantengono la stessa interfaccia delle classi dei modelli quantistici,
+    in modo da poter essere utilizzate in modo intercambiabile nel notebook principale.
+
+    Args:
+        n_qubits (int): Numero di qubit per il circuito quantistico (non utilizzato).
+        n_layers (int): Numero di layer per StronglyEntanglingLayers (non utilizzato).
+        n_packets (int): Numero di pacchetti nell'input.
+        n_features (int): Numero di feature per pacchetto.
+        num_classes (int): Numero di classi per la classificazione.
+        n_shots (int, optional): Numero di misurazioni da eseguire (default: None) (non utilizzato).
+        random_seed (int): Seed per il dispositivo quantistico (default: 42) (non utilizzato).
+
 """
 
 #   ####################################################################    #
@@ -23,17 +35,28 @@ from model_selection import compute_model_name
 #   Classic CONV2D
 
 class FlowPicCNN(nn.Module):
-    """ CNN2D per la classificazione di istogrammi FlowPic. """
+    """CNN2D per la classificazione di istogrammi FlowPic.
 
-    def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
+    Args:
+        nn.Module: Base class for all neural network modules in PyTorch.
+    """
+
+    def __init__(self,
+            n_qubits, n_layers,
+            n_packets, n_features,
+            num_classes, n_shots=None,
+            random_seed=42,
+        ):
+
         super(FlowPicCNN, self).__init__()
 
-        # Salva i parametri come attributi
+        # Salva i parametri come attributi.
         self.n_qubits = n_qubits
         self.n_layers = n_layers
         self.n_packets = n_packets
         self.n_features = n_features
         self.num_classes = num_classes
+        self.n_shots = n_shots
         self.random_seed = random_seed
 
         self.features = nn.Sequential(
@@ -50,7 +73,7 @@ class FlowPicCNN(nn.Module):
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1),  # -> (B, 128, 1, 1), indipendente da eventuali variazioni di H,W
+            nn.AdaptiveAvgPool2d(1),
         )
 
         self.classifier = nn.Sequential(
@@ -64,6 +87,7 @@ class FlowPicCNN(nn.Module):
     def forward(self, x):
         x = self.features(x)
         x = self.classifier(x)
+
         return x
 
     def get_model_name(self):
@@ -87,11 +111,14 @@ class FlowPicCNN(nn.Module):
 #   ####################################################################    #
 #   RESNET MODEL
 
-class ResidualBlock(nn.Module):
-    """A class which implements a residual block, a building block used in convolutional neural networks (e.g. ResNet). They allow gradients to flow more easily through the network during training, which helps to mitigate the vanishing gradient problem.
+class _ResidualBlock(nn.Module):
+    """A class which implements a residual block, a building block
+    used in convolutional neural networks (e.g. ResNet).
+    They allow gradients to flow more easily through the network during
+    training, which helps to mitigate the vanishing gradient problem.
 
     Args:
-        nn (nn.Module): Inherits from nn.Module, the base class for all neural network modules in PyTorch.
+        nn.Module: Base class for all neural network modules in PyTorch.
     """	
 
     def __init__(
@@ -111,7 +138,7 @@ class ResidualBlock(nn.Module):
         """	
 
         # Call the constructor of the parent class to ensure proper initialization.
-        super(ResidualBlock, self).__init__()
+        super(_ResidualBlock, self).__init__()
 
         self.conv1 = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size = 3, stride = stride, padding = 1),
@@ -163,11 +190,12 @@ class ResidualBlock(nn.Module):
     
     # end class
 
-class ResNet(nn.Module):
-    """A class which implements a ResNet model, a type of CNN that uses residual connections.
+class _ResNet(nn.Module):
+    """A class which implements a ResNet model,
+    a type of CNN that uses residual connections.
 
     Args:
-        nn (nn.Module): Inherits from nn.Module, the base class for all neural network modules in PyTorch.
+        nn.Module: Base class for all neural network modules in PyTorch.
     """	
 
     def __init__(self, block: nn.Module, layers: list[int], num_classes: int = 10):
@@ -180,7 +208,7 @@ class ResNet(nn.Module):
         """	
         
         # Call the constructor of the parent class to ensure proper initialization.
-        super(ResNet, self).__init__()
+        super(_ResNet, self).__init__()
 
         assert len(layers) == 4, "Layers must be a list of 4 integers."
 
@@ -274,7 +302,7 @@ class ResNet(nn.Module):
 
     # end class
 
-class ResNetModel(ResNet):
+class ResNetModel(_ResNet):
     """Questa classe implementa un wrapper per il modello ResNet, esponendo la stessa firma
     degli altri modelli del progetto. Permette di istanziare varianti standard di ResNet
     (es. ResNet18, ResNet34) tramite una factory comune.
@@ -286,21 +314,17 @@ class ResNetModel(ResNet):
     - ResNet34: [3, 4, 6, 3]
 
     Args:
-        ResNet (_type_): classe base che implementa l'architettura ResNet generica
+        _ResNet: classe base che implementa l'architettura ResNet generica
         con blocchi residui configurabili.
     """
 
-    def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
+    def __init__(self,
+            n_qubits, n_layers,
+            n_packets, n_features,
+            num_classes, n_shots=None,
+            random_seed=42,
+        ):
         """Initialize a new instance of the ResNet.
-
-        Args:
-            n_qubits (_type_): Numero di qubit per il circuito quantistico (non utilizzato).
-            n_layers (_type_): numero di layer per la ResNet da istanziare.
-            Valori supportati: 16, 18, 34.
-            n_packets (_type_): Numero di pacchetti nell'input (non utilizzato).
-            n_features (_type_): Numero di feature per pacchetto (non utilizzato).
-            num_classes (int): Numero di classi per la classificazione.
-            random_seed (int, optional): Seed per il generatore casuale. Default è 42.
 
         Raises:
             NotImplementedError: se n_layers non è 16, 18 o 34.
@@ -309,21 +333,21 @@ class ResNetModel(ResNet):
         # ResNet16-custom
         if n_layers == 16:
             super(ResNetModel, self).__init__(
-                ResidualBlock,
+                _ResidualBlock,
                 [1, 2, 3, 1],
                 num_classes
             )
 
         elif n_layers == 18:
             super(ResNetModel, self).__init__(
-                ResidualBlock,
+                _ResidualBlock,
                 [2, 2, 2, 2],
                 num_classes
             )
 
         elif n_layers == 34:
             super(ResNetModel, self).__init__(
-                ResidualBlock,
+                _ResidualBlock,
                 [3, 4, 6, 3],
                 num_classes
             )
@@ -340,6 +364,8 @@ class ResNetModel(ResNet):
         self.n_layers = n_layers
         self.n_packets = n_packets
         self.n_features = n_features
+        self.num_classes = num_classes
+        self.n_shots = n_shots
         self.random_seed = random_seed
 
         return

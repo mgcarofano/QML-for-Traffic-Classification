@@ -19,7 +19,7 @@ or running validation on an already saved model. \n
 This allows running "Run All" in the notebook and automatically selecting
 the appropriate branch without manually skipping cells. """
 
-USE_FLOWPIC_DATASET = (True, True)
+USE_FLOWPIC_DATASET = (False, False)
 """ A pair of boolean values indicating whether to use the FlowPic dataset
 and whether to use a precomputed version of it. \n
 - (False, _) : Load the dataset from raw data using the .pickle file.
@@ -108,18 +108,19 @@ NEW_DATASET_SIZE = 30000
 
 MODEL_REGISTRY = {
     # classic_models
-    "Dense": ("../models.classic_models", "Dense"),
+    "ClassicalDenseBaseline": ("../models.classic_models", "ClassicalDenseBaseline"),
     "TrafficCNN": ("../models.classic_models", "TrafficCNN"),
     "ClassicalTwin": ("../models.classic_models", "ClassicalTwinModel"),
     "ClassicalLight": ("../models.classic_models", "ClassicalLight"),
 
     # quantum_models
-    "AmplitudeEmbedding": ("../models.quantum_models", "AmpHybridModel"),
-    "AngleEmbedding": ("../models.quantum_models", "AngleHybridModel"),
+    "AmplitudeEmbedding": ("../models.quantum_models", "AmpeDenseModel"),
+    "AngleEmbedding": ("../models.quantum_models", "AngeDenseModel"),
     "RingEmbedding": ("../models.quantum_models", "RingHybridModel"),
     "WaterfallEmbedding": ("../models.quantum_models", "WaterfallHybridModel"),
     "AmpCnn": ("../models.quantum_models", "AmpCnn"),
     "CnnAmpCnn": ("../models.quantum_models", "CnnAmpCnn"),
+    "AmpeCNNLSTMModel": ("../models.quantum_models", "AmpeCNNLSTMModel"),
 
     # flowpic_models
     "FlowPicCNN": ("../models.flowpic_models", "FlowPicCNN"),
@@ -127,10 +128,10 @@ MODEL_REGISTRY = {
 }
 """ A dictionary mapping model names to their corresponding module and class names. """
 
-MODEL_TIMESTAMP_ID = "2026-08-25_20-32"
+MODEL_TIMESTAMP_ID = "2026-07-02_11-56"
 """ Timestamp identifier for the model, used for saving and loading. """
 
-MODEL_NAME = "16E_AdamW_OneCycleSched_WeightedCrossEntropy_ResNet"
+MODEL_NAME = "10E_Focal_MinMax_TrafficCNN"
 """ Name of the model, used for saving and loading. \n
 The name format is *"{epochs}E\_{loss}\_{preprocessing}\_{model}"*. """
 
@@ -198,6 +199,9 @@ N_QUBITS = 5
 N_LAYERS_QUANTUM = 3
 """ Profondità dell'ansatz StronglyEntanglingLayers per i modelli ibridi quantistici. """
 
-N_LAYERS_RESNET = 16
+N_LAYERS_RESNET = 18
 """ Variante di ResNet da istanziare per ResNetModel.
 Valori possibili: 16, 18, 34. """
+
+N_SHOTS = 20
+""" Number of shots for the quantum circuit execution. """

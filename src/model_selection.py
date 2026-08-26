@@ -171,3 +171,37 @@ def weight_init(m: nn.Module) -> None:
 	return
 
 	# end
+
+def get_lstm_layer():
+	"""In precedenza si usava get_output_dim()/get_padding() per calcolare
+	analiticamente le dimensioni H e W dopo le due Conv2d, ma la formula
+	non teneva conto del padding realmente applicato ai layer (padding=0,
+	hardcoded sopra), causando un disallineamento e un valore di
+	input_size hardcoded (256) che si rompeva cambiando n_packets / n_features.
+	"""
+
+	#   ####################################################################    #
+	#   OLD CODE
+
+	# lstm_input_size = features_size1 * filters[1] # 256 (?)
+
+	# # for padding in ['valid', 'same']:
+	# features_size0, self.paddings0 = get_output_dim(
+	# 	n_packets,
+	# 	kernels=[kernel[0], kernel[0]],
+	# 	strides=[stride[0], stride[0]],
+	# 	padding='valid',
+	# 	return_paddings=True
+	# )
+
+	# features_size1, self.paddings1 = get_output_dim(
+	# 	n_features,
+	# 	kernels=[kernel[1], kernel[1]],
+	# 	strides=[stride[1], stride[1]],
+	# 	padding='valid',
+	# 	return_paddings=True
+	# )
+
+	pass
+
+	# end
