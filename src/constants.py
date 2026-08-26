@@ -107,19 +107,19 @@ NEW_DATASET_SIZE = 30000
 #	Model selection
 
 MODEL_REGISTRY = {
-    # nn_models
-    "AmplitudeEmbedding": ("../models.nn_models", "AmpHybridModel"),
-    "AngleEmbedding": ("../models.nn_models", "AngleHybridModel"),
-    "RingEmbedding": ("../models.nn_models", "RingHybridModel"),
-    "WaterfallEmbedding": ("../models.nn_models", "WaterfallHybridModel"),
-    "TrafficCNN": ("../models.nn_models", "TrafficCNN"),
+    # classic_models
+    "Dense": ("../models.classic_models", "Dense"),
+    "TrafficCNN": ("../models.classic_models", "TrafficCNN"),
+    "ClassicalTwin": ("../models.classic_models", "ClassicalTwinModel"),
+    "ClassicalLight": ("../models.classic_models", "ClassicalLight"),
 
-    # complex_hybrid_models
-    "AmpCnn": ("../models.complex_hybrid_models", "AmpCnn"),
-    "ClassicalTwin": ("../models.complex_hybrid_models", "ClassicalTwinModel"),
-    "ClassicalLight": ("../models.complex_hybrid_models", "ClassicalLight"),
-    "CnnAmpCnn": ("../models.complex_hybrid_models", "CnnAmpCnn"),
-    "Dense": ("../models.complex_hybrid_models", "Dense"),
+    # quantum_models
+    "AmplitudeEmbedding": ("../models.quantum_models", "AmpHybridModel"),
+    "AngleEmbedding": ("../models.quantum_models", "AngleHybridModel"),
+    "RingEmbedding": ("../models.quantum_models", "RingHybridModel"),
+    "WaterfallEmbedding": ("../models.quantum_models", "WaterfallHybridModel"),
+    "AmpCnn": ("../models.quantum_models", "AmpCnn"),
+    "CnnAmpCnn": ("../models.quantum_models", "CnnAmpCnn"),
 
     # flowpic_models
     "FlowPicCNN": ("../models.flowpic_models", "FlowPicCNN"),
