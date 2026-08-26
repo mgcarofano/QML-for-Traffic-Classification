@@ -1,10 +1,22 @@
-﻿import pennylane as qml
+﻿"""
+
+    nn_models.py
+    di MatteoRichardGaudino
+
+    ...
+
+"""
+
+#   ####################################################################    #
+#   LIBRERIE e IMPORT
+
+import pennylane as qml
 import torch.nn as nn
+from constants import SIMULATOR
+from model_selection import compute_model_name
 
-
-SIMULATOR = "default.qubit"
-
-# -------------------- Amplitude embedding quantum model --------------------
+#   ####################################################################    #
+#   Amplitude embedding quantum model
 
 class AmpHybridModel(nn.Module):
     def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
@@ -12,13 +24,14 @@ class AmpHybridModel(nn.Module):
         Modello ibrido quantistico-classico con Amplitude Embedding.
 
         Args:
-            n_qubits (int): Numero di qubit per il circuito quantistico
-            n_layers (int): Numero di layer per StronglyEntanglingLayers
-            n_packets (int): Numero di pacchetti nell'input
-            n_features (int): Numero di feature per pacchetto
-            num_classes (int): Numero di classi per la classificazione
-            random_seed (int): Seed per il dispositivo quantistico (default: 42)
+            n_qubits (int): Numero di qubit per il circuito quantistico.
+            n_layers (int): Numero di layer per StronglyEntanglingLayers.
+            n_packets (int): Numero di pacchetti nell'input.
+            n_features (int): Numero di feature per pacchetto.
+            num_classes (int): Numero di classi per la classificazione.
+            random_seed (int): Seed per il dispositivo quantistico. Default è 42.
         """
+
         super(AmpHybridModel, self).__init__()
 
         # Salva i parametri come attributi
@@ -69,13 +82,20 @@ class AmpHybridModel(nn.Module):
         self.dense2 = nn.Linear(2**n_qubits, num_classes)
         # self.softmax = nn.Softmax(dim=1)
 
+        # end
+
     def forward(self, x):
+
         x = self.flatten(x)
         x = self.dense1(x)
         x = self.sigmoid(x)
         x = self.q_layer(x)
+
         return self.dense2(x)
+    
         # return self.softmax(x)
+
+        # end
 
     def quantum_forward(self, x):
         """
@@ -88,34 +108,37 @@ class AmpHybridModel(nn.Module):
         Returns:
             torch.Tensor: Output del layer quantistico
         """
+
         x = self.flatten(x)
         x = self.dense1(x)
         x = self.sigmoid(x)
         x = self.q_layer(x)
+
         return x
 
-    def get_model_name(self):
-        """
-        Restituisce una stringa con il nome del modello che riassume i parametri principali.
+        # end
 
-        Returns:
-            str: Nome del modello nel formato "AmpHybrid_Qn_Ln_PxF_Cc"
-                 dove n=n_qubits, n=n_layers, P=n_packets, F=n_features, C=num_classes
-        """
-        return f"AmpHybrid_Q{self.n_qubits}_L{self.n_layers}_{self.n_packets}x{self.n_features}_C{self.num_classes}"
+    def get_model_name(self):
+        return compute_model_name(
+            "AmpHybrid",
+            self.n_qubits, self.n_layers,
+            self.n_packets, self.n_features, self.num_classes
+        )
+
+        # end
 
     def get_model_name_short(self):
-        """
-        Restituisce una stringa con il nome breve del modello.
+        return compute_model_name(
+            "AmpHybrid",
+            self.n_qubits, self.n_layers
+        )
 
-        Returns:
-            str: Nome breve del modello nel formato "AmpHybrid_Qn_Ln"
-                 dove n=n_qubits, n=n_layers
-        """
-        return f"AmpHybrid_Q{self.n_qubits}_L{self.n_layers}"
+        # end
+    
+    # end class
 
-
-# -------------------- Angle embedding quantum model --------------------
+#   ####################################################################    #
+#   Angle embedding quantum model 
 
 class AngleHybridModel(nn.Module):
     def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
@@ -184,27 +207,26 @@ class AngleHybridModel(nn.Module):
         return self.dense2(x)
 
     def get_model_name(self):
-        """
-        Restituisce una stringa con il nome del modello che riassume i parametri principali.
+        return compute_model_name(
+            "AngleHybrid",
+            self.n_qubits, self.n_layers,
+            self.n_packets, self.n_features, self.num_classes
+        )
 
-        Returns:
-            str: Nome del modello nel formato "AngleHybrid_Qn_Ln_PxF_Cc"
-                 dove n=n_qubits, n=n_layers, P=n_packets, F=n_features, C=num_classes
-        """
-        return f"AngleHybrid_Q{self.n_qubits}_L{self.n_layers}_{self.n_packets}x{self.n_features}_C{self.num_classes}"
+        # end
 
     def get_model_name_short(self):
-        """
-        Restituisce una stringa con il nome breve del modello.
+        return compute_model_name(
+            "AngleHybrid",
+            self.n_qubits, self.n_layers
+        )
 
-        Returns:
-            str: Nome breve del modello nel formato "AngleHybrid_Qn_Ln"
-                 dove n=n_qubits, n=n_layers
-        """
-        return f"AngleHybrid_Q{self.n_qubits}_L{self.n_layers}"
+        # end
+    
+    # end class
 
-
-# -------------------- Ring quantum model --------------------
+#   ####################################################################    #
+#   Ring quantum model
 
 class RingHybridModel(nn.Module):
     def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
@@ -286,27 +308,26 @@ class RingHybridModel(nn.Module):
         return self.dense2(x)
 
     def get_model_name(self):
-        """
-        Restituisce una stringa con il nome del modello che riassume i parametri principali.
+        return compute_model_name(
+            "RingHybrid",
+            self.n_qubits, self.n_layers,
+            self.n_packets, self.n_features, self.num_classes
+        )
 
-        Returns:
-            str: Nome del modello nel formato "RingHybrid_Qn_Ln_PxF_Cc"
-                 dove n=n_qubits, n=n_layers, P=n_packets, F=n_features, C=num_classes
-        """
-        return f"RingHybrid_Q{self.n_qubits}_L{self.n_layers}_{self.n_packets}x{self.n_features}_C{self.num_classes}"
+        # end
 
     def get_model_name_short(self):
-        """
-        Restituisce una stringa con il nome breve del modello.
+        return compute_model_name(
+            "RingHybrid",
+            self.n_qubits, self.n_layers
+        )
 
-        Returns:
-            str: Nome breve del modello nel formato "RingHybrid_Qn_Ln"
-                 dove n=n_qubits, n=n_layers
-        """
-        return f"RingHybrid_Q{self.n_qubits}_L{self.n_layers}"
+        # end
+    
+    # end class
 
-
-# -------------------- Waterfall quantum model --------------------
+#   ####################################################################    #
+#   Waterfall quantum model
 
 class WaterfallHybridModel(nn.Module):
     def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
@@ -385,27 +406,27 @@ class WaterfallHybridModel(nn.Module):
         return self.dense2(x)
 
     def get_model_name(self):
-        """
-        Restituisce una stringa con il nome del modello che riassume i parametri principali.
+        return compute_model_name(
+            "WaterfallHybrid",
+            self.n_qubits, self.n_layers,
+            self.n_packets, self.n_features, self.num_classes
+        )
 
-        Returns:
-            str: Nome del modello nel formato "WaterfallHybrid_Qn_Ln_PxF_Cc"
-                 dove n=n_qubits, n=n_layers, P=n_packets, F=n_features, C=num_classes
-        """
-        return f"WaterfallHybrid_Q{self.n_qubits}_L{self.n_layers}_{self.n_packets}x{self.n_features}_C{self.num_classes}"
+        # end
 
     def get_model_name_short(self):
-        """
-        Restituisce una stringa con il nome breve del modello.
+        return compute_model_name(
+            "WaterfallHybrid",
+            self.n_qubits, self.n_layers
+        )
 
-        Returns:
-            str: Nome breve del modello nel formato "WaterfallHybrid_Qn_Ln"
-                 dove n=n_qubits, n=n_layers
-        """
-        return f"WaterfallHybrid_Q{self.n_qubits}_L{self.n_layers}"
+        # end
+    
+    # end class
 
+#   ####################################################################    #
+#   Classic CONV1D
 
-# -------------------- Classic conv1d --------------------
 class TrafficCNN(nn.Module):
     def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
         super(TrafficCNN, self).__init__()
@@ -444,7 +465,13 @@ class TrafficCNN(nn.Module):
         return x
 
     def get_model_name(self):
-        return f"TrafficCNN_C{self.num_classes}"
+        return compute_model_name("TrafficCNN", num_classes=self.num_classes)
+
+        # end
 
     def get_model_name_short(self):
-        return f"TrafficCNN_C{self.num_classes}"
+        return compute_model_name("TrafficCNN", num_classes=self.num_classes)
+
+        # end
+    
+    # end class

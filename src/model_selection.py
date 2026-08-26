@@ -21,6 +21,51 @@ from constants import MODEL_REGISTRY
 
 #   ########################################################################    #
 
+def compute_model_name(
+		model_class : str,
+		n_qubits : int = None,
+		n_layers : int = None,
+		n_packets : int = None,
+		n_features : int = None,
+		num_classes : int = None
+	) -> str:
+	"""
+	Restituisce una stringa con il nome del modello che riassume i parametri principali,
+	se disponibili, nel formato "class_Qn_Ln_PxF_Cc"
+
+	Args:
+		model_class (str): Nome della classe del modello.
+		n_qubits (int, optional): Numero di qubit nel circuito quantistico. Default è None.
+		n_layers (int, optional): Numero di layer nel circuito quantistico. Default è None.
+		n_packets (int, optional): Numero di pacchetti nell'input. Default è None.
+		n_features (int, optional): Numero di feature per pacchetto. Default è None.
+		num_classes (int, optional): Numero di classi per la classificazione. Default è None.
+
+	Returns:
+		str: Nome del modello.
+	"""
+
+	ret = f"{model_class}"
+
+	if n_qubits is not None:
+		ret += f"_Q{n_qubits}"
+
+	if n_layers is not None:
+		ret += f"_L{n_layers}"
+
+	if n_packets is not None:
+		ret += f"_P{n_packets}"
+
+	if n_features is not None:
+		ret += f"_F{n_features}"
+
+	if num_classes is not None:
+		ret += f"_C{num_classes}"
+
+	return ret
+
+	# end
+
 def get_model_class(model_name):
 	"""Restituisce la classe del modello corrispondente al nome specificato.
 

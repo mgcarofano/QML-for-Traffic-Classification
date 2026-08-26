@@ -11,7 +11,7 @@
 RANDOM_SEED = 2025
 """ Random seed for reproducibility. """
 
-EXEC_MODE_TRAIN = True
+EXEC_MODE_TRAIN = False
 """ Set this flag to choose between training a new model
 or running validation on an already saved model. \n
 - True  : Execute the training loop.
@@ -29,7 +29,7 @@ and whether to use a precomputed version of it. \n
 OUTPUT_DIR = "../results"
 """ Directory where the model and training history will be saved. """
 
-SAVE_OUTPUT = True
+SAVE_OUTPUT = False
 """ Whether to save the output of the notebook. """
 
 #   ####################################################################    #
@@ -93,10 +93,10 @@ VAL_SIZE = 0.14
 TEST_SIZE = 0.15
 """ Proportion of the dataset to be used for testing. """
 
-BATCH_SIZE = 64
+BATCH_SIZE = 2048
 """ Size of the mini-batches used during training. """
 
-USE_NEW_SIZE = True
+USE_NEW_SIZE = False
 """ Whether to limit the number of training samples to a new size. """
 
 NEW_DATASET_SIZE = 30000
@@ -123,14 +123,14 @@ MODEL_REGISTRY = {
 
     # flowpic_models
     "FlowPicCNN": ("../models.flowpic_models", "FlowPicCNN"),
-    "ResNet": ("../models.flowpic_models", "ResNet"),
+    "ResNetModel": ("../models.flowpic_models", "ResNetModel"),
 }
 """ A dictionary mapping model names to their corresponding module and class names. """
 
-MODEL_TIMESTAMP_ID = "2026-08-24_18-05"
+MODEL_TIMESTAMP_ID = "2026-08-25_20-32"
 """ Timestamp identifier for the model, used for saving and loading. """
 
-MODEL_NAME = "15E_AdamW_OneCycleSched_WeightedCrossEntropy_ResNet"
+MODEL_NAME = "16E_AdamW_OneCycleSched_WeightedCrossEntropy_ResNet"
 """ Name of the model, used for saving and loading. \n
 The name format is *"{epochs}E\_{loss}\_{preprocessing}\_{model}"*. """
 
@@ -140,7 +140,7 @@ The name format is *"{epochs}E\_{loss}\_{preprocessing}\_{model}"*. """
 EPOCHS = 30
 """ Number of training epochs. """
 
-LEARNING_RATE = 1e-2
+LEARNING_RATE = 1e-3
 """ Learning rate for the optimizer. """
 
 EARLY_STOPPING = True
@@ -189,8 +189,15 @@ FOCAL_LOSS_GAMMA = 2.0
 #   ####################################################################    #
 #   Network configuration
 
+SIMULATOR = "default.qubit"
+""" Name of the quantum simulator to use with PennyLane. """
+
 N_QUBITS = 5
 """ Number of qubits in the quantum circuit. """
 
-N_LAYERS = 3
-""" Number of layers in the quantum circuit. """
+N_LAYERS_QUANTUM = 3
+""" Profondità dell'ansatz StronglyEntanglingLayers per i modelli ibridi quantistici. """
+
+N_LAYERS_RESNET = 16
+""" Variante di ResNet da istanziare per ResNetModel.
+Valori possibili: 16, 18, 34. """

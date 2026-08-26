@@ -12,14 +12,15 @@
 """
 
 #   ####################################################################    #
-#   LIBRERIE
+#   LIBRERIE e IMPORT
 
+# import pennylane as qml
 import torch
 import torch.nn as nn
-import pennylane as qml
+from model_selection import compute_model_name
 
 #   ####################################################################    #
-#   CLASSICAL CONV2D MODEL
+#   Classic CONV2D
 
 class FlowPicCNN(nn.Module):
     """ CNN2D per la classificazione di istogrammi FlowPic. """
@@ -27,7 +28,13 @@ class FlowPicCNN(nn.Module):
     def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
         super(FlowPicCNN, self).__init__()
 
+        # Salva i parametri come attributi
+        self.n_qubits = n_qubits
+        self.n_layers = n_layers
+        self.n_packets = n_packets
+        self.n_features = n_features
         self.num_classes = num_classes
+        self.random_seed = random_seed
 
         self.features = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=3, padding=1),
@@ -60,24 +67,18 @@ class FlowPicCNN(nn.Module):
         return x
 
     def get_model_name(self):
-        """Restituisce una stringa con il nome del modello che riassume i parametri principali.
-
-        Returns:
-            str: nome del modello.
-        """
-
-        return f"FlowPicCNN_C{self.num_classes}"
+        return compute_model_name(
+            "FlowPicCNN",
+            num_classes=self.num_classes
+        )
 
         # end
 
     def get_model_name_short(self):
-        """Restituisce una stringa con il nome breve del modello.
-
-        Returns:
-            str: nome breve del modello.
-        """
-
-        return self.get_model_name()
+        return compute_model_name(
+            "FlowPicCNN",
+            num_classes=self.num_classes
+        )
 
         # end
 
@@ -181,6 +182,8 @@ class ResNet(nn.Module):
         # Call the constructor of the parent class to ensure proper initialization.
         super(ResNet, self).__init__()
 
+        assert len(layers) == 4, "Layers must be a list of 4 integers."
+
         self.in_channels = 64
         self.num_classes = num_classes
         
@@ -269,29 +272,104 @@ class ResNet(nn.Module):
     
         # end
 
-    def get_model_name(self):
-        """Restituisce una stringa con il nome del modello che riassume i parametri principali.
+    # end class
 
-        Returns:
-            str: nome del modello.
+class ResNetModel(ResNet):
+    """Questa classe implementa un wrapper per il modello ResNet, esponendo la stessa firma
+    degli altri modelli del progetto. Permette di istanziare varianti standard di ResNet
+    (es. ResNet18, ResNet34) tramite una factory comune.
+
+    I parametri n_qubits, n_packets e n_features non sono utilizzati dall'architettura,
+    ma vengono mantenuti solo per compatibilità. Il numero di layer (n_layers) seleziona
+    la configurazione dei ResidualBlock secondo lo schema standard:
+    - ResNet18: [2, 2, 2, 2]
+    - ResNet34: [3, 4, 6, 3]
+
+    Args:
+        ResNet (_type_): classe base che implementa l'architettura ResNet generica
+        con blocchi residui configurabili.
+    """
+
+    def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
+        """Initialize a new instance of the ResNet.
+
+        Args:
+            n_qubits (_type_): Numero di qubit per il circuito quantistico (non utilizzato).
+            n_layers (_type_): numero di layer per la ResNet da istanziare.
+            Valori supportati: 16, 18, 34.
+            n_packets (_type_): Numero di pacchetti nell'input (non utilizzato).
+            n_features (_type_): Numero di feature per pacchetto (non utilizzato).
+            num_classes (int): Numero di classi per la classificazione.
+            random_seed (int, optional): Seed per il generatore casuale. Default è 42.
+
+        Raises:
+            NotImplementedError: se n_layers non è 16, 18 o 34.
         """
 
-        return f"ResNet_C{self.num_classes}"
+        # ResNet16-custom
+        if n_layers == 16:
+            super(ResNetModel, self).__init__(
+                ResidualBlock,
+                [1, 2, 3, 1],
+                num_classes
+            )
+
+        elif n_layers == 18:
+            super(ResNetModel, self).__init__(
+                ResidualBlock,
+                [2, 2, 2, 2],
+                num_classes
+            )
+
+        elif n_layers == 34:
+            super(ResNetModel, self).__init__(
+                ResidualBlock,
+                [3, 4, 6, 3],
+                num_classes
+            )
+
+        else:
+            raise NotImplementedError(
+                f"Unsupported number of layers: {n_layers}. "
+                "Supported values are [16, 18, 34]."
+            )
+
+            # end if n_layers
+
+        self.n_qubits = n_qubits
+        self.n_layers = n_layers
+        self.n_packets = n_packets
+        self.n_features = n_features
+        self.random_seed = random_seed
+
+        return
+
+        # end
+    
+    def get_model_name(self):
+        return compute_model_name(
+            "ResNetModel",
+            n_layers=self.n_layers,
+            num_classes=self.num_classes
+        )
 
         # end
 
     def get_model_name_short(self):
-        """Restituisce una stringa con il nome breve del modello.
-
-        Returns:
-            str: nome breve del modello.
-        """
-
-        return self.get_model_name()
+        return compute_model_name(
+            "ResNetModel",
+            n_layers=self.n_layers,
+            num_classes=self.num_classes
+        )
 
         # end
-
+    
     # end class
+
+#   ####################################################################    #
+#   LeNet5 MODEL
+
+# TODO: aggiungere LeNet5 dal paper originale.
 
 #   ####################################################################    #
 #   QUANTUM HYBRID MODEL

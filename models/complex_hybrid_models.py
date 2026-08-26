@@ -1,13 +1,38 @@
-﻿import pennylane as qml
+﻿"""
+
+    complex_hybrid_models.py
+    di MatteoRichardGaudino
+
+    ...
+
+"""
+
+#   ####################################################################    #
+#   LIBRERIE e IMPORT
+
+import pennylane as qml
 import torch.nn as nn
+from model_selection import compute_model_name
+
+#   ####################################################################    #
+#   AmplitudeEmbedding + CNN1D + Dense
 
 class AmpCnn(nn.Module):
+    """_summary_
+
+    Args:
+        nn (_type_): _description_
+    """
+
     def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
         super(AmpCnn, self).__init__()
 
         # Parametri
         self.n_qubits = n_qubits
-        self.q_output_dim = 2**n_qubits  # Dimensione output quantistico (es. 2^5 = 32)
+
+        # Dimensione output quantistico (es. 2^5 = 32)
+        self.q_output_dim = 2**n_qubits
+
         self.n_layers = n_layers
         self.n_packets = n_packets
         self.n_features = n_features
@@ -52,6 +77,8 @@ class AmpCnn(nn.Module):
         self.relu3 = nn.ReLU()
         self.fc2 = nn.Linear(64, num_classes)
 
+        # end
+
     def forward(self, x):
         # Input -> Dense -> Quantum
         x = self.flatten_in(x)
@@ -73,31 +100,37 @@ class AmpCnn(nn.Module):
 
         return x
 
-    def get_model_name(self):
-        """
-        Restituisce una stringa con il nome del modello che riassume i parametri principali.
+        # end
 
-        Returns:
-            str: Nome del modello nel formato "AmpHybrid_Qn_Ln_PxF_Cc"
-                 dove n=n_qubits, n=n_layers, P=n_packets, F=n_features, C=num_classes
-        """
-        return f"AmpHybrid_CUSTOM_Q{self.n_qubits}_L{self.n_layers}_{self.n_packets}x{self.n_features}_C{self.num_classes}"
+    def get_model_name(self):
+        return compute_model_name(
+            "AmpHybrid_CUSTOM",
+            self.n_qubits, self.n_layers,
+            self.n_packets, self.n_features, self.num_classes
+        )
+
+        # end
 
     def get_model_name_short(self):
-        """
-        Restituisce una stringa con il nome breve del modello.
+        return compute_model_name(
+            "AmpHybrid_CUSTOM",
+            self.n_qubits, self.n_layers
+        )
 
-        Returns:
-            str: Nome breve del modello nel formato "AmpHybrid_Qn_Ln"
-                 dove n=n_qubits, n=n_layers
-        """
-        return f"AmpHybrid_CUSTOM_Q{self.n_qubits}_L{self.n_layers}"
+        # end
+    
+    # end class
 
-
-
-# -----------------------------------------------------
+#   ####################################################################    #
+#   Classical Twin Model
 
 class ClassicalTwinModel(nn.Module):
+    """_summary_
+
+    Args:
+        nn (_type_): _description_
+    """
+
     def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
         super(ClassicalTwinModel, self).__init__()
 
@@ -136,6 +169,8 @@ class ClassicalTwinModel(nn.Module):
         self.relu3 = nn.ReLU()
         self.fc2 = nn.Linear(64, num_classes)
 
+        # end
+
     def forward(self, x):
         # Input -> Dense -> Sostituto Classico
         x = self.flatten_in(x)
@@ -160,23 +195,46 @@ class ClassicalTwinModel(nn.Module):
 
         return x
 
+        # end
+
     def get_model_name(self):
-        return f"AmpHybrid_CUSTOMTWIN_Q{self.n_qubits}_L{self.n_layers}_{self.n_packets}x{self.n_features}_C{self.num_classes}"
+        return compute_model_name(
+            "AmpHybrid_CUSTOM_TWIN",
+            self.n_qubits, self.n_layers,
+            self.n_packets, self.n_features, self.num_classes
+        )
+
+        # end
 
     def get_model_name_short(self):
-        return f"AmpHybrid_CUSTOMTWIN_Q{self.n_qubits}_L{self.n_layers}"
+        return compute_model_name(
+            "AmpHybrid_CUSTOM_TWIN",
+            self.n_qubits, self.n_layers
+        )
 
+        # end
+    
+    # end class
 
-# -----------------------------------------------------
-
+#   ####################################################################    #
+#   Classical Light Model
 
 class ClassicalLight(nn.Module):
+    """_summary_
+
+    Args:
+        nn (_type_): _description_
+    """
+
     def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
         super(ClassicalLight, self).__init__()
 
         # Parametri
         self.n_qubits = n_qubits
-        self.q_output_dim = 2**n_qubits  # Dimensione output quantistico (es. 2^5 = 32)
+
+        # Dimensione output quantistico (es. 2^5 = 32)
+        self.q_output_dim = 2**n_qubits
+
         self.n_layers = n_layers
         self.n_packets = n_packets
         self.n_features = n_features
@@ -208,6 +266,8 @@ class ClassicalLight(nn.Module):
         self.relu3 = nn.ReLU()
         self.fc2 = nn.Linear(64, num_classes)
 
+        # end
+
     def forward(self, x):
         # Input -> Dense (sostituisce il blocco Quantum)
         x = self.flatten_in(x)
@@ -229,16 +289,37 @@ class ClassicalLight(nn.Module):
 
         return x
 
+        # end
+
     def get_model_name(self):
-        return f"AmpHybrid_CUSTOMLIGHT_Q{self.n_qubits}_L{self.n_layers}_{self.n_packets}x{self.n_features}_C{self.num_classes}"
+        return compute_model_name(
+            "AmpHybrid_CUSTOM_LIGHT",
+            self.n_qubits, self.n_layers,
+            self.n_packets, self.n_features, self.num_classes
+        )
+
+        # end
 
     def get_model_name_short(self):
-        return f"AmpHybrid_CUSTOMLIGHT_Q{self.n_qubits}_L{self.n_layers}"
+        return compute_model_name(
+            "AmpHybrid_CUSTOM_LIGHT",
+            self.n_qubits, self.n_layers
+        )
 
-# -----------------------------------------------------
+        # end
+    
+    # end class
 
+#   ####################################################################    #
+#   CNN1D + Quantum + CNN1D + Dense
 
 class CnnAmpCnn(nn.Module):
+    """_summary_
+
+    Args:
+        nn (_type_): _description_
+    """
+
     def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
         super(CnnAmpCnn, self).__init__()
 
@@ -297,6 +378,8 @@ class CnnAmpCnn(nn.Module):
         self.relu_fc = nn.ReLU()
         self.fc2 = nn.Linear(64, num_classes)
 
+        # end
+
     def forward(self, x):
         # 1. CNN1D iniziale
         # x shape: (Batch, n_packets, n_features) -> serve (Batch, n_features, n_packets)
@@ -321,17 +404,37 @@ class CnnAmpCnn(nn.Module):
 
         return x
 
+        # end
+
     def get_model_name(self):
-        return f"CnnAmpCnn_Q{self.n_qubits}_L{self.n_layers}_{self.n_packets}x{self.n_features}_C{self.num_classes}"
+        return compute_model_name(
+            "CnnAmpCnn",
+            self.n_qubits, self.n_layers,
+            self.n_packets, self.n_features, self.num_classes
+        )
+
+        # end
 
     def get_model_name_short(self):
-        return f"CnnAmpCnn_Q{self.n_qubits}_L{self.n_layers}"
+        return compute_model_name(
+            "CnnAmpCnn",
+            self.n_qubits, self.n_layers
+        )
 
+        # end
+    
+    # end class
 
-# -----------------------------------------------------
-
+#   ####################################################################    #
+#   Dense Model
 
 class Dense(nn.Module):
+    """_summary_
+
+    Args:
+        nn (_type_): _description_
+    """
+
     def __init__(self, n_qubits, n_layers, n_packets, n_features, num_classes, random_seed=42):
         super(Dense, self).__init__()
 
@@ -364,16 +467,28 @@ class Dense(nn.Module):
         self.dense2 = nn.Linear(2**n_qubits, num_classes)
         # self.softmax = nn.Softmax(dim=1)
 
+        # end
+
     def forward(self, x):
+
         x = self.flatten(x)
         x = self.dense1(x)
         x = self.relu(x)
         # x = self.q_layer(x)
+
         return self.dense2(x)
         # return self.softmax(x)
 
+        # end
+
     def get_model_name(self):
-        return f"Dense"
+        return compute_model_name("Dense", num_classes=self.num_classes)
+
+        # end
 
     def get_model_name_short(self):
-        return f"Dense"
+        return compute_model_name("Dense", num_classes=self.num_classes)
+
+        # end
+    
+    # end class
