@@ -102,7 +102,6 @@ def mirage_pickle_converter(
 
     dataset = []
 
-    counter = 0
     flow_ids = []
     dataset_ids = []
     labels = []
@@ -110,6 +109,31 @@ def mirage_pickle_converter(
     min_packets = None
     min_dim = None
     min_tps = None
+
+    counter = {
+        # Contatore delle finestre temporali valide.
+        "valid": 0,
+
+        # Contatore delle finestre temporali scartate
+        # perché non contengono pacchetti reali (solo padding).
+        "no_real_packets": 0,
+
+        # Contatore delle finestre temporali scartate
+        # per durata non valida.
+        "invalid_duration": 0,
+
+        # Contatore delle finestre temporali scartate
+        # per numero di pacchetti insufficiente.
+        "insufficient_packets": 0,
+
+        # Contatore delle finestre temporali scartate
+        # per dimensione insufficiente.
+        "insufficient_dim": 0,
+
+        # Contatore delle finestre temporali scartate
+        # per durata insufficiente.
+        "insufficient_tps": 0
+    }
     
     if filters:
         # Numero minimo di pacchetti che una finestra deve contenere per essere considerata valida.
@@ -202,6 +226,7 @@ def mirage_pickle_converter(
 
             # Si salta il flusso se non contiene pacchetti reali.
             if len(real_rows) == 0:
+                counter["no_real_packets"] += 1
                 if debug_cycle:
                     print(f"[DEBUG] Flusso n.{i} scartato: nessun pacchetto reale trovato.")
                 continue
@@ -226,6 +251,7 @@ def mirage_pickle_converter(
             #   Applicazione di filtri di qualità
 
             if ts.max() - ts.min() <= 0:
+                counter["invalid_duration"] += 1
                 if debug_cycle:
                     print(f"[DEBUG] Flusso n.{i} scartato per durata non valida.")
                 continue
@@ -233,6 +259,7 @@ def mirage_pickle_converter(
             if min_packets:
                 filter_1 = sizes.shape[0]
                 if not(filter_1 > min_packets):
+                    counter["insufficient_packets"] += 1
                     if debug_cycle:
                         print(f"[DEBUG] Flusso n.{i} scartato per numero pacchetti insufficiente ({filter_1}).")
                     continue
@@ -240,6 +267,7 @@ def mirage_pickle_converter(
             if min_dim:
                 filter_2 = np.sum(sizes)
                 if not(filter_2 > min_dim):
+                    counter["insufficient_dim"] += 1
                     if debug_cycle:
                         print(f"[DEBUG] Flusso n.{i} scartato per dimensione insufficiente ({filter_2} byte).")
                     continue
@@ -247,6 +275,7 @@ def mirage_pickle_converter(
             if min_tps:
                 filter_3 = ts[-1] - ts[0]
                 if not(filter_3 > min_tps):
+                    counter["insufficient_tps"] += 1
                     if debug_cycle:
                         print(f"[DEBUG] Flusso n.{i} scartato per durata insufficiente ({filter_3:.2f} secondi).")
                     continue
@@ -279,17 +308,23 @@ def mirage_pickle_converter(
             #   Aggiunta dell'istogramma al dataset.
 
             flow_ids.append(i)
-            dataset_ids.append(counter)
+            dataset_ids.append(counter["valid"])
             labels.append(label)
 
             dataset.append([hist])
-            counter += 1
+            counter["valid"] += 1
 
             # end for (i, (flow, label))
         # end open
     
     #   ####################################################################    #
     #   RITORNO DEL DATASET e dei METADATI
+
+    debug_counter = pd.DataFrame(counter, index=["[DEBUG] Conteggio dei pacchetti"]).T
+    if debug_counter is not None and not debug_counter.empty:
+        assert debug_counter.sum().iloc[0] == len(x_raw), \
+            "[ERROR] Il conteggio dei pacchetti" \
+            "non corrisponde al numero di flussi in input."
 
     ret = np.asarray(dataset, dtype=np.float32)
 
@@ -301,7 +336,9 @@ def mirage_pickle_converter(
 
     if debug:
         print(f"\n[DEBUG] Conversione completata.")
-        print(f"[DEBUG] Percentuale di finestre temporali valide: {counter}/{len(x_raw)} = {counter/len(x_raw) * 100:.2f}%")
+        print(debug_counter)
+        print(f"\n[DEBUG] Numero totale di flussi nel file: {len(x_raw)}")
+        print(f"[DEBUG] Percentuale di finestre temporali valide: {counter['valid']}/{len(x_raw)} = {counter['valid']/len(x_raw) * 100:.2f}%")
         print(f"[DEBUG] Dimensione del dataset risultante: {ret.shape}")
 
     return ret, metadata

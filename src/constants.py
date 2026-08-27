@@ -11,7 +11,7 @@
 RANDOM_SEED = 2025
 """ Random seed for reproducibility. """
 
-EXEC_MODE_TRAIN = False
+EXEC_MODE_TRAIN = True
 """ Set this flag to choose between training a new model
 or running validation on an already saved model. \n
 - True  : Execute the training loop.
@@ -19,7 +19,7 @@ or running validation on an already saved model. \n
 This allows running "Run All" in the notebook and automatically selecting
 the appropriate branch without manually skipping cells. """
 
-USE_FLOWPIC_DATASET = (False, False)
+USE_FLOWPIC_DATASET = (True, False)
 """ A pair of boolean values indicating whether to use the FlowPic dataset
 and whether to use a precomputed version of it. \n
 - (False, _) : Load the dataset from raw data using the .pickle file.
@@ -29,7 +29,7 @@ and whether to use a precomputed version of it. \n
 OUTPUT_DIR = "../results"
 """ Directory where the model and training history will be saved. """
 
-SAVE_OUTPUT = False
+SAVE_OUTPUT = True
 """ Whether to save the output of the notebook. """
 
 #   ####################################################################    #
@@ -84,14 +84,17 @@ N_FEATURES = len(FEATURES_LIST)
 #   ####################################################################    #
 #   Dataset split configuration
 
-TRAIN_SIZE = 0.71
+TRAIN_SIZE = 0.68
 """ Proportion of the dataset to be used for training. """
 
-VAL_SIZE = 0.14
+VAL_SIZE = 0.12
 """ Proportion of the dataset to be used for validation. """
 
-TEST_SIZE = 0.15
-""" Proportion of the dataset to be used for testing. """
+TEST_FOLDS = 5
+""" Number of folds for cross-validation. """
+
+SELECTED_FOLD = 0
+""" Index of the fold to be used. """
 
 BATCH_SIZE = 2048
 """ Size of the mini-batches used during training. """
@@ -128,10 +131,10 @@ MODEL_REGISTRY = {
 }
 """ A dictionary mapping model names to their corresponding module and class names. """
 
-MODEL_TIMESTAMP_ID = "2026-07-02_11-56"
+MODEL_TIMESTAMP_ID = "2026-08-25_20-32"
 """ Timestamp identifier for the model, used for saving and loading. """
 
-MODEL_NAME = "10E_Focal_MinMax_TrafficCNN"
+MODEL_NAME = "16E_AdamW_OneCycleSched_WeightedCrossEntropy_ResNet"
 """ Name of the model, used for saving and loading. \n
 The name format is *"{epochs}E\_{loss}\_{preprocessing}\_{model}"*. """
 
