@@ -2,16 +2,37 @@
     constants.py
     by Mario Gabriele Carofano
 
-    Questo modulo contiene le costanti utilizzate nel progetto.
+    Questo modulo contiene le costanti utilizzate nel progetto. Servono a
+    configurare il comportamento del notebook e dei moduli associati, come
+    il traffic converter e il modello di rete neurale.
+    
+    Le costanti sono organizzate in diverse sezioni, con commenti che
+    spiegano il loro significato e il loro utilizzo.
+
+    Nel notebook principale, sono presenti delle funzioni di salvataggio
+    e caricamento delle costanti in un file JSON, in modo da poter riprodurre
+    gli esperimenti e confrontare i risultati. Le uniche costanti che non
+    vengono salvate sono quelle con il prefisso "__", che sono considerate
+    private e non rilevanti per la riproducibilità degli esperimenti.
 """
 
 #   ####################################################################    #
-#   Miscellaneous
+#   Costanti strutturali
+#   Definiscono la struttura del codice stesso,
 
-RANDOM_SEED = 2025
-""" Random seed for reproducibility. """
+__DEBUG = False
+""" Whether to enable debug mode. """
 
-EXEC_MODE_TRAIN = True
+__USE_PRECOMPUTED_DATASET = True
+""" Whether to load the FlowPic dataset from a precomputed .npz file. """
+
+__USE_CONFIG_FILE = True
+""" Whether to use a configuration file to load the constants. """
+
+__CONFIG_ID = "2026-09-01_20-03"
+""" Identifier for the configuration JSON file to load. """
+
+__EXEC_MODE_TRAIN = True
 """ Set this flag to choose between training a new model
 or running validation on an already saved model. \n
 - True  : Execute the training loop.
@@ -19,45 +40,41 @@ or running validation on an already saved model. \n
 This allows running "Run All" in the notebook and automatically selecting
 the appropriate branch without manually skipping cells. """
 
-USE_FLOWPIC_DATASET = (True, False)
-""" A pair of boolean values indicating whether to use the FlowPic dataset
-and whether to use a precomputed version of it. \n
-- (False, _) : Load the dataset from raw data using the .pickle file.
-- (True, False) : Generate the FlowPic dataset from raw data using the `traffic_converter` module.
-- (True, True) : Load the FlowPic dataset from a precomputed .npz file. """
+__SELECTED_FOLD = 0
+""" Index of the fold to be used. """
 
-OUTPUT_DIR = "../results"
-""" Directory where the model and training history will be saved. """
-
-SAVE_OUTPUT = True
+__SAVE_OUTPUT = True
 """ Whether to save the output of the notebook. """
 
 #   ####################################################################    #
+#   Parametri di sessione
+#   Scelte sperimentali che influenzano il risultato di una run specifica.
+
+RANDOM_SEED = 2025
+""" Random seed for reproducibility. """
+
+#   ---    #
 #   Traffic converter configuration
-
-TPS = 60
-""" Duration of each session in seconds (TimePerSession) """
-
-DELTA_T = 15
-""" Difference in seconds between the start of two consecutive sessions (DeltaT) """
-
-MIN_TPS = 50
-""" Minimum duration of a session in seconds. Sessions shorter than this will be discarded. """
-
-MIN_PACKETS = 3
-""" Minimum number of packets in a session. Sessions with fewer packets will be discarded. """
-
-MIN_DIM = 10000
-""" Minimum flow dimension (payload) in bytes. Flows smaller than this will be discarded. """
 
 MTU = 1500
 """ Maximum Transmission Unit (Ethernet). """
 
 BIN_SIZE = 10
-""" Dimension in byte of each bin on the Y-axis of the 2D histogram. This means
-    that the Y-axis will be divided into 150 bins, each representing a range of 10 bytes. """
+""" Dimension in byte of each bin on the Y-axis of the 2D histogram.
+This means that the Y-axis will be divided into 150 bins,
+each representing a range of 10 bytes. """
 
-#   ####################################################################    #
+TRAFFIC_FILTERS = {
+    "min_tps": 50,
+    # "min_packets": 3,
+    # "min_dim": 10000,
+}
+""" A dictionary containing the filtering criteria for traffic flows. 
+- 'min_tps' : Minimum duration of a session in seconds. Sessions shorter than this will be discarded.
+- 'min_packets' : Minimum number of packets in a session. Sessions with fewer packets will be discarded.
+- 'min_dim' : Minimum flow dimension (payload) in bytes. Flows smaller than this will be discarded. """
+
+#   ---    #
 #   Dataset configuration
 
 DATA_PATH = "../dataset/mirage/2019"
@@ -66,82 +83,40 @@ DATA_PATH = "../dataset/mirage/2019"
 DATASET_NAME = "mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata.pickle"
 """ Name of the dataset file. """
 
-DATASET_PACKETS = 100
-""" Number of packets available at most in each flow. """
-
-PADDING_VALUE = -1
-""" This value is used in the dataset to denote padding packets. """
+USE_FLOWPIC_DATASET = True
+""" Whether to use the FlowPic dataset or the original Mirage dataset.
+If True, generate the FlowPic dataset from raw data
+using the `traffic_converter` module. """
 
 N_PACKETS = 100
 """ Number of packets to consider in each flow. """
 
-FEATURES_LIST = ['DIR', 'PL', 'TCPWIN', 'IAT']
-""" List of names of available features. """
-
-N_FEATURES = len(FEATURES_LIST)
-""" Number of features for each packet. """
-
-#   ####################################################################    #
+#   ---    #
 #   Dataset split configuration
 
-TRAIN_SIZE = 0.68
+TRAIN_SIZE = 0.8
 """ Proportion of the dataset to be used for training. """
 
-VAL_SIZE = 0.12
+VAL_SIZE = 0.2
 """ Proportion of the dataset to be used for validation. """
 
-TEST_FOLDS = 5
+TEST_FOLDS = 10
 """ Number of folds for cross-validation. """
 
-SELECTED_FOLD = 0
-""" Index of the fold to be used. """
-
-BATCH_SIZE = 2048
+BATCH_SIZE = 128
 """ Size of the mini-batches used during training. """
 
-USE_NEW_SIZE = False
+USE_NEW_SIZE = True
 """ Whether to limit the number of training samples to a new size. """
 
-NEW_DATASET_SIZE = 30000
+NEW_DATASET_SIZE = 1000
 """ Limit on the number of samples to use, to reduce training time and memory usage.
 	If the dataset is larger than this, it will be randomly sampled down to this size. """
 
-#   ####################################################################    #
-#	Model selection
-
-MODEL_REGISTRY = {
-    # classic_models
-    "ClassicalDenseBaseline": ("../models.classic_models", "ClassicalDenseBaseline"),
-    "TrafficCNN": ("../models.classic_models", "TrafficCNN"),
-    "ClassicalTwin": ("../models.classic_models", "ClassicalTwinModel"),
-    "ClassicalLight": ("../models.classic_models", "ClassicalLight"),
-
-    # quantum_models
-    "AmplitudeEmbedding": ("../models.quantum_models", "AmpeDenseModel"),
-    "AngleEmbedding": ("../models.quantum_models", "AngeDenseModel"),
-    "RingEmbedding": ("../models.quantum_models", "RingHybridModel"),
-    "WaterfallEmbedding": ("../models.quantum_models", "WaterfallHybridModel"),
-    "AmpCnn": ("../models.quantum_models", "AmpCnn"),
-    "CnnAmpCnn": ("../models.quantum_models", "CnnAmpCnn"),
-    "AmpeCNNLSTMModel": ("../models.quantum_models", "AmpeCNNLSTMModel"),
-
-    # flowpic_models
-    "FlowPicCNN": ("../models.flowpic_models", "FlowPicCNN"),
-    "ResNetModel": ("../models.flowpic_models", "ResNetModel"),
-}
-""" A dictionary mapping model names to their corresponding module and class names. """
-
-MODEL_TIMESTAMP_ID = "2026-08-25_20-32"
-""" Timestamp identifier for the model, used for saving and loading. """
-
-MODEL_NAME = "16E_AdamW_OneCycleSched_WeightedCrossEntropy_ResNet"
-""" Name of the model, used for saving and loading. \n
-The name format is *"{epochs}E\_{loss}\_{preprocessing}\_{model}"*. """
-
-#   ####################################################################    #
+#   ---    #
 #   Training configuration
 
-EPOCHS = 30
+EPOCHS = 3
 """ Number of training epochs. """
 
 LEARNING_RATE = 1e-3
@@ -150,10 +125,10 @@ LEARNING_RATE = 1e-3
 EARLY_STOPPING = True
 """ Whether to use early stopping during training. """
 
-PATIENCE = EPOCHS // 10 if EPOCHS <= 100 else 10
+PATIENCE = max(2, EPOCHS // 10) if EPOCHS <= 100 else 10
 """ Number of epochs to wait for improvement before stopping training. """
 
-#   ####################################################################    #
+#   ---    #
 #   Optimizer configuration
 
 WEIGHT_DECAY = 1e-4
@@ -165,7 +140,7 @@ EPSILON = 1e-2
 MOMENTUM = 0.9
 """ Momentum for the optimizer SGD. """
 
-#   ####################################################################    #
+#   ---    #
 #   Scheduler configuration
 
 MAX_LR = LEARNING_RATE*3
@@ -180,7 +155,7 @@ STEP_SIZE = 5
 STEPLR_GAMMA = 0.1
 """ Multiplicative factor of learning rate decay for the StepLR scheduler. """
 
-#   ####################################################################    #
+#   ---    #
 #   Loss configuration
 
 ALPHA = "class_weights"
@@ -190,7 +165,7 @@ Can be "class_weights", "uniform" or "custom". """
 FOCAL_LOSS_GAMMA = 2.0
 """ Gamma parameter for the Focal Loss, typically between 1 and 5. """
 
-#   ####################################################################    #
+#   ---    #
 #   Network configuration
 
 SIMULATOR = "default.qubit"
@@ -199,12 +174,12 @@ SIMULATOR = "default.qubit"
 N_QUBITS = 5
 """ Number of qubits in the quantum circuit. """
 
+N_SHOTS = 20
+""" Number of shots for the quantum circuit execution. """
+
 N_LAYERS_QUANTUM = 3
 """ Profondità dell'ansatz StronglyEntanglingLayers per i modelli ibridi quantistici. """
 
-N_LAYERS_RESNET = 18
+N_LAYERS_RESNET = 16
 """ Variante di ResNet da istanziare per ResNetModel.
 Valori possibili: 16, 18, 34. """
-
-N_SHOTS = 20
-""" Number of shots for the quantum circuit execution. """

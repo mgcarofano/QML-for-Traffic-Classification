@@ -21,10 +21,7 @@ import numpy as np
 import pandas as pd
 import pickle
 
-from constants import (
-    FEATURES_LIST,
-    MTU, BIN_SIZE
-)
+from constants import MTU, BIN_SIZE
 
 #   ########################################################################    #
 #   FUNZIONI di ANALISI del traffico
@@ -296,7 +293,7 @@ def mirage_pickle_converter(
             
             if debug_cycle:
                 print(f"[DEBUG] Pacchetti reali del flusso n.{i}:")
-                print(pd.DataFrame(real_rows, columns=FEATURES_LIST), "\n")
+                print(pd.DataFrame(real_rows, columns=['DIR', 'PL', 'TCPWIN', 'IAT']), "\n")
             
             hist = session_2d_histogram(
                 sizes, ts,

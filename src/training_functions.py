@@ -11,6 +11,7 @@
 #   LIBRARIES
 
 import torch
+from tqdm import tqdm
 from collections import Counter
 
 #   ####################################################################    #
@@ -65,7 +66,7 @@ def train_epoch(
 
     #   ################################################################    #
 
-    for inputs, labels in loader:
+    for inputs, labels in tqdm(loader, desc="Addestramento ", leave=False):
 
         # Sposta inputs e labels sul device di calcolo solo se necessario:
         # - Se il device è la CPU : il trasferimento è superfluo e viene evitato.
@@ -167,7 +168,7 @@ def evaluate(
     #   ################################################################    #
 
     with torch.no_grad():
-        for inputs, labels in loader:
+        for inputs, labels in tqdm(loader, desc="Valutazione ", leave=False):
             inputs = inputs.to(device, non_blocking=True) if device.type != 'cpu' else inputs
             labels = labels.to(device, non_blocking=True) if device.type != 'cpu' else labels
 

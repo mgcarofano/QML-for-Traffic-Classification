@@ -17,7 +17,30 @@ import importlib
 import os
 import sys
 
-from constants import MODEL_REGISTRY
+#   ########################################################################    #
+#	COSTANTI
+
+MODEL_REGISTRY = {
+    # classic_models
+    "ClassicalDenseBaseline": ("../models.classic_models", "ClassicalDenseBaseline"),
+    "TrafficCNN": ("../models.classic_models", "TrafficCNN"),
+    "ClassicalTwin": ("../models.classic_models", "ClassicalTwinModel"),
+    "ClassicalLight": ("../models.classic_models", "ClassicalLight"),
+
+    # quantum_models
+    "AmplitudeEmbedding": ("../models.quantum_models", "AmpeDenseModel"),
+    "AngleEmbedding": ("../models.quantum_models", "AngeDenseModel"),
+    "RingEmbedding": ("../models.quantum_models", "RingHybridModel"),
+    "WaterfallEmbedding": ("../models.quantum_models", "WaterfallHybridModel"),
+    "AmpCnn": ("../models.quantum_models", "AmpCnn"),
+    "CnnAmpCnn": ("../models.quantum_models", "CnnAmpCnn"),
+    "AmpeCNNLSTMModel": ("../models.quantum_models", "AmpeCNNLSTMModel"),
+
+    # flowpic_models
+    "FlowPicCNN": ("../models.flowpic_models", "FlowPicCNN"),
+    "ResNetModel": ("../models.flowpic_models", "ResNetModel"),
+}
+""" A dictionary mapping model names to their corresponding module and class names. """
 
 #   ########################################################################    #
 

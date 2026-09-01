@@ -11,7 +11,6 @@
 #   LIBRARIES
 
 import numpy as np
-from constants import N_PACKETS, N_FEATURES
 
 # La classe MinMaxScaler serve per scalare le caratteristiche in un intervallo specifico, tipicamente tra 0 e 1.
 # Questo è utile per normalizzare i dati prima di applicare algoritmi di machine learning,
@@ -70,7 +69,7 @@ def combine_dir_pl(X : np.ndarray) -> np.ndarray:
 
 def log1pPreprocessing(
 		X : np.ndarray,
-		num_packets : int = N_PACKETS,
+		num_packets : int,
 		combine_dir_pl_flag : bool = False
 	) -> np.ndarray:
 
@@ -88,11 +87,12 @@ def log1pPreprocessing(
 		(può essere 36 o 100 a seconda del dataset) e 4 è il numero di features per pacchetto.
 		Le features sono: [DIR (0), PL (1), TCPWIN (2), IAT (3)].
 		
-		num_packets (int, optional): numero di pacchetti da considerare per flusso.
-		Default è N_PACKETS.
+		num_packets (int): numero di pacchetti da considerare per flusso.
+		combine_dir_pl_flag (bool): se True, combina le feature DIR e PL
+		in una singola feature PL con segno, riducendo il numero di feature a 3.
 
 	Returns:
-		numpy.ndarray: Tensor preprocessato con shape (N, num_packets, 4), in
+		numpy.ndarray: Tensor preprocessato con shape (N, num_packets, num_features), in
 		formato float32. I pacchetti di padding vengono azzerati e le feature
 		PL, TCPWIN e IAT sono trasformate con "np.log1p".
 	"""
@@ -122,8 +122,7 @@ def log1pPreprocessing(
 
 def minMaxPreprocessing(
 		X : np.ndarray,
-		num_packets : int = N_PACKETS,
-		num_features : int = N_FEATURES,
+		num_packets : int,
 		combine_dir_pl_flag : bool = False
     ) -> np.ndarray:
 
@@ -138,14 +137,17 @@ def minMaxPreprocessing(
 		(può essere 36 o 100 a seconda del dataset) e 4 è il numero di features per pacchetto.
 		Le features sono: [DIR (0), PL (1), TCPWIN (2), IAT (3)].
 		
-		num_packets (int, optional): numero di pacchetti da considerare per flusso.
-		Default è N_PACKETS.
+		num_packets (int): numero di pacchetti da considerare per flusso.
+		combine_dir_pl_flag (bool): se True, combina le feature DIR e PL
+		in una singola feature PL con segno, riducendo il numero di feature a 3.
 
 	Returns:
-		numpy.ndarray: tensor preprocessato con shape (N, num_packets, 4),
+		numpy.ndarray: tensor preprocessato con shape (N, num_packets, num_features),
 		in formato float32, dove tutte le feature dei pacchetti sono scalate
 		nell'intervallo [0, 1] usando la normalizzazione min-max.
 	"""
+
+	num_features = 4
 
 	# Copia l'input per evitare modifiche in-place.
 	X_proc = X.copy().astype(np.float32)
