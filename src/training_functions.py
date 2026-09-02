@@ -11,8 +11,241 @@
 #   LIBRARIES
 
 import torch
+import torch.nn as nn
 from tqdm import tqdm
 from collections import Counter
+
+#   ####################################################################    #
+#   Funzioni di utilità per la scelta degli iperparametri
+
+def build_optimizer(
+        selected_optimizer : str,
+        model : nn.Module,
+        learning_rate : float,
+        weight_decay : float,
+        epsilon : float,
+        momentum : float,
+    ) -> torch.optim.Optimizer:
+
+    """Costruisce l'ottimizzatore in base alla selezione dell'utente.
+
+    Args:
+        selected_optimizer (str): Tipo di ottimizzatore selezionato dall'utente.
+        model (nn.Module): Modello da ottimizzare.
+        learning_rate (float): Learning rate dell'ottimizzatore.
+        weight_decay (float): Peso del termine di regolarizzazione L2.
+        epsilon (float): Valore epsilon per ottimizzatori come AdamW.
+        momentum (float): Momento per ottimizzatori come SGD e RMSprop.
+
+    Raises:
+        ValueError: Se il tipo di ottimizzatore selezionato non è supportato.
+
+    Returns:
+        torch.optim.Optimizer:
+        L'ottimizzatore costruito in base alla selezione dell'utente.
+    """
+
+    if selected_optimizer == 'SGD':
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=learning_rate, weight_decay=weight_decay, momentum=momentum
+        )
+
+    elif selected_optimizer == 'Adam':
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+    elif selected_optimizer == 'RMSprop':
+        optimizer = torch.optim.RMSprop(
+            model.parameters(),
+            lr=learning_rate, weight_decay=weight_decay, momentum=momentum
+        )
+
+    elif selected_optimizer == 'AdamW':
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=learning_rate, weight_decay=weight_decay, eps=epsilon
+        )
+
+    else:
+        raise ValueError(
+            f"Tipo di optimizer non supportato: {selected_optimizer}. "
+            "Usare: 'Adam', 'AdamW', 'SGD' oppure 'RMSprop'."
+        )
+
+    return optimizer
+
+    # end
+
+def build_scheduler(
+        selected_scheduler : str,
+        optimizer : torch.optim.Optimizer,
+        train_loader : torch.utils.data.DataLoader,
+        epochs : int,
+        max_lr : float = None,
+        start_factor : float = None,
+        step_size : int = None,
+        steplr_gamma : float = None
+    ) -> torch.optim.lr_scheduler._LRScheduler | None:
+
+    """Costruisce lo scheduler di apprendimento
+    in base alla selezione dell'utente.
+
+    Args:
+        selected_scheduler (str): Tipo di scheduler selezionato dall'utente.
+        optimizer (torch.optim.Optimizer): Ottimizzatore da associare allo scheduler.
+        train_loader (torch.utils.data.DataLoader): DataLoader del set di addestramento.
+        epochs (int): Numero totale di epoche di addestramento.
+        max_lr (float, opzionale): Massimo learning rate per OneCycleLR.
+        start_factor (float, opzionale): Fattore iniziale per LinearLR.
+        step_size (int, opzionale): Step size per StepLR.
+        steplr_gamma (float, opzionale): Fattore gamma per StepLR.
+    
+    Raises:
+        ValueError: Se il tipo di scheduler selezionato non è supportato.
+
+    Returns:
+        torch.optim.lr_scheduler._LRScheduler | None:
+        Lo scheduler di apprendimento costruito in base alla selezione dell'utente,
+        oppure None se 'NoSched' è selezionato.
+    """
+
+    if selected_scheduler == 'OneCycleSched':
+        lr_sched = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=max_lr, steps_per_epoch=len(train_loader), epochs=epochs
+        )
+
+    elif selected_scheduler == 'LinearSched':
+        lr_sched = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=start_factor, total_iters=epochs
+        )
+
+    elif selected_scheduler == 'StepSched':
+        lr_sched = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=step_size, gamma=steplr_gamma
+        )
+
+    elif selected_scheduler == 'NoSched':
+        lr_sched = None
+
+    else:
+        raise ValueError(
+            f"Tipo di scheduler non supportato: {selected_scheduler}. "
+            "Usare: 'OneCycleSched', 'LinearSched', 'StepSched' oppure 'NoSched'."
+        )
+
+    return lr_sched
+
+    # end
+
+def compute_class_weights(
+        y_train : list,
+        num_classes : int
+    ) -> torch.FloatTensor:
+    """Calcola i pesi di classe per il bilanciamento del dataset,
+    da utilizzare nella definizione della loss function
+    (es. WeightedCrossEntropy, Focal).
+
+    Args:
+        y_train (list): Lista delle etichette di addestramento.
+        num_classes (int): Numero totale di classi.
+
+    Returns:
+        torch.FloatTensor: Tensor contenente i pesi di ciascuna classe.
+    """
+
+    class_counts = Counter(y_train)
+    total_samples = sum(class_counts.values())
+    weights = []
+    for i in range(num_classes):
+        count = class_counts.get(i, 0)
+        if count > 0:
+            weights.append(total_samples / (num_classes * count))
+        else:
+            weights.append(1.0)
+
+    return torch.FloatTensor(weights)
+
+    # end
+
+def build_loss_function(
+        selected_loss : str,
+        y_train : torch.Tensor,
+        n_classes : int,
+        device : torch.device,
+        alpha : float = None,
+        focal_loss_gamma : float = None
+    ) -> nn.Module:
+
+    """Costruisce la funzione di loss in base alla selezione dell'utente.
+
+    Args:
+        selected_loss (str): Tipo di loss selezionata dall'utente.
+        y_train (torch.Tensor): Tensor contenente le etichette di addestramento.
+        n_classes (int): Numero totale di classi.
+        device (torch.device): Il device su cui eseguire i calcoli.
+        alpha (float, opzionale): Parametro alpha per la Focal Loss.
+        focal_loss_gamma (float, opzionale): Parametro gamma per la Focal Loss.
+
+    Raises:
+        ValueError: Se il tipo di loss selezionato non è supportato.
+        ValueError: Se il tipo di alpha per la Focal Loss non è supportato.
+
+    Returns:
+        nn.Module: La funzione di loss costruita.
+    """
+
+    loss_dtype = torch.float if device.type == 'mps' else torch.double
+
+    if selected_loss == "CrossEntropy":
+        criterion = nn.CrossEntropyLoss()
+
+    elif selected_loss == "WeightedCrossEntropy":
+        class_weights = compute_class_weights(
+            y_train,
+            n_classes
+        ).to(device).to(loss_dtype)
+
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+
+    elif selected_loss == "Focal":
+
+        if alpha == "class_weights":
+            alpha = compute_class_weights(y_train, n_classes)
+        elif alpha == "uniform":
+            alpha = torch.ones(n_classes)
+        elif alpha == "custom":
+            alpha = torch.tensor(alpha)
+        else:
+            raise ValueError(
+                f"Tipo di alpha non supportato: {alpha}. "
+                "Usare: 'class_weights', 'uniform', oppure 'custom'."
+            )
+
+        alpha = alpha.to(device).to(loss_dtype)
+
+        criterion = torch.hub.load(
+            'adeelh/pytorch-multi-class-focal-loss',
+            model='focal_loss',
+            alpha=alpha,
+            gamma=focal_loss_gamma,
+            reduction='mean',
+            device=device,
+            dtype=loss_dtype,
+            force_reload=False
+        )
+
+    else:
+        raise ValueError(
+            f"Tipo di loss non supportato: {selected_loss}. "
+            "Usare: 'CrossEntropy', 'WeightedCrossEntropy' oppure 'Focal'."
+        )
+
+    return criterion
+
+    # end
 
 #   ####################################################################    #
 #   FUNCTIONS
@@ -200,35 +433,5 @@ def evaluate(
     accuracy = 100.0 * correct / total
 
     return avg_loss, accuracy
-
-    # end
-
-def compute_class_weights(
-        y_train : list,
-        num_classes : int
-    ) -> torch.FloatTensor:
-    """Calcola i pesi di classe per il bilanciamento del dataset,
-    da utilizzare nella definizione della loss function
-    (es. WeightedCrossEntropy, Focal).
-
-    Args:
-        y_train (list): Lista delle etichette di addestramento.
-        num_classes (int): Numero totale di classi.
-
-    Returns:
-        torch.FloatTensor: Tensor contenente i pesi di ciascuna classe.
-    """
-
-    class_counts = Counter(y_train)
-    total_samples = sum(class_counts.values())
-    weights = []
-    for i in range(num_classes):
-        count = class_counts.get(i, 0)
-        if count > 0:
-            weights.append(total_samples / (num_classes * count))
-        else:
-            weights.append(1.0)
-
-    return torch.FloatTensor(weights)
 
     # end

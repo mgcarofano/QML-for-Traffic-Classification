@@ -254,7 +254,7 @@ class ClassicalTwinModel(nn.Module):
             n_qubits, n_layers,
             n_packets, n_features,
             num_classes, n_shots=None,
-            random_seed=42
+            random_seed=42,
         ):
 
         super(ClassicalTwinModel, self).__init__()

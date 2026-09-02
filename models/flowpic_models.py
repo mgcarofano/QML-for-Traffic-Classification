@@ -316,6 +316,9 @@ class ResNetModel(_ResNet):
     Args:
         _ResNet: classe base che implementa l'architettura ResNet generica
         con blocchi residui configurabili.
+
+    Raises:
+        NotImplementedError: se n_layers non è 16, 18 o 34.
     """
 
     def __init__(self,
@@ -324,11 +327,6 @@ class ResNetModel(_ResNet):
             num_classes, n_shots=None,
             random_seed=42,
         ):
-        """Initialize a new instance of the ResNet.
-
-        Raises:
-            NotImplementedError: se n_layers non è 16, 18 o 34.
-        """
 
         # ResNet16-custom
         if n_layers == 16:

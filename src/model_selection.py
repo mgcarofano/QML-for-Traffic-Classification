@@ -1,6 +1,6 @@
 """
 
-    model_selection.py
+    model_selection.py \n
     di Mario Gabriele Carofano
 
     Questo modulo contiene funzioni per la selezione dinamica del modello

@@ -10,3 +10,4 @@ FlowPic
 /src/__pycache__
 /models/__pycache__
 results/old_results.zip
+*.pth

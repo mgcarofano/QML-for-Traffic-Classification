@@ -1,6 +1,6 @@
 """
 
-    traffic_converter.py
+    traffic_converter.py \n
     by Mario Gabriele Carofano
 
     Questo modulo raccoglie le funzioni necessarie per convertire i dati di
@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pickle
+from pathlib import Path
 
 from constants import MTU, BIN_SIZE
 
@@ -528,3 +529,88 @@ def get_dataset_name(dir_path, raw_pickle_name, debug=False):
     return dataset_name
 
     # end
+
+def flow_debug(
+		debug: bool = False,
+		flows_to_inspect: list = None,
+		metadata: pd.DataFrame = None,
+		histograms: np.ndarray = None
+	) -> None:
+
+	"""Stampa informazioni di debug sui flussi specificati, se il flag di debug è attivo.
+	Mostra le coordinate degli elementi non nulli, i valori e le statistiche di base
+	come min, max, media, deviazione standard e somma.
+
+	Args:
+		debug (bool): Flag per abilitare la stampa delle informazioni di debug.
+		flows_to_inspect (list): Lista degli ID dei flussi da ispezionare.
+		metadata (pd.DataFrame): DataFrame contenente i metadati dei flussi.
+		histograms (np.ndarray): Array NumPy contenente gli istogrammi 2D (FlowPic).
+	"""
+
+	if debug and flows_to_inspect is not None:
+	
+		for fid in flows_to_inspect:
+
+			flow_metadata = metadata.loc[metadata['FlowID'] == fid]
+
+			if flow_metadata.empty:
+				print(f"[DEBUG] Flusso n.{fid} non trovato.")
+				continue
+
+			did = flow_metadata['DatasetID'].values[0]
+			flow = histograms[did][0]
+
+			#   ########################################################    #
+			#	Stampa di shape e metadati del flusso
+
+			print(f"[DEBUG] Elaborazione del flusso n.{fid}")
+			print(f"Shape: {histograms[did].shape}")
+			print(f"Metadata:\n{flow_metadata.to_string(index=False)}")
+
+			#   ########################################################    #
+			#	Stampa degli elementi non nulli
+			#	Mostra le coordinate (riga, colonna) e il valore corrispondente.
+
+			rows, cols = np.nonzero(flow)
+			values = flow[rows, cols]
+
+			print("Coordinate degli elementi non nulli:")
+			for r, c, v in zip(rows, cols, values):
+				print(f"[{r},{c}] = {v}", end=" | ")
+
+			print()
+
+			#   ########################################################    #
+			#	Stampa delle statistiche di base
+
+			print(f"Min: {np.min(histograms[did])}")
+			print(f"Max: {np.max(histograms[did])}")
+			print(f"Mean: {np.mean(histograms[did])}")
+			print(f"Std: {np.std(histograms[did])}")
+			print(f"Sum: {np.sum(histograms[did])}\n")
+
+			# end for fid
+		# end if
+
+	# end
+
+def get_flowpic_dir(data_path: str) -> str:
+	""" Sostituisce il nome 'flowpic' al posto di 'mirage' nel percorso del dataset. """
+
+	p = Path(data_path)
+	parts = p.parts
+
+	if "mirage" not in parts:
+		raise ValueError(
+			f"Il percorso '{data_path}' non contiene la cartella 'mirage'.\n"
+			"Assicurati di fornire un percorso valido che contenga 'mirage'."
+		)
+
+	idx = parts.index("mirage")
+	new_parts = list(parts)
+	new_parts[idx] = "flowpic"
+
+	return str(Path(*new_parts))
+
+	# end

@@ -1,5 +1,5 @@
 """
-    constants.py
+    constants.py \n
     by Mario Gabriele Carofano
 
     Questo modulo contiene le costanti utilizzate nel progetto. Servono a
@@ -17,6 +17,159 @@
 """
 
 #   ####################################################################    #
+#   LIBRERIE
+
+import platform
+import sys
+import types
+from typing import Any
+
+#   ####################################################################    #
+#   Funzioni di utilità
+
+def _json_default(obj: Any) -> Any:
+	"""Serializzatore di fallback per json.dump, usato per convertire
+	tipi non nativamente serializzabili in JSON (tuple annidate, set,
+	oggetti torch.device, classi, ecc.).
+
+	Args:
+		obj (Any): Oggetto da convertire.
+
+	Returns:
+		Any: Rappresentazione serializzabile dell'oggetto.
+	"""
+
+	# Caso speciale: 
+	# torch.device, np.dtype e oggetti simili: si usa la rappresentazione a stringa.
+	if hasattr(obj, "__class__") and obj.__class__.__name__ in ("device", "dtype"):
+		return str(obj)
+
+	if isinstance(obj, set):
+		return sorted(obj)
+
+	if isinstance(obj, (tuple,)):
+		return list(obj)
+
+	# Per le classi, si restituisce il nome della classe.
+	# In Python, ogni classe è un'istanza di 'type'.
+	if isinstance(obj, type):
+		return obj.__name__
+
+	# Ultima risorsa: rappresentazione testuale, per non far fallire il salvataggio.
+	return str(obj)
+
+	# end
+
+def build_session_config(
+        constants_module: types.ModuleType,
+        dynamic_vars: dict[str, Any] = None
+    ) -> dict[str, Any]:
+    """Costruisce il dizionario completo di configurazione di sessione,
+    combinando in un unico livello le costanti statiche di constants.py
+    (chiavi MAIUSCOLE), le variabili dinamiche del notebook e i metadati
+    di ambiente (chiavi minuscole).
+
+    Args:
+        constants_module (module): Il modulo `constants` importato.
+        dynamic_vars (dict, optional): Variabili calcolate a runtime nel
+            notebook (device, strategia di preprocessing, modello
+            selezionato, ecc.). Defaults to None.
+
+    Returns:
+        dict: Configurazione di sessione unificata.
+    """
+
+    config = {}
+
+    #   ################################################################    #
+    #   Costanti statiche da constants.py (chiavi MAIUSCOLE)
+
+    for name, value in vars(constants_module).items():
+
+        # Le costanti con nomi non maiuscoli non vengono incluse
+        # nella configurazione finale. Questo permette di scartare
+        # variabili, funzioni e moduli che non sono considerati costanti.
+        if not name.isupper():
+            continue
+
+		# Le costanti con il prefisso "__" sono considerate private
+		# e non vengono incluse nella configurazione finale.
+        if name.startswith("__"):
+            continue
+
+		# Le costanti definite come moduli o funzioni
+		# non vengono incluse nella configurazione finale.
+        if isinstance(value, (
+			types.ModuleType,
+			types.FunctionType,
+			types.BuiltinFunctionType,
+            type
+		)):
+            continue
+
+        config[name] = value
+
+        # end for
+
+    #   ################################################################    #
+    #   Variabili dinamiche del notebook (chiavi minuscole)
+
+    if dynamic_vars:
+        for name, value in dynamic_vars.items():
+            config[name.lower()] = value
+
+    #   ################################################################    #
+    #   Metadati di ambiente (chiavi minuscole)
+
+    config["python_version"] = sys.version
+    config["platform"] = platform.platform()
+    config["processor"] = platform.processor()
+
+    for lib_name in ["torch", "numpy", "pandas", "sklearn", "pennylane"]:
+        try:
+            module = __import__(lib_name)
+            config[f"{lib_name}_version"] = getattr(module, "__version__", "unknown")
+        except ImportError:
+            config[f"{lib_name}_version"] = None
+
+        # end for
+
+    return config
+
+    # end
+
+def get_value_from_config(
+		source: dict,
+		key: str,
+		default: Any = None
+	) -> Any:
+	"""Recupera un valore dalla sorgente specificata.
+	Se il valore non è presente, viene restituito il valore di default.
+
+	Args:
+		source (dict): Dizionario da cui recuperare il valore.
+		key (str): La chiave da cercare nel dizionario di configurazione.
+		default (Any, optional): Valore di default se la chiave
+		non è presente. Defaults to None.
+
+	Returns:
+		Any: Il valore corrispondente alla chiave,
+		o il valore di default se la chiave non è presente.
+	"""
+
+	value = source.get(key, default)
+	if value is None:
+		if default is None:
+			raise ValueError(f"Chiave '{key}' mancante.")
+		
+		print(f"Chiave '{key}' mancante. Utilizzo '{default}' come default.")
+		return default
+
+	return value
+
+	# end
+
+#   ####################################################################    #
 #   Costanti strutturali
 #   Definiscono la struttura del codice stesso,
 
@@ -26,7 +179,7 @@ __DEBUG = False
 __USE_PRECOMPUTED_DATASET = True
 """ Whether to load the FlowPic dataset from a precomputed .npz file. """
 
-__USE_CONFIG_FILE = True
+__USE_CONFIG_FILE = False
 """ Whether to use a configuration file to load the constants. """
 
 __CONFIG_ID = "2026-09-01_20-03"
@@ -103,13 +256,13 @@ VAL_SIZE = 0.2
 TEST_FOLDS = 10
 """ Number of folds for cross-validation. """
 
-BATCH_SIZE = 128
+BATCH_SIZE = 2048
 """ Size of the mini-batches used during training. """
 
-USE_NEW_SIZE = True
+USE_NEW_SIZE = False
 """ Whether to limit the number of training samples to a new size. """
 
-NEW_DATASET_SIZE = 1000
+NEW_DATASET_SIZE = 30000
 """ Limit on the number of samples to use, to reduce training time and memory usage.
 	If the dataset is larger than this, it will be randomly sampled down to this size. """
 
@@ -180,6 +333,6 @@ N_SHOTS = 20
 N_LAYERS_QUANTUM = 3
 """ Profondità dell'ansatz StronglyEntanglingLayers per i modelli ibridi quantistici. """
 
-N_LAYERS_RESNET = 16
+N_LAYERS_RESNET = 18
 """ Variante di ResNet da istanziare per ResNetModel.
 Valori possibili: 16, 18, 34. """
