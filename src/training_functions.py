@@ -12,6 +12,9 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+
 from tqdm import tqdm
 from collections import Counter
 
@@ -156,26 +159,21 @@ def compute_class_weights(
         torch.FloatTensor: Tensor contenente i pesi di ciascuna classe.
     """
 
-    class_counts = Counter(y_train)
-    total_samples = sum(class_counts.values())
-    weights = []
-    for i in range(num_classes):
-        count = class_counts.get(i, 0)
-        if count > 0:
-            weights.append(total_samples / (num_classes * count))
-        else:
-            weights.append(1.0)
-
-    return torch.FloatTensor(weights)
+    y = np.asarray(y_train.cpu() if torch.is_tensor(y_train) else y_train).astype(int)
+    counts = np.bincount(y, minlength=num_classes)
+    weights = np.where(counts > 0, len(y) / (num_classes * np.maximum(counts, 1)), 1.0)
+    
+    return torch.tensor(weights, dtype=torch.float32)
 
     # end
+
 
 def build_loss_function(
         selected_loss : str,
         y_train : torch.Tensor,
         n_classes : int,
         device : torch.device,
-        alpha : float = None,
+        alpha : str = None,
         focal_loss_gamma : float = None
     ) -> nn.Module:
 
@@ -186,7 +184,7 @@ def build_loss_function(
         y_train (torch.Tensor): Tensor contenente le etichette di addestramento.
         n_classes (int): Numero totale di classi.
         device (torch.device): Il device su cui eseguire i calcoli.
-        alpha (float, opzionale): Parametro alpha per la Focal Loss.
+        alpha (str, opzionale): Tipo di alpha per la Focal Loss.
         focal_loss_gamma (float, opzionale): Parametro gamma per la Focal Loss.
 
     Raises:
@@ -197,43 +195,32 @@ def build_loss_function(
         nn.Module: La funzione di loss costruita.
     """
 
-    loss_dtype = torch.float if device.type == 'mps' else torch.double
-
     if selected_loss == "CrossEntropy":
-        criterion = nn.CrossEntropyLoss()
+        return nn.CrossEntropyLoss()
 
     elif selected_loss == "WeightedCrossEntropy":
-        class_weights = compute_class_weights(
-            y_train,
-            n_classes
-        ).to(device).to(loss_dtype)
-
-        criterion = nn.CrossEntropyLoss(weight=class_weights)
+        w = compute_class_weights(y_train, n_classes).to(device)
+        return nn.CrossEntropyLoss(weight=w)
 
     elif selected_loss == "Focal":
-
         if alpha == "class_weights":
             alpha = compute_class_weights(y_train, n_classes)
         elif alpha == "uniform":
             alpha = torch.ones(n_classes)
-        elif alpha == "custom":
-            alpha = torch.tensor(alpha)
         else:
             raise ValueError(
                 f"Tipo di alpha non supportato: {alpha}. "
-                "Usare: 'class_weights', 'uniform', oppure 'custom'."
+                "Usare: 'class_weights' oppure 'uniform'."
             )
 
-        alpha = alpha.to(device).to(loss_dtype)
+        alpha = alpha.to(device)
 
-        criterion = torch.hub.load(
+        return torch.hub.load(
             'adeelh/pytorch-multi-class-focal-loss',
-            model='focal_loss',
+            model='FocalLoss',
             alpha=alpha,
             gamma=focal_loss_gamma,
             reduction='mean',
-            device=device,
-            dtype=loss_dtype,
             force_reload=False
         )
 
@@ -242,8 +229,6 @@ def build_loss_function(
             f"Tipo di loss non supportato: {selected_loss}. "
             "Usare: 'CrossEntropy', 'WeightedCrossEntropy' oppure 'Focal'."
         )
-
-    return criterion
 
     # end
 
@@ -312,7 +297,8 @@ def train_epoch(
         # Si procede con il training step iniziando
         # dall'azzeramento dei gradienti e il forward pass per calcolare
         # le predizioni del modello sul batch corrente.
-        optimizer.zero_grad()
+        if optimizer is not None:
+            optimizer.zero_grad()
         outputs = model(inputs)
 
         # Si calcola la loss e si procede con il backward pass
@@ -400,6 +386,9 @@ def evaluate(
 
     #   ################################################################    #
 
+    # Si utilizza "torch.no_grad()" per disabilitare
+    # il calcolo del gradiente durante la fase di valutazione,
+    # migliorando le prestazioni e riducendo l'uso della memoria.
     with torch.no_grad():
         for inputs, labels in tqdm(loader, desc="Valutazione ", leave=False):
             inputs = inputs.to(device, non_blocking=True) if device.type != 'cpu' else inputs
@@ -433,5 +422,101 @@ def evaluate(
     accuracy = 100.0 * correct / total
 
     return avg_loss, accuracy
+
+    # end
+
+def predict_with_probs(
+        model : torch.nn.Module,
+        device : torch.device,
+        loader : torch.utils.data.DataLoader
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """_summary_
+
+    Args:
+        model (torch.nn.Module): Il modello da valutare.
+        device (torch.device): Il device su cui eseguire la valutazione.
+        loader (torch.utils.data.DataLoader): Il DataLoader per il set di dati di valutazione.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        Una tupla contenente le etichette vere, le probabilità predette e le predizioni del modello.
+    """
+
+    #   ################################################################    #
+    #   INIZIALIZZAZIONE
+
+    n_classes = loader.dataset.num_classes
+    all_labels = []
+    all_probabilities = []
+
+    model.eval()
+
+    #   ################################################################    #
+
+    with torch.inference_mode():
+        for inputs, labels in tqdm(loader, desc="Valutazione ", leave=False):
+
+            # Sposta gli input sul device corretto, se non si sta usando la CPU.
+            # Non è necessario spostare labels sul device, perché in questa funzione
+            # sono utilizzate solo per confrontare le predizioni con le etichette vere.
+            inputs = inputs.to(device, non_blocking=True) if device.type != 'cpu' else inputs
+
+            #   ########################################################    #
+            #   Calcolo dei logit del modello per gli input forniti.
+            #   Si verifica che l'output abbia la forma corretta.
+
+            logits = model(inputs)
+
+            if logits.ndim != 2:
+                raise ValueError(
+                    f"Output atteso con shape (batch, classi), "
+                    f"ricevuto {tuple(logits.shape)}."
+                )
+
+            if logits.shape[1] != n_classes:
+                raise ValueError(
+                    f"Attese {n_classes} classi, "
+                    f"ricevute {logits.shape[1]}."
+                )
+
+            if not torch.isfinite(logits).all():
+                raise ValueError("I logit contengono NaN o valori infiniti.")
+
+            #   ########################################################    #
+            #   Calcolo delle probabilità per ciascuna classe.
+            #   Si verifica che le probabilità sommino a 1 per ciascun campione.
+
+            probabilities = torch.softmax(logits, dim=1)
+
+            if not torch.allclose(
+                probabilities.sum(dim=1),
+                torch.ones(
+                    probabilities.shape[0],
+                    device=probabilities.device,
+                    dtype=probabilities.dtype
+                ),
+                atol=1e-5,
+            ):
+                raise ValueError("Le probabilità non sommano a 1.")
+
+            #   ########################################################    #
+            #   Raccolta delle etichette e delle probabilità calcolate.
+
+            # ATTENZIONE!
+            # Sostituire con "all_labels.extend(labels.numpy())" se si utilizza la CPU.
+            all_labels.append(labels.detach().cpu())
+            all_probabilities.append(probabilities.detach().cpu())
+
+            # end for inputs, labels
+
+    #   ################################################################    #
+    #   RITORNO DEI RISULTATI
+    
+    y_true = torch.cat(all_labels, dim=0)
+    y_prob = torch.cat(all_probabilities, dim=0)
+
+    y_pred = y_prob.argmax(axis=1)
+
+    return y_true, y_pred, y_prob
 
     # end

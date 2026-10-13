@@ -173,19 +173,19 @@ def get_value_from_config(
 #   Costanti strutturali
 #   Definiscono la struttura del codice stesso,
 
-__DEBUG = False
+__DEBUG = True
 """ Whether to enable debug mode. """
 
 __USE_PRECOMPUTED_DATASET = True
 """ Whether to load the FlowPic dataset from a precomputed .npz file. """
 
-__USE_CONFIG_FILE = False
+__USE_CONFIG_FILE = True
 """ Whether to use a configuration file to load the constants. """
 
-__CONFIG_ID = "2026-09-01_20-03"
+__CONFIG_ID = "2026-09-02_14-48"
 """ Identifier for the configuration JSON file to load. """
 
-__EXEC_MODE_TRAIN = True
+__EXEC_MODE_TRAIN = False
 """ Set this flag to choose between training a new model
 or running validation on an already saved model. \n
 - True  : Execute the training loop.

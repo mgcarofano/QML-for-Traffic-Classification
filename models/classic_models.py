@@ -72,7 +72,6 @@ class ClassicalDenseBaseline(nn.Module):
         # 4. Output Dense Layer
         # Input dim è 2^n_qubits (output di qml.probs)
         self.dense2 = nn.Linear(2**n_qubits, num_classes)
-        # self.softmax = nn.Softmax(dim=1)
 
         # end
 
@@ -83,7 +82,6 @@ class ClassicalDenseBaseline(nn.Module):
         x = self.relu(x)
 
         return self.dense2(x)
-        # return self.softmax(x)
 
         # end
 
@@ -223,6 +221,7 @@ class _DenseCnn1DBackbone(nn.Module):
         x = self.activation_pre(x)
 
         x = self.middle_block(x)
+        x = x.to(self.conv1.weight.dtype)
 
         # Reshape per Conv1d: (Batch, 1, 2^n_qubits)
         x = x.view(-1, 1, self.q_output_dim)

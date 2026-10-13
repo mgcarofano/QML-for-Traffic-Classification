@@ -13,6 +13,7 @@
 
 import torch.nn as nn
 
+from pathlib import Path
 import importlib
 import os
 import sys
@@ -20,29 +21,42 @@ import sys
 #   ########################################################################    #
 #	COSTANTI
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 MODEL_REGISTRY = {
     # classic_models
-    "ClassicalDenseBaseline": ("../models.classic_models", "ClassicalDenseBaseline"),
-    "TrafficCNN": ("../models.classic_models", "TrafficCNN"),
-    "ClassicalTwin": ("../models.classic_models", "ClassicalTwinModel"),
-    "ClassicalLight": ("../models.classic_models", "ClassicalLight"),
+    "ClassicalDenseBaseline": ("models.classic_models", "ClassicalDenseBaseline"),
+    "TrafficCNN": ("models.classic_models", "TrafficCNN"),
+    "ClassicalTwin": ("models.classic_models", "ClassicalTwinModel"),
+    "ClassicalLight": ("models.classic_models", "ClassicalLight"),
 
     # quantum_models
-    "AmplitudeEmbedding": ("../models.quantum_models", "AmpeDenseModel"),
-    "AngleEmbedding": ("../models.quantum_models", "AngeDenseModel"),
-    "RingEmbedding": ("../models.quantum_models", "RingHybridModel"),
-    "WaterfallEmbedding": ("../models.quantum_models", "WaterfallHybridModel"),
-    "AmpCnn": ("../models.quantum_models", "AmpCnn"),
-    "CnnAmpCnn": ("../models.quantum_models", "CnnAmpCnn"),
-    "AmpeCNNLSTMModel": ("../models.quantum_models", "AmpeCNNLSTMModel"),
+    "AmplitudeEmbedding": ("models.quantum_models", "AmpeDenseModel"),
+    "AngleEmbedding": ("models.quantum_models", "AngeDenseModel"),
+    "RingEmbedding": ("models.quantum_models", "RingHybridModel"),
+    "WaterfallEmbedding": ("models.quantum_models", "WaterfallHybridModel"),
+    "AmpCnn": ("models.quantum_models", "AmpCnn"),
+    "CnnAmpCnn": ("models.quantum_models", "CnnAmpCnn"),
+    "AmpeCNNLSTMModel": ("models.quantum_models", "AmpeCNNLSTMModel"),
 
     # flowpic_models
-    "FlowPicCNN": ("../models.flowpic_models", "FlowPicCNN"),
-    "ResNetModel": ("../models.flowpic_models", "ResNetModel"),
+    "FlowPicCNN": ("models.flowpic_models", "FlowPicCNN"),
+    "ResNetModel": ("models.flowpic_models", "ResNetModel"),
 }
 """ A dictionary mapping model names to their corresponding module and class names. """
 
 #   ########################################################################    #
+
+def _ensure_import_paths() -> None:
+	"""Aggiunge il progetto root e la cartella 'src'
+	al sys.path se non sono già presenti.
+	"""
+
+	for p in (_PROJECT_ROOT, _PROJECT_ROOT / "src"):
+		if str(p) not in sys.path:
+			sys.path.insert(0, str(p))
+
+	# end
 
 def compute_model_name(
 		model_class : str,
@@ -104,15 +118,19 @@ def get_model_class(model_name):
 
 	if model_name not in MODEL_REGISTRY:
 		available = ", ".join(MODEL_REGISTRY.keys())
-		raise ValueError(f"Modello '{model_name}' non valido.\n\nOpzioni: {available}")
+		raise ValueError(
+			f"Modello '{model_name}' non valido.\n\n"
+			f"Opzioni: {available}"
+		)
 
 		# end if
+	
+	_ensure_import_paths()
 
 	# Import dinamico del modulo e della classe del modello selezionato.
 	module_name, class_name = MODEL_REGISTRY[model_name]
-	sys.path.append(os.path.abspath('..'))
-	clean_module_name = module_name.removeprefix('../').replace('/', '.')
-	module = importlib.import_module(clean_module_name)
+	module = importlib.import_module(module_name)
+	importlib.reload(module)
 
 	# Si ritorna la classe corrispondente al modello selezionato.
 	return getattr(module, class_name)
@@ -129,6 +147,9 @@ def check_model_compatibility(model, weights):
 	Raises:
 		RuntimeError: Se le shape dei pesi salvati non corrispondono a quelle del modello corrente.
 	"""
+
+	# TODO: al momento, cerca solo chiavi contenenti "classifier",
+	# che mancano nei modelli quantistici e in ClassicalDenseBaseline
 
 	curr_weights_shape = [
 		v.shape
@@ -161,8 +182,8 @@ def check_model_compatibility(model, weights):
 		raise RuntimeError(
 			f"Errore durante il caricamento del modello: {model_name}\n\n"
 			f"Shape corrente diversa da quella salvata, in posizione ({mismatch_index}).\n"
-			f"Il checkpoint è stato salvato con un numero di classi ({current_shape}) diverso "
-			f"rispetto al modello corrente ({saved_shape}).\n"
+			f"Il checkpoint è stato salvato con un numero di classi ({saved_shape}) diverso "
+			f"rispetto al modello corrente ({current_shape}).\n"
 			"Verifica che il dataset e il parametro num_classes usati per il "
 			"training coincidano con quelli attuali."
 		)

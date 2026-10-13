@@ -28,6 +28,7 @@ import pennylane as qml
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 from constants import SIMULATOR
 from model_selection import compute_model_name
 from classic_models import _DenseCnn1DBackbone
@@ -581,7 +582,7 @@ class AmpCnn(nn.Module):
 
             # end
         
-        self.q_layer = qml.qnn.TorchLayer(
+        q_layer = qml.qnn.TorchLayer(
             qnode,
             {"weights": (n_layers, n_qubits, 3)}
         )
@@ -591,7 +592,7 @@ class AmpCnn(nn.Module):
 
         self.backbone = _DenseCnn1DBackbone(
             n_qubits, n_packets, n_features, num_classes,
-            middle_block=self.q_layer
+            middle_block=q_layer
         )
 
         # end
