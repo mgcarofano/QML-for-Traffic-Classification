@@ -1,28 +1,28 @@
 """
-    constants.py \n
-    by Mario Gabriele Carofano
+	constants.py \n
+	by Mario Gabriele Carofano
 
-    Questo modulo contiene le costanti utilizzate nel progetto, utili per
-    configurare tutti gli aspetti del progetto e la riproducibilità degli
-    esperimenti.
-    
-    Sono organizzate principalmente in due sezioni:
-    - Costanti strutturali
-    Sono considerate private (iniziano con "__") e non rilevanti per la
-    riproducibilità degli esperimenti.
+	Questo modulo contiene le costanti utilizzate nel progetto, utili per
+	configurare tutti gli aspetti del progetto e la riproducibilità degli
+	esperimenti.
+	
+	Sono organizzate principalmente in due sezioni:
+	- Costanti strutturali
+	Sono considerate private (iniziano con "__") e non rilevanti per la
+	riproducibilità degli esperimenti.
 
-    - Parametri di sessione
-    Contengono le impostazioni specifiche per una sessione di esecuzione del
-    progetto. Sono presenti funzioni di salvataggio e caricamento in file JSON,
-    in modo da poter riprodurre gli esperimenti e confrontare i risultati.
+	- Parametri di sessione
+	Contengono le impostazioni specifiche per una sessione di esecuzione del
+	progetto. Sono presenti funzioni di salvataggio e caricamento in file JSON,
+	in modo da poter riprodurre gli esperimenti e confrontare i risultati.
 """
 
 #   ####################################################################    #
 #   Librerie
 
-import sys
 import types
 from typing import Any
+import sys
 import platform
 
 #   ####################################################################    #
@@ -32,66 +32,66 @@ def _json_default():
 	pass
 
 def build_session_config() -> dict[str, Any]:
-    """Costruisce il dizionario completo di configurazione di sessione,
-    combinando in un unico livello le costanti statiche di constants.py
-    (chiavi MAIUSCOLE) e i metadati di ambiente (chiavi minuscole).
+	"""Costruisce il dizionario completo di configurazione di sessione,
+	combinando in un unico livello le costanti statiche di constants.py
+	(chiavi MAIUSCOLE) e i metadati di ambiente (chiavi minuscole).
 
-    Returns:
-        dict: Configurazione di sessione unificata.
-    """
+	Returns:
+		dict: Configurazione di sessione unificata.
+	"""
 
-    config = {}
+	config = {}
 
-    #   ################################################################    #
-    #   Costanti statiche da constants.py (chiavi MAIUSCOLE)
+	#   ################################################################    #
+	#   Costanti statiche da constants.py (chiavi MAIUSCOLE)
 
-    import constants as constants_module
-    for name, value in vars(constants_module).items():
+	import constants as constants_module
+	for name, value in vars(constants_module).items():
 
-        # Le costanti con nomi non maiuscoli non vengono incluse
-        # nella configurazione finale. Questo permette di scartare
-        # variabili, funzioni e moduli che non sono considerati costanti.
-        if not name.isupper():
-            continue
+		# Le costanti con nomi non maiuscoli non vengono incluse
+		# nella configurazione finale. Questo permette di scartare
+		# variabili, funzioni e moduli che non sono considerati costanti.
+		if not name.isupper():
+			continue
 
 		# Le costanti con il prefisso "__" sono considerate private
 		# e non vengono incluse nella configurazione finale.
-        if name.startswith("__"):
-            continue
+		if name.startswith("__"):
+			continue
 
 		# Le costanti definite come moduli o funzioni
 		# non vengono incluse nella configurazione finale.
-        if isinstance(value, (
+		if isinstance(value, (
 			types.ModuleType,
 			types.FunctionType,
 			types.BuiltinFunctionType,
-            type
+			type
 		)):
-            continue
+			continue
 
-        config[name] = value
+		config[name] = value
 
-        # end for
+		# end for
 
-    #   ################################################################    #
-    #   Metadati di ambiente (chiavi minuscole)
+	#   ################################################################    #
+	#   Metadati di ambiente (chiavi minuscole)
 
-    config["python_version"] = sys.version
-    config["platform"] = platform.platform()
-    config["processor"] = platform.processor()
+	config["python_version"] = sys.version
+	config["platform"] = platform.platform()
+	config["processor"] = platform.processor()
 
-    for lib_name in ["torch", "numpy", "pandas", "sklearn", "pennylane"]:
-        try:
-            module = __import__(lib_name)
-            config[f"{lib_name}_version"] = getattr(module, "__version__", "unknown")
-        except ImportError:
-            config[f"{lib_name}_version"] = None
+	for lib_name in ["torch", "numpy", "pandas", "sklearn", "pennylane"]:
+		try:
+			module = __import__(lib_name)
+			config[f"{lib_name}_version"] = getattr(module, "__version__", "unknown")
+		except ImportError:
+			config[f"{lib_name}_version"] = None
 
-        # end for
+		# end for
 
-    return config
+	return config
 
-    # end
+	# end
 
 def get_value_from_config(
 		source: dict,
@@ -112,6 +112,9 @@ def get_value_from_config(
 		o il valore di default se la chiave non è presente.
 	"""
 
+	if source is None:
+		raise ValueError("Sorgente di configurazione mancante.")
+
 	value = source.get(key, default)
 	if value is None:
 		if default is None:
@@ -120,17 +123,26 @@ def get_value_from_config(
 		print(f"Chiave '{key}' mancante. Utilizzo '{default}' come default.")
 		return default
 
+	print(f"Costante '{key}' caricata con valore: {value}")
 	return value
 
 	# end
 
 #   ####################################################################    #
 #   Costanti strutturali
+#   Controllano il flusso di esecuzione del codice.
+#   Sono escluse dalla configurazione salvata per gli esperimenti.
 
 __DEBUG = False
 """ Whether to enable debug mode. """
 
-__USE_PRECOMPUTED_DATASET = True
+__DEBUG_CYCLE = False
+""" Whether to enable debug mode inside each cycle of the execution loop in mirage_pickle_converter(). """
+
+__FLOWS_TO_INSPECT = None
+""" List of flows to inspect during debugging in mirage_pickle_converter(). """
+
+__USE_PRECOMPUTED_DATASET = False
 """ Whether to load the FlowPic dataset from a precomputed .npz file. """
 
 __USE_CONFIG_FILE = False
@@ -155,9 +167,47 @@ __SAVE_OUTPUT = True
 
 #   ####################################################################    #
 #   Parametri di sessione
+#   Definiscono la configurazione di una specifica esecuzione sperimentale.
+#   Vengono salvati in un file JSON e ricaricati per consentire la
+#   riproducibilità degli esperimenti e il confronto tra esecuzioni.
 
 RANDOM_SEED = 2025
 """ Random seed for reproducibility. """
 
 TEST_FOLDS = 10
 """ Number of folds for cross-validation. """
+
+#   ---------------------------------------------------------------------   #
+#   Dataset configuration
+
+DATA_PATH = "Dataset/mirage/2019"
+""" Path to the dataset file. """
+
+DATASET_NAME = "mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata.pickle"
+""" Name of the dataset file. """
+
+USE_FLOWPIC_DATASET = True
+""" Whether to use the FlowPic dataset or the original Mirage dataset. If True, generate the FlowPic dataset from raw data using the `traffic_converter` module. """
+
+#   ---------------------------------------------------------------------   #
+#   Traffic converter configuration
+
+MTU = 1500
+""" Maximum Transmission Unit (Ethernet). """
+
+BIN_SIZE = 10
+""" Dimension in byte of each bin on the Y-axis of the 2D histogram.
+This means that the Y-axis will be divided into 150 bins,
+each representing a range of 10 bytes. """
+
+TRAFFIC_FILTERS = {
+	"min_tps": 50,
+	# "min_packets": 3,
+	# "min_dim": 10000,
+}
+""" A dictionary containing the filtering criteria for traffic flows. 
+- 'min_tps' : Minimum duration of a session in seconds. Sessions shorter than this will be discarded.
+- 'min_packets' : Minimum number of packets in a session. Sessions with fewer packets will be discarded.
+- 'min_dim' : Minimum flow dimension (payload) in bytes. Flows smaller than this will be discarded. """
+
+#   ---------------------------------------------------------------------   #
