@@ -2,19 +2,16 @@
 	constants.py \n
 	by Mario Gabriele Carofano
 
-	Questo modulo contiene le costanti utilizzate nel progetto, utili per
-	configurare tutti gli aspetti del progetto e la riproducibilità degli
-	esperimenti.
+	Questo modulo contiene le costanti utilizzate nel progetto, utili per configurare tutti gli aspetti del progetto e la riproducibilità degli esperimenti.
 	
 	Sono organizzate principalmente in due sezioni:
 	- Costanti strutturali
-	Sono considerate private (iniziano con "__") e non rilevanti per la
-	riproducibilità degli esperimenti.
+	Sono considerate private (iniziano con "__") e non rilevanti per la riproducibilità degli esperimenti.
 
 	- Parametri di sessione
-	Contengono le impostazioni specifiche per una sessione di esecuzione del
-	progetto. Sono presenti funzioni di salvataggio e caricamento in file JSON,
-	in modo da poter riprodurre gli esperimenti e confrontare i risultati.
+	Contengono le impostazioni specifiche per una sessione di esecuzione del progetto. Sono presenti funzioni di salvataggio e caricamento in file JSON, in modo da poter riprodurre gli esperimenti e confrontare i risultati.
+
+	Inoltre, questo modulo contiene anche altre funzioni di utilità per la gestione della configurazione e della stampa di messaggi per il debug.
 """
 
 #   ####################################################################    #
@@ -128,6 +125,18 @@ def get_value_from_config(
 
 	# end
 
+def debug_print(message: str) -> None:
+	"""Stampa un messaggio di debug se la modalità di debug è abilitata.
+
+	Args:
+		message (str): Messaggio da stampare.
+	"""
+
+	if __DEBUG:
+		print(f"[DEBUG] {message}")
+
+	# end
+
 #   ####################################################################    #
 #   Costanti strutturali
 #   Controllano il flusso di esecuzione del codice.
@@ -142,7 +151,7 @@ __DEBUG_CYCLE = False
 __FLOWS_TO_INSPECT = None
 """ List of flows to inspect during debugging in mirage_pickle_converter(). """
 
-__USE_PRECOMPUTED_DATASET = False
+__USE_PRECOMPUTED_DATASET = True
 """ Whether to load the FlowPic dataset from a precomputed .npz file. """
 
 __USE_CONFIG_FILE = False
@@ -173,9 +182,6 @@ __SAVE_OUTPUT = True
 
 RANDOM_SEED = 2025
 """ Random seed for reproducibility. """
-
-TEST_FOLDS = 10
-""" Number of folds for cross-validation. """
 
 #   ---------------------------------------------------------------------   #
 #   Dataset configuration
@@ -209,5 +215,23 @@ TRAFFIC_FILTERS = {
 - 'min_tps' : Minimum duration of a session in seconds. Sessions shorter than this will be discarded.
 - 'min_packets' : Minimum number of packets in a session. Sessions with fewer packets will be discarded.
 - 'min_dim' : Minimum flow dimension (payload) in bytes. Flows smaller than this will be discarded. """
+
+#   ---------------------------------------------------------------------   #
+#   Dataset split configuration
+
+TRAIN_SIZE = 0.8
+""" Proportion of the dataset to be used for training. """
+
+VAL_SIZE = 0.2
+""" Proportion of the dataset to be used for validation. """
+
+TEST_FOLDS = 10
+""" Number of folds for cross-validation. """
+
+SUB_SAMPLE_RATIO = 1.0
+""" Ratio of the dataset to be used for sub-sampling. For example, 0.5 means using 50% of the dataset. Default should be 1.0, meaning the entire dataset is used. """
+
+BATCH_SIZE = 2048
+""" Size of the mini-batches used during training. """
 
 #   ---------------------------------------------------------------------   #

@@ -18,7 +18,8 @@ importlib.reload(constants)
 from constants import \
 	_json_default, \
 	build_session_config, \
-	get_value_from_config
+	get_value_from_config, \
+	debug_print
 
 # Dataset loading and manipulation
 import numpy as np
@@ -31,8 +32,10 @@ from traffic_converter import \
 	mirage_pickle_converter, \
 	flow_debug
 
-# Preprocessing and evaluation
-# ...
+# Preprocessing
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold
 
 # Machine Learning and Quantum ML
 import torch
@@ -43,6 +46,9 @@ import torch
 # More libraries
 from typing import Any
 import random
+import json
+import time
+from datetime import datetime
 
 #   ####################################################################    #
 #   Caricamento delle costanti strutturali e dei parametri di sessione.
@@ -70,18 +76,12 @@ def create_session() -> tuple[dict[str, Any], Path, Path]:
 	"""
 
 	#   ################################################################    #
-	#	Inizializzazione
-
-	import json
-	import datetime
-
-	#   ################################################################    #
 
 	# Nuova sessione
 	if not __USE_CONFIG_FILE:
 		config = build_session_config()
 
-		id = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
+		id = datetime.now().strftime("%Y-%m-%d_%H-%M")
 		config["session_id"] = id
 
 		output_dir = Path(f"Results/{id}/")
@@ -305,23 +305,202 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 	# end
 
 #   ####################################################################    #
+#	Generazione delle etichette per le classi del dataset.
+
+def encode_labels(y_raw, labels_map_path):
+	"""Codifica le etichette del dataset utilizzando LabelEncoder.
+
+	Args:
+		y_raw (array-like): Array contenente le etichette grezze del dataset.
+		labels_map_path (str): Percorso del file JSON in cui salvare o leggere la mappatura delle etichette.
+
+	Raises:
+		ValueError: Se le etichette del dataset non corrispondono a quelle salvate nella configurazione.
+
+	Returns:
+		tuple: L'array completo delle etichette codificate e un dizionario che mappa in modo univoco le etichette originali.
+	"""
+
+	le = LabelEncoder()
+
+	y_encoded = le.fit_transform(y_raw)
+	ordinal_classes = np.unique(y_encoded)
+	labels_map = {}
+	for l, c in zip(ordinal_classes, le.inverse_transform(ordinal_classes)):
+		labels_map[int(l)] = c
+
+	if not __USE_CONFIG_FILE:
+		with open(labels_map_path, "w", encoding="utf-8") as f:
+			json.dump(labels_map, f)
+
+	elif __USE_CONFIG_FILE:
+		# Se il file di configurazione esiste, si verifica che le classi nel dataset corrispondano a quelle nel file di configurazione.
+		with open(labels_map_path, "r", encoding="utf-8") as f:
+			config_labels_map = json.load(f)
+
+		# Le chiavi lette da JSON sono stringhe.
+		# Vengono prima convertite per essere confrontate.
+		config_labels_map = {int(key): value for key, value in config_labels_map.items()}
+
+		if config_labels_map != labels_map:
+			raise ValueError(
+				f"Le etichette del dataset ({labels_map}) non corrispondono "
+				f"a quelle salvate nella configurazione ({config_labels_map})."
+			)
+
+		# end __USE_CONFIG_FILE
+	
+	assert len(X_raw) == len(y_encoded), (
+		"Disallineamento tra dati e etichette!"
+	)
+
+	return y_encoded, labels_map
+
+#   ####################################################################    #
+#	Implementazione della K-fold cross-validation.
+
+def reduce_dataset(X_raw, y_encoded, metadata) -> tuple:
+	"""Riduce il dataset in base ai parametri della sessione corrente.
+
+	Args:
+		X_raw (array-like): Array contenente i dati grezzi del dataset.
+		y_encoded (array-like): Array contenente le etichette codificate del dataset.
+		metadata (DataFrame): DataFrame contenente i metadati associati ai campioni del dataset.
+
+	Returns:
+		tuple: Una tupla contenente i tre input ridotti, se la configurazione lo richiede. Altrimenti, restituisce gli input originali.
+	"""
+
+	#   ################################################################    #
+	#	Inizializzazione
+
+	global session_config
+
+	sub_sample_ratio = get_value_from_config(session_config, "SUB_SAMPLE_RATIO")
+	random_seed = get_value_from_config(session_config, "RANDOM_SEED")
+	
+	#   ################################################################    #
+
+	# Se il rapporto di sub-sampling è inferiore a 1.0, si riduce il dataset di conseguenza.
+	if sub_sample_ratio < 1.0 and len(X_raw) > 0:
+		selected_indices, _ = train_test_split(
+			np.arange(len(X_raw)),
+			train_size=sub_sample_ratio,
+			stratify=y_encoded,
+			random_state=random_seed
+		)
+
+		X_raw = X_raw[selected_indices]
+		y_encoded = y_encoded[selected_indices]
+		metadata = metadata.iloc[selected_indices].copy().reset_index(drop=True)
+
+		assert len(X_raw) == len(y_encoded) == len(metadata), (
+			"Disallineamento dopo la riduzione del dataset!"
+		)
+
+		# end if SUB_SAMPLE_RATIO
+	
+	return X_raw, y_encoded, metadata
+
+	# end
+
+def split_dataset(X_raw, y_encoded) -> list:
+	"""Suddivide il dataset in folds per la K-fold cross-validation.
+
+	Args:
+		X_raw (array-like): Array contenente i dati grezzi del dataset.
+		y_encoded (array-like): Array contenente le etichette codificate del dataset.
+	
+	Returns:
+		list: Una lista contenente le suddivisioni del dataset in folds.
+	"""
+
+	#   ################################################################    #
+	#	Inizializzazione
+
+	global session_config
+
+	test_folds = get_value_from_config(session_config, "TEST_FOLDS")
+	random_seed = get_value_from_config(session_config, "RANDOM_SEED")
+
+	#   ################################################################    #
+	#	Suddivisione del dataset in folds.
+
+	skf = StratifiedKFold(
+		n_splits = test_folds,
+		shuffle = True,
+		random_state = random_seed
+	)
+
+	folds = list(skf.split(X_raw, y_encoded))
+
+	assert len(folds) > 0, "Nessun fold generato da StratifiedKFold!"
+	assert len(folds) == test_folds, "Il numero di folds generati non corrisponde al numero di test_folds specificato!"
+	
+	return folds
+
+	# end
+
+def split_train_val(train_indices_temp: np.ndarray, y_temp: np.ndarray) -> tuple:
+	"""Suddivide il dataset temporaneo per il training in Train e Validation in base ai parametri della sessione corrente.
+
+	Args:
+		train_indices_temp (np.ndarray): Array contenente gli indici di training temporanei.
+		y_temp (np.ndarray): Array contenente le etichette codificate corrispondenti agli indici di training temporanei.
+
+	Returns:
+		tuple: Una tupla contenente gli indici di training e validation suddivisi.
+	"""
+
+	#   ################################################################    #
+	#	Inizializzazione
+
+	global session_config
+
+	random_seed = get_value_from_config(session_config, "RANDOM_SEED")
+
+	train_size = get_value_from_config(session_config, "TRAIN_SIZE")
+	val_size = get_value_from_config(session_config, "VAL_SIZE")
+
+	assert train_size + val_size == 1.0, \
+		"Le percentuali di Train e Val devono sommare a 1.\n" \
+		f"Train: {train_size:.4f}, " \
+		f"Val: {val_size:.4f}, " \
+		f"Total: {(train_size + val_size):.4f}"
+	
+	#   ################################################################    #
+
+	val_fraction_of_temp = val_size / (train_size + val_size)
+	train_indices, val_indices = train_test_split(
+		train_indices_temp,
+		test_size=val_fraction_of_temp,
+		stratify=y_temp,
+		random_state=random_seed
+	)
+
+	return train_indices, val_indices
+
+#   ####################################################################    #
 #   Main
 
 if __name__ == "__main__":
 
-	# Caricamento dei parametri di sessione.
-	# Si memorizzano i valori utilizzati in questo dizionario, in modo da poterli salvare in un file JSON alla fine dell'esecuzione.
+	#	-----------------------------------------------------------------	#
+	#	Caricamento dei parametri di sessione.
+
+	# Si memorizzano i valori utilizzati in un dizionario, in modo da poterli salvare in un file JSON alla fine dell'esecuzione.
 	session_config, output_dir, config_file_path = create_session()
 	print(f"Directory dei risultati per la sessione corrente: {output_dir}")
 	print(f"Percorso del file di configurazione per la sessione corrente: {config_file_path}")
 
 	#	-----------------------------------------------------------------	#
+	#	Creazione dei percorsi dei file di output.
 
-	# Creazione della directory dei risultati per il fold selezionato.
+	labels_map_path = output_dir / "labels_map.json"
+
 	fold_results_dir = get_fold_directory()
 	print(f"Directory dei risultati per il fold selezionato: {fold_results_dir}")
 
-	# Creazione dei percorsi dei file di output.
 	fold_confusion_matrix_path = fold_results_dir / "confusion_matrix.png"
 	fold_history_path = fold_results_dir / "training_history.csv"
 	fold_model_path = fold_results_dir / "model.pth"
@@ -330,8 +509,8 @@ if __name__ == "__main__":
 	fold_report_path = fold_results_dir / "classification_report.txt"
 
 	#	-----------------------------------------------------------------	#
+	#	Configurazione per la riproducibilità.
 
-	# Configurazione per la riproducibilità.
 	random_seed = get_value_from_config(session_config, "RANDOM_SEED")
 	
 	random.seed(random_seed)
@@ -345,15 +524,16 @@ if __name__ == "__main__":
 	torch.backends.cudnn.deterministic = True
 	torch.backends.cudnn.benchmark = False
 
-	# Selezione del dispositivo.
-	device = get_device()
+	#	-----------------------------------------------------------------	#
+	# 	Selezione del dispositivo.
 
+	device = get_device()
 	if device.type == "cuda":
 		print(f"GPU: {torch.cuda.get_device_name(0)}")
 
 	#	-----------------------------------------------------------------	#
+	#	Caricamento o generazione (opzionale) del dataset.
 
-	# Caricamento o generazione (opzionale) del dataset
 	print("\nLoading dataset...")
 	print(f"Costante '__DEBUG' caricata con valore: {__DEBUG}")
 	print(f"Costante '__USE_PRECOMPUTED_DATASET' caricata con valore: {__USE_PRECOMPUTED_DATASET}.")
@@ -361,7 +541,106 @@ if __name__ == "__main__":
 	X_raw, y_raw, metadata = load_dataset()
 
 	#	-----------------------------------------------------------------	#
+	#	Generazione delle etichette per le classi del dataset.
 
+	y_encoded, labels_map = encode_labels(y_raw, labels_map_path)
+	num_classes = len(labels_map)
+
+	print(f"\nNumero di classi: {num_classes}")
+	print(f"Etichette delle classi generate: {labels_map.values()}")
+	print()
+
+	#	-----------------------------------------------------------------	#
+	#	Implementazione della K-fold cross-validation.
+
+	# Riduzione del dataset (opzionale).
+	X_raw, y_encoded, metadata = reduce_dataset(X_raw, y_encoded, metadata)
+
+	# Suddivisione del dataset.
+	folds = split_dataset(X_raw, y_encoded)
+
+	#	-----------------------------------------------------------------	#
+
+	# ...
+
+	#	-----------------------------------------------------------------	#
+	#	Inizio del training / testing loop per ogni fold del dataset.
+
+	def extract_subset(indices):
+		"""Estrae feature, etichette e metadati per gli indici specificati."""
+		
+		return (
+			X_raw[indices],
+			y_encoded[indices],
+			metadata.iloc[indices].copy().reset_index(drop=True)
+		)
 	
+		# end extract_subset
+	
+	print(f"\n#  {'-'*20}  #")
+
+	for fold_index, current_fold in enumerate(folds):
+
+		print(f"\nInizio elaborazione del fold {fold_index + 1}/{len(folds)}")
+		print(f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
+		start_fold_time = time.time()
+
+		#	-------------------------------------------------------------	#
+		#	Suddivisione del dataset in Train / Val / Test.
+
+		temp_indices, test_indices = current_fold
+		train_indices, val_indices = split_train_val(temp_indices, y_encoded[temp_indices])
+
+		X_train, y_train, metadata_train = extract_subset(train_indices)
+		X_val, y_val, metadata_val = extract_subset(val_indices)
+		X_test, y_test, metadata_test = extract_subset(test_indices)
+
+		#	-------------------------------------------------------------	#
+		#	Verifica della correttezza degli split.
+
+		# Verifica della lunghezza dei set risultanti rispetto al dataset originale.
+		assert len(X_train) + len(X_val) + len(X_test) == len(X_raw), \
+			"La somma dei campioni Train, Val e Test non corrisponde al totale!"
+
+		all_indices = np.arange(len(X_raw))
+		split_indices = np.concatenate([train_indices, val_indices, test_indices])
+		assert np.array_equal(np.sort(all_indices), np.sort(split_indices)), \
+			"Gli split non coprono esattamente il dataset originale!"
+
+		# Verifica dell'allineamento in ciascuno split.
+		# TODO: vedi notebook.
+		
+		#	-------------------------------------------------------------	#
+		#	Stampa dei risultati.
+
+		if __DEBUG:
+			print(f"\nTrain shape: {X_train.shape} ({len(X_train)/len(X_raw):.1%})")
+			print(metadata_train.head())
+			print(f"\nValidation shape: {X_val.shape} ({len(X_val)/len(X_raw):.1%})")
+			print(metadata_val.head())
+			print(f"\nTest shape: {X_test.shape} ({len(X_test)/len(X_raw):.1%})")
+			print(metadata_test.head())
+
+		#	-------------------------------------------------------------	#
+		#	title
+
+		# ...
+
+		#	-------------------------------------------------------------	#
+		#	Fine dell'elaborazione del fold corrente.
+
+		print(f"\nFine elaborazione del fold {fold_index + 1}/{len(folds)}")
+		print(f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
+
+		end_fold_time = time.time()
+		print(f"Tempo di elaborazione: {end_fold_time - start_fold_time:.2f} secondi")
+
+		print(f"\n#  {'-'*20}  #")
+
+		# end for fold_index, current_fold
+
+	#	-----------------------------------------------------------------	#
+
+	# ...
 
 	# end
