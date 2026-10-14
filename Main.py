@@ -31,9 +31,11 @@ from traffic_converter import \
 	get_flowpic_dir, \
 	mirage_pickle_converter, \
 	flow_debug
+from classes import TrafficDataset
+from torch.utils.data import DataLoader
 
 # Preprocessing
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import StratifiedKFold
 
@@ -481,6 +483,39 @@ def split_train_val(train_indices_temp: np.ndarray, y_temp: np.ndarray) -> tuple
 	return train_indices, val_indices
 
 #   ####################################################################    #
+#	Applicazione delle strategie di data preprocessing.
+
+def apply_data_preprocessing(X, scaler):
+	"""Applica il preprocessing ai dati utilizzando lo scaler specificato.
+
+	Args:
+		X (np.ndarray): Array contenente i dati da preprocessare.
+		scaler: Oggetto scaler utilizzato per normalizzare i dati.
+
+	Returns:
+		np.ndarray: Array contenente i dati preprocessati.
+	"""
+
+	#   ################################################################    #
+	#	Inizializzazione
+
+	global session_config
+
+	n_packets = get_value_from_config(session_config, "N_PACKETS")
+	n_features = get_value_from_config(session_config, "N_FEATURES")
+
+	#   ################################################################    #
+
+	X_proc = X.copy().astype(np.float32)
+	X_proc = X_proc[:, :n_packets, :]
+	X_proc = scaler.transform(np.reshape(X_proc, [-1, n_features]))
+	X_proc = np.reshape(X_proc, [-1, n_packets, n_features])
+
+	return X_proc
+
+	# end
+
+#   ####################################################################    #
 #   Main
 
 if __name__ == "__main__":
@@ -492,6 +527,8 @@ if __name__ == "__main__":
 	session_config, output_dir, config_file_path = create_session()
 	print(f"Directory dei risultati per la sessione corrente: {output_dir}")
 	print(f"Percorso del file di configurazione per la sessione corrente: {config_file_path}")
+
+	# TODO: aggiungere caricamento preliminare dei singoli parametri di sessione dal dizionario session_config.
 
 	#	-----------------------------------------------------------------	#
 	#	Creazione dei percorsi dei file di output.
@@ -560,6 +597,26 @@ if __name__ == "__main__":
 	folds = split_dataset(X_raw, y_encoded)
 
 	#	-----------------------------------------------------------------	#
+	#	Selezione della strategia di data preprocessing.
+
+	if get_value_from_config(session_config, "USE_FLOWPIC_DATASET"):
+		debug_print("La fase di preprocessing è disponibile solo per il dataset grezzo (Mirage).")
+
+	else:
+		if not __USE_CONFIG_FILE:
+			session_config["preprocessing_strategy"] = "MinMax"
+			scaler = MinMaxScaler(feature_range=(0, 1))
+
+		else:
+			preprocessing_strategy = get_value_from_config(session_config, "preprocessing_strategy")
+
+			if preprocessing_strategy == "MinMax":
+				scaler = MinMaxScaler(feature_range=(0, 1))
+			else:
+				raise ValueError(f"Strategia di preprocessing non supportata: {preprocessing_strategy}")
+
+	#	-----------------------------------------------------------------	#
+	#	title
 
 	# ...
 
@@ -621,6 +678,58 @@ if __name__ == "__main__":
 			print(f"\nTest shape: {X_test.shape} ({len(X_test)/len(X_raw):.1%})")
 			print(metadata_test.head())
 
+		#	-----------------------------------------------------------------	#
+		#	Applicazione delle strategia di data preprocessing.
+
+		if not get_value_from_config(session_config, "USE_FLOWPIC_DATASET"):
+
+			scaler.fit(np.reshape(X_train, [-1, get_value_from_config(session_config, "N_FEATURES")]))
+
+			X_train = apply_data_preprocessing(X_train, scaler)
+			X_val = apply_data_preprocessing(X_val, scaler)
+			X_test = apply_data_preprocessing(X_test, scaler)
+
+			print("Train shape:", X_train.shape)
+			print("Val shape:", X_val.shape)
+			print("Test shape:", X_test.shape)
+
+		#	-------------------------------------------------------------	#
+		#	Costruzione dell'oggetto Dataset per PyTorch.
+
+		dtype = torch.float32 if device.type == "mps" else torch.float64
+		session_config["dtype"] = dtype
+
+		train_dataset = TrafficDataset(X_train, y_train, num_classes, dtype)
+		val_dataset = TrafficDataset(X_val, y_val, num_classes, dtype)
+		test_dataset = TrafficDataset(X_test, y_test, num_classes, dtype)
+
+		#	-------------------------------------------------------------	#
+		#	Costruzione dei DataLoader per PyTorch.
+
+		train_loader = DataLoader(
+			train_dataset,
+			batch_size=get_value_from_config(session_config, "BATCH_SIZE"),
+			num_workers=0,
+			shuffle=True, drop_last=True,
+			pin_memory=(device.type == "cuda"),
+		)
+
+		val_loader = DataLoader(
+			val_dataset,
+			batch_size=get_value_from_config(session_config, "BATCH_SIZE"),
+			num_workers=0,
+			shuffle=False, drop_last=False,
+			pin_memory=(device.type == "cuda"),
+		)
+
+		test_loader = DataLoader(
+			test_dataset,
+			batch_size=get_value_from_config(session_config, "BATCH_SIZE"),
+			num_workers=0,
+			shuffle=False, drop_last=False,
+			pin_memory=(device.type == "cuda"),
+		)
+
 		#	-------------------------------------------------------------	#
 		#	title
 
@@ -640,6 +749,7 @@ if __name__ == "__main__":
 		# end for fold_index, current_fold
 
 	#	-----------------------------------------------------------------	#
+	#	title
 
 	# ...
 

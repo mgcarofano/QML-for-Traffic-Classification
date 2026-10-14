@@ -192,8 +192,14 @@ DATA_PATH = "Dataset/mirage/2019"
 DATASET_NAME = "mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata.pickle"
 """ Name of the dataset file. """
 
-USE_FLOWPIC_DATASET = True
+USE_FLOWPIC_DATASET = False
 """ Whether to use the FlowPic dataset or the original Mirage dataset. If True, generate the FlowPic dataset from raw data using the `traffic_converter` module. """
+
+N_PACKETS = 100
+""" Number of packets to consider in each flow. """
+
+N_FEATURES = 4
+""" Number of features for each packet in the dataset. """
 
 #   ---------------------------------------------------------------------   #
 #   Traffic converter configuration
