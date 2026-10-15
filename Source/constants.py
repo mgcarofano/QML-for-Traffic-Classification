@@ -255,19 +255,19 @@ TRAIN_SIZE = 0.8
 VAL_SIZE = 0.2
 """ Proportion of the dataset to be used for validation. """
 
-TEST_FOLDS = 10
+TEST_FOLDS = 5
 """ Number of folds for cross-validation. """
 
 SUB_SAMPLE_RATIO = 0.2
 """ Ratio of the dataset to be used for sub-sampling. For example, 0.5 means using 50% of the dataset. Default should be 1.0, meaning the entire dataset is used. """
 
-BATCH_SIZE = 2048
+BATCH_SIZE = 50
 """ Size of the mini-batches used during training. """
 
 #   ---------------------------------------------------------------------   #
 #   Training configuration
 
-EPOCHS = 3
+EPOCHS = 20
 """ Number of training epochs. """
 
 LEARNING_RATE = 1e-3
@@ -337,7 +337,7 @@ SIMULATOR = "default.qubit"
 N_QUBITS = 5
 """ Number of qubits in the quantum circuit. """
 
-N_SHOTS = 20
+N_SHOTS = None
 """ Number of shots for the quantum circuit execution. """
 
 N_LAYERS_QUANTUM = 3

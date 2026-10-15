@@ -601,6 +601,7 @@ def build_loss_function(
 		y_train : torch.Tensor,
 		n_classes : int,
 		device : torch.device,
+		dtype: torch.dtype,
 		alpha : str = None,
 		focal_loss_gamma : float = None
 	) -> nn.Module:
@@ -629,7 +630,11 @@ def build_loss_function(
 		counts = np.bincount(y, minlength=n_classes)
 		weights = np.where(counts > 0, len(y) / (n_classes * np.maximum(counts, 1)), 1.0)
 
-		return torch.tensor(weights, dtype=torch.float32)
+		return torch.tensor(
+			weights,
+			dtype=dtype,
+			device=device
+		)
 
 		# end
 
@@ -644,14 +649,16 @@ def build_loss_function(
 		if alpha == "class_weights":
 			alpha = compute_class_weights()
 		elif alpha == "uniform":
-			alpha = torch.ones(n_classes)
+			alpha_tensor = torch.ones(
+                n_classes,
+                dtype=dtype,
+                device=device
+            )
 		else:
 			raise ValueError(
 				f"Tipo di alpha non supportato: {alpha}. "
 				"Usare: 'class_weights' oppure 'uniform'."
 			)
-
-		alpha = alpha.to(device)
 
 		return torch.hub.load(
 			'adeelh/pytorch-multi-class-focal-loss',
@@ -1147,6 +1154,7 @@ if __name__ == "__main__":
 			# Scelta della loss function
 			criterion = build_loss_function(
 				selected_loss, y_train, num_classes, device,
+				next(model.parameters()).dtype,
 				alpha, focal_loss_gamma
 			)
 
@@ -1278,7 +1286,7 @@ if __name__ == "__main__":
 			#	Disegno dei grafici di loss / accuracy su Train / Val.
 
 			# Calcolo dell'epoca con validation loss minima per evidenziarla nel grafico.
-			best_epoch = int(np.argmin(val_loss)) +1
+			best_epoch = int(np.argmin(history['val_loss'])) +1
 
 			plt.figure(figsize=(12, 5))
 			loss_plot = plt.subplot(1, 2, 1)

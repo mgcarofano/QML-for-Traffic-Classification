@@ -1,0 +1,17 @@
+autoray==0.8.2
+gast==0.7.0
+matplotlib==3.10.8
+numpy
+pandas==3.0.0
+PennyLane==0.44.0
+PennyLane_Lightning==0.44.0
+qiskit==2.3.0
+qiskit-aer==0.17.2
+qiskit-ibm-runtime==0.45.1
+scikit-learn
+scipy==1.17.0
+seaborn==0.13.2
+shap
+shapely
+torch==2.9.1
+torchinfo==1.8.0

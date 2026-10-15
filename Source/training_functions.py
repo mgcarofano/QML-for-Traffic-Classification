@@ -58,7 +58,9 @@ def train_epoch(
         # - Se il device è la CPU : il trasferimento è superfluo e viene evitato.
         # - Su GPU/MPS, si abilita un trasferimento asincrono, realmente efficace solo se il batch proviene da un DataLoader con pin_memory=True.
         inputs = inputs.to(device, non_blocking=True) if device.type != 'cpu' else inputs
-        labels = labels.to(device, non_blocking=True) if device.type != 'cpu' else labels
+
+        # Non convertire invece le etichette nello stesso dtype degli output, poiché la funzione di loss CrossEntropyLoss richiede etichette di tipo long.
+        labels = labels.to(device, dtype=torch.long, non_blocking=(device.type != "cpu"))
 
         # Azzeramento dei gradienti dell'ottimizzatore.
         optimizer.zero_grad()
@@ -141,7 +143,7 @@ def evaluate(
         for inputs, labels in tqdm(loader, desc="Valutazione "):
 
             inputs = inputs.to(device, non_blocking=True) if device.type != 'cpu' else inputs
-            labels = labels.to(device, non_blocking=True) if device.type != 'cpu' else labels
+            labels = labels.to(device, dtype=torch.long, non_blocking=(device.type != "cpu"))
 
             # Forward pass.
             outputs = model(inputs)
