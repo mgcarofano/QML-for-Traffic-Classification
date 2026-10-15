@@ -1,26 +1,14 @@
 """
-
     flowpic_models.py
     di Mario Gabriele Carofano
 
-    Questo modulo contiene la definizione di modelli classici e ibridi
-    quantistici per la classificazione di istogrammi FlowPic, basati su
-    strati convoluzionali bidimensionali (nn.Conv2d) per l'estrazione di
-    feature spaziali dagli istogrammi, seguiti da strati fully-connected
-    per la classificazione.
-
-    Le classi mantengono la stessa interfaccia delle classi dei modelli quantistici,
-    in modo da poter essere utilizzate in modo intercambiabile nel notebook principale.
+    Questo modulo contiene la definizione di modelli classici e ibridi quantistici per la classificazione di istogrammi FlowPic, basati su strati convoluzionali bidimensionali (nn.Conv2d) per l'estrazione di feature spaziali dagli istogrammi, seguiti da strati fully-connected per la classificazione.
 
     Args:
-        n_qubits (int): Numero di qubit per il circuito quantistico (non utilizzato).
-        n_layers (int): Numero di layer per StronglyEntanglingLayers (non utilizzato).
         n_packets (int): Numero di pacchetti nell'input.
         n_features (int): Numero di feature per pacchetto.
         num_classes (int): Numero di classi per la classificazione.
-        n_shots (int, optional): Numero di misurazioni da eseguire (default: None) (non utilizzato).
-        random_seed (int): Seed per il dispositivo quantistico (default: 42) (non utilizzato).
-
+        n_layers (int): Numero di strati nel modello (solo per ResNet).
 """
 
 #   ####################################################################    #
@@ -41,23 +29,13 @@ class FlowPicCNN(nn.Module):
         nn.Module: Base class for all neural network modules in PyTorch.
     """
 
-    def __init__(self,
-            n_qubits, n_layers,
-            n_packets, n_features,
-            num_classes, n_shots=None,
-            random_seed=42,
-        ):
+    def __init__(self, n_features, n_packets, num_classes):
 
         super(FlowPicCNN, self).__init__()
 
-        # Salva i parametri come attributi.
-        self.n_qubits = n_qubits
-        self.n_layers = n_layers
         self.n_packets = n_packets
         self.n_features = n_features
         self.num_classes = num_classes
-        self.n_shots = n_shots
-        self.random_seed = random_seed
 
         self.features = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=3, padding=1),
@@ -322,10 +300,8 @@ class ResNetModel(_ResNet):
     """
 
     def __init__(self,
-            n_qubits, n_layers,
-            n_packets, n_features,
-            num_classes, n_shots=None,
-            random_seed=42,
+            n_features, n_packets, num_classes,
+            n_layers,
         ):
 
         # ResNet16-custom
@@ -358,13 +334,10 @@ class ResNetModel(_ResNet):
 
             # end if n_layers
 
-        self.n_qubits = n_qubits
         self.n_layers = n_layers
         self.n_packets = n_packets
         self.n_features = n_features
         self.num_classes = num_classes
-        self.n_shots = n_shots
-        self.random_seed = random_seed
 
         return
 

@@ -14,6 +14,8 @@
 	Inoltre, questo modulo contiene anche altre funzioni di utilità per la gestione della configurazione e della stampa di messaggi per il debug.
 """
 
+# TODO: trasformare il modulo delle costanti in una classe Singleton per una gestione centralizzata della configurazione.
+
 #   ####################################################################    #
 #   Librerie
 
@@ -25,8 +27,30 @@ import platform
 #   ####################################################################    #
 #   Funzioni di utilità
 
-def _json_default():
-	pass
+def _json_default(obj: Any) -> Any:
+	"""Serializzatore di fallback per json.dump, usato per convertire tipi non nativamente serializzabili in JSON (tuple annidate, set, oggetti torch.device, classi, ecc.).
+	"""
+
+	# Caso speciale: 
+	# torch.device, np.dtype e oggetti simili: si usa la rappresentazione a stringa.
+	if hasattr(obj, "__class__") and obj.__class__.__name__ in ("device", "dtype"):
+		return str(obj)
+
+	if isinstance(obj, set):
+		return sorted(obj)
+
+	if isinstance(obj, (tuple,)):
+		return list(obj)
+
+	# Per le classi, si restituisce il nome della classe.
+	# In Python, ogni classe è un'istanza di 'type'.
+	if isinstance(obj, type):
+		return obj.__name__
+
+	# Ultima risorsa: rappresentazione testuale, per non far fallire il salvataggio.
+	return str(obj)
+
+	# end
 
 def build_session_config() -> dict[str, Any]:
 	"""Costruisce il dizionario completo di configurazione di sessione,
@@ -93,7 +117,7 @@ def build_session_config() -> dict[str, Any]:
 def get_value_from_config(
 		source: dict,
 		key: str,
-		default = None
+		default = None,
 	):
 	"""Recupera un valore dalla sorgente specificata.
 	Se il valore non è presente, viene restituito il valore di default.
@@ -117,10 +141,10 @@ def get_value_from_config(
 		if default is None:
 			raise ValueError(f"Chiave '{key}' mancante.")
 		
-		print(f"Chiave '{key}' mancante. Utilizzo '{default}' come default.")
+		debug_print(f"Chiave '{key}' mancante. Utilizzo '{default}' come default.")
 		return default
 
-	print(f"Costante '{key}' caricata con valore: {value}")
+	debug_print(f"Costante '{key}' caricata con valore: {value}")
 	return value
 
 	# end
@@ -151,13 +175,13 @@ __DEBUG_CYCLE = False
 __FLOWS_TO_INSPECT = None
 """ List of flows to inspect during debugging in mirage_pickle_converter(). """
 
-__USE_PRECOMPUTED_DATASET = True
+__USE_PRECOMPUTED_DATASET = False
 """ Whether to load the FlowPic dataset from a precomputed .npz file. """
 
 __USE_CONFIG_FILE = False
 """ Whether to use a configuration file to load the constants. """
 
-__CONFIG_ID = "2026-09-02_14-48"
+__CONFIG_ID = "2026-10-15_13-46"
 """ Identifier for the configuration JSON file to load. """
 
 __EXEC_MODE_TRAIN = True
@@ -167,9 +191,6 @@ or running validation on an already saved model. \n
 - False : Skip training and run validation only on a pre-saved model. \n
 This allows running "Run All" in the notebook and automatically selecting
 the appropriate branch without manually skipping cells. """
-
-__SELECTED_FOLD = 0
-""" Index of the fold to be used. """
 
 __SAVE_OUTPUT = True
 """ Whether to save the output of the notebook. """
@@ -182,6 +203,9 @@ __SAVE_OUTPUT = True
 
 RANDOM_SEED = 2025
 """ Random seed for reproducibility. """
+
+PREPROCESSING_STRATEGY = "MinMax"
+""" Strategy for preprocessing the dataset. Default is 'MinMax'. """
 
 #   ---------------------------------------------------------------------   #
 #   Dataset configuration
@@ -234,10 +258,93 @@ VAL_SIZE = 0.2
 TEST_FOLDS = 10
 """ Number of folds for cross-validation. """
 
-SUB_SAMPLE_RATIO = 1.0
+SUB_SAMPLE_RATIO = 0.2
 """ Ratio of the dataset to be used for sub-sampling. For example, 0.5 means using 50% of the dataset. Default should be 1.0, meaning the entire dataset is used. """
 
 BATCH_SIZE = 2048
 """ Size of the mini-batches used during training. """
+
+#   ---------------------------------------------------------------------   #
+#   Training configuration
+
+EPOCHS = 3
+""" Number of training epochs. """
+
+LEARNING_RATE = 1e-3
+""" Learning rate for the optimizer. """
+
+EARLY_STOPPING = True
+""" Whether to use early stopping during training. """
+
+PATIENCE = max(2, EPOCHS // 10) if EPOCHS <= 100 else 10
+""" Number of epochs to wait for improvement before stopping training. """
+
+#   ---------------------------------------------------------------------   #
+#   Optimizer configuration
+
+SELECTED_OPTIMIZER = "AdamW"
+""" Selected optimizer for training. Default is "AdamW". """
+
+WEIGHT_DECAY = 1e-4
+""" Weight decay (L2 penalty) for the optimizer. """
+
+EPSILON = 1e-2
+""" Epsilon value for the optimizer AdamW. """
+
+MOMENTUM = 0.9
+""" Momentum for the optimizer SGD. """
+
+#   ---------------------------------------------------------------------   #
+#   Scheduler configuration
+
+SELECTED_SCHEDULER = "OneCycleSched"
+""" Selected scheduler for the learning rate. Default is "OneCycleSched". """
+
+MAX_LR = LEARNING_RATE*3
+""" Maximum learning rate for the OneCycleLR scheduler. """
+
+START_FACTOR = 0.1
+""" Starting factor for the learning rate scheduler. """
+
+STEP_SIZE = 5
+""" Step size for the StepLR scheduler. """
+
+STEPLR_GAMMA = 0.1
+""" Multiplicative factor of learning rate decay for the StepLR scheduler. """
+
+#   ---------------------------------------------------------------------   #
+#   Loss configuration
+
+SELECTED_LOSS = "WeightedCrossEntropy"
+""" Selected loss function for training. Default is "WeightedCrossEntropy". """
+
+ALPHA = "class_weights"
+""" Alpha parameter for the Focal Loss.
+Can be "class_weights", "uniform" or "custom". """
+
+FOCAL_LOSS_GAMMA = 2.0
+""" Gamma parameter for the Focal Loss, typically between 1 and 5. """
+
+#   ---------------------------------------------------------------------   #
+#   Network configuration
+
+SELECTED_MODEL = "hybrid"
+""" Selected model for the network. Default is "resnet". """
+
+SIMULATOR = "default.qubit"
+""" Name of the quantum simulator to use with PennyLane. """
+
+N_QUBITS = 5
+""" Number of qubits in the quantum circuit. """
+
+N_SHOTS = 20
+""" Number of shots for the quantum circuit execution. """
+
+N_LAYERS_QUANTUM = 3
+""" Depth of the StronglyEntanglingLayers ansatz for hybrid quantum models. """
+
+N_LAYERS_RESNET = 18
+""" Number of layers in the ResNet model.
+Possible values: 16, 18, 34. Default is 18. """
 
 #   ---------------------------------------------------------------------   #
