@@ -13,9 +13,9 @@
 import importlib
 import sys
 sys.path.insert(1, './Source/')
-import constants
-importlib.reload(constants)
-from constants import \
+import Source.constants
+importlib.reload(Source.constants)
+from Source.constants import \
 	_json_default, \
 	build_session_config, \
 	get_value_from_config, \
@@ -27,11 +27,11 @@ import os
 import pandas as pd
 from pathlib import Path
 import pickle
-from traffic_converter import \
+from Source.traffic_converter import \
 	get_flowpic_dir, \
 	mirage_pickle_converter, \
 	flow_debug
-from classes import TrafficDataset
+from Source.classes import TrafficDataset
 from torch.utils.data import DataLoader
 
 # Preprocessing
@@ -42,17 +42,17 @@ from sklearn.model_selection import StratifiedKFold
 # Machine Learning and Quantum ML
 import torch
 import torch.nn as nn
-from model_selection import \
+from Source.model_selection import \
 	select_model, \
 	weight_init, \
 	check_model_compatibility
-from training_functions import \
+from Source.training_functions import \
 	train_epoch, \
 	evaluate
 
 # Visualization
 import matplotlib.pyplot as plt
-from visualization_functions import \
+from Source.visualization_functions import \
 	draw_train_val_plot, \
 	draw_confusion_matrix
 from sklearn.metrics import \
@@ -65,12 +65,11 @@ import random
 import json
 import time
 from datetime import datetime
-import copy
 
 #   ####################################################################    #
 #   Caricamento delle costanti strutturali e dei parametri di sessione.
 
-from constants import \
+from Source.constants import \
 	__DEBUG, \
 	__USE_PRECOMPUTED_DATASET, \
 	__USE_CONFIG_FILE, \
@@ -116,52 +115,6 @@ def create_session(id: str) -> tuple[dict[str, Any], Path, Path]:
 	
 	return output_dir, config_file_path
 	
-	# end
-	
-#   ####################################################################    #
-# 	Creazione delle directory dei risultati per il fold selezionato.
-
-def get_fold_directory(selected_fold: int) -> str:
-	"""Crea e restituisce il percorso della directory dei risultati per il fold selezionato in modalità di addestramento, altrimenti verifica che esista (in base alla directory di output fornita nel file di configurazione).
-
-	Args:
-		selected_fold (int): Indice del fold selezionato.
-
-	Raises:
-		FileNotFoundError: Se la directory dei risultati per il fold selezionato non viene trovata.
-
-	Returns:
-		str: Percorso della directory dei risultati per il fold selezionato.
-	"""
-
-	#   ################################################################    #
-	#	Inizializzazione
-
-	global session_config
-	test_folds = get_value_from_config(session_config, "TEST_FOLDS")
-
-	assert 0 <= selected_fold < test_folds, \
-		f"selected_fold deve essere compreso tra 0 e {test_folds-1}."
-
-	#   ################################################################    #
-	#	Creazione della directory dei risultati per il fold selezionato.
-
-	fold_results_dir = output_dir / f"fold{selected_fold}"
-
-	if __EXEC_MODE_TRAIN:
-		fold_results_dir.mkdir(parents=True, exist_ok=True)
-
-	elif not __EXEC_MODE_TRAIN:
-		if not fold_results_dir.exists():
-			raise FileNotFoundError(
-				f"Directory dei risultati per il fold {selected_fold} "
-				f"non trovata: {fold_results_dir}"
-			)
-
-		# end if
-	
-	return fold_results_dir
-
 	# end
 	
 #   ####################################################################    #
@@ -475,6 +428,125 @@ def apply_data_preprocessing(X, scaler):
 	# end
 
 #   ####################################################################    #
+#	Inizializzazione per il fold selezionato.
+
+def get_fold_directory(fold_index: int) -> str:
+	"""Crea e restituisce il percorso della directory dei risultati per il fold selezionato in modalità di addestramento, altrimenti verifica che esista (in base alla directory di output fornita nel file di configurazione).
+
+	Args:
+		fold_index (int): Indice del fold selezionato.
+
+	Raises:
+		FileNotFoundError: Se la directory dei risultati per il fold selezionato non viene trovata.
+
+	Returns:
+		str: Percorso della directory dei risultati per il fold selezionato.
+	"""
+
+	#   ################################################################    #
+	#	Inizializzazione
+
+	global session_config
+	test_folds = get_value_from_config(session_config, "TEST_FOLDS")
+
+	assert 0 <= fold_index < test_folds, \
+		f"fold_index deve essere compreso tra 0 e {test_folds-1}."
+
+	#   ################################################################    #
+	#	Creazione della directory dei risultati per il fold selezionato.
+
+	fold_results_dir = output_dir / f"fold{fold_index}"
+
+	if __EXEC_MODE_TRAIN:
+		fold_results_dir.mkdir(parents=True, exist_ok=True)
+
+	elif not __EXEC_MODE_TRAIN:
+		if not fold_results_dir.exists():
+			raise FileNotFoundError(
+				f"Directory dei risultati per il fold {fold_index} "
+				f"non trovata: {fold_results_dir}"
+			)
+
+		# end if
+	
+	return fold_results_dir
+
+	# end
+
+def init_model(fold_index):
+	"""Inizializza e restituisce il modello selezionato.
+
+	Args:
+		random_seed (int): Seed casuale per la riproducibilità.
+		fold_index (int): Indice del fold corrente per la cross-validation.
+
+	Returns:
+		tuple: Una tupla contenente il modello inizializzato e un booleano che indica se il modello è quantistico.
+	"""
+
+	#   ################################################################    #
+	#	Inizializzazione
+
+	global session_config
+
+	selected_model = get_value_from_config(session_config, "SELECTED_MODEL")
+
+	n_features = get_value_from_config(session_config, "N_FEATURES")
+	n_packets = get_value_from_config(session_config, "N_PACKETS")
+	num_layers = get_value_from_config(session_config, "N_LAYERS")
+	n_qubits = get_value_from_config(session_config, "N_QUBITS")
+	dev_name = get_value_from_config(session_config, "SIMULATOR")
+
+	random_seed = get_value_from_config(session_config, "RANDOM_SEED")
+	fold_seed = random_seed + fold_index
+
+	#   ################################################################    #
+	#	Configurazione del seed per la riproducibilità.
+	
+	os.environ['PYTHONHASHSEED'] = str(random_seed)
+
+	random.seed(fold_seed)
+	np.random.seed(fold_seed)
+
+	torch.manual_seed(fold_seed)
+	torch.cuda.manual_seed(fold_seed)
+	torch.cuda.manual_seed_all(fold_seed)
+
+	torch.backends.cudnn.deterministic = True
+	torch.backends.cudnn.benchmark = False
+
+	#   ################################################################    #
+	#	Scelta e istanziazione del modello.
+
+	model, is_quantum = select_model(
+		selected_model,
+		n_features, n_packets, num_classes,
+		num_layers, n_qubits, dev_name,
+		fold_seed
+	)
+
+	# Si sposta il modello sul dispositivo corretto (CPU, GPU o MPS)
+	# e si imposta il tipo di dato appropriato.
+	model = \
+		model.to(device).float() \
+		if device.type == 'mps' \
+		else model.to(device).double()
+
+	# Inizializzazione dei pesi del modello.
+	model.apply(weight_init)
+
+	#   ################################################################    #
+	#   Ritorno dei risultati.
+
+	# Stampa completa delle informazioni sul modello.
+	print(f"Modello selezionato: {selected_model} -> {model.get_model_name()}")
+	debug_print(model)
+
+	return model, is_quantum
+
+	# end
+
+#   ####################################################################    #
 #   Configurazione dei componenti di addestramento.
 
 def build_optimizer(
@@ -680,12 +752,26 @@ def build_loss_function(
 #   ####################################################################    #
 #	Costruzione del soft-output per il Test set.
 
-def compute_soft_output(model, device, test_loader, criterion=None):
-	
-	print(f"EXEC_MODE_TRAIN impostato su {__EXEC_MODE_TRAIN}.\n")
+def compute_soft_output(
+		model, device, test_loader,
+		criterion=None
+	):
+	"""Calcola il soft-output per il test set, restituendo un Dataframe contenente il FlowID, i risultati effettivi, le predizioni e il soft-output.
+
+	Args:
+		model: Il modello da valutare.
+		device: Il dispositivo su cui eseguire il calcolo.
+		test_loader: Il DataLoader per il test set.
+		criterion (opzionale): La funzione di loss da utilizzare. Defaults to None.
+
+	Returns:
+		pd.DataFrame: Contiene il FlowID, i risultati effettivi, le predizioni e il soft-output.
+	"""
+
+	print(f"EXEC_MODE_TRAIN impostato su {__EXEC_MODE_TRAIN}.")
 	if not __EXEC_MODE_TRAIN:
 		print("Non è stato eseguito alcun addestramento.\n"
-			"Il modello da valutare è stato caricato da un checkpoint salvato.")
+			"Il modello da valutare è stato caricato da un checkpoint salvato.\n")
 		test_loss, test_acc, y_preds, y_true, y_probs = evaluate(
 			model, device,
 			test_loader,
@@ -745,6 +831,8 @@ if __name__ == "__main__":
 	if device.type == "cuda":
 		print(f"GPU: {torch.cuda.get_device_name(0)}")
 
+	dtype = torch.float32 if device.type == "mps" else torch.float64
+
 	#	-----------------------------------------------------------------	#
 	#	Caricamento e salvataggio dei parametri di sessione.
 
@@ -760,10 +848,18 @@ if __name__ == "__main__":
 		with open(config_file_path, "r", encoding="utf-8") as f:
 			session_config = json.load(f)
 
+		assert session_config is not None, "Errore nel caricamento del file di configurazione."
+		assert "device" in session_config and "dtype" in session_config, "Errore nel caricamento del file di configurazione."
+		assert \
+			session_config["device"] == device.type \
+			or session_config["dtype"] == str(dtype), \
+			f"La configurazione attuale della macchina ({(device.type, str(dtype))}) non è compatibile con quella salvata nel file di configurazione ({(session_config['device'], session_config['dtype'])})."
+
 	elif not __USE_CONFIG_FILE:
 		session_config = {
 			"session_id": session_id,
 			"device": device.type,
+			"dtype": str(dtype),
 			**build_session_config()
 		}
 
@@ -782,22 +878,6 @@ if __name__ == "__main__":
 
 	# TODO: aggiungere caricamento preliminare dei singoli parametri di sessione dal dizionario session_config.
 	# ...
-
-	#	-----------------------------------------------------------------	#
-	#	Configurazione per la riproducibilità.
-
-	random_seed = get_value_from_config(session_config, "RANDOM_SEED")
-	
-	random.seed(random_seed)
-	np.random.seed(random_seed)
-	os.environ['PYTHONHASHSEED'] = str(random_seed)
-
-	torch.manual_seed(random_seed)
-	torch.cuda.manual_seed(random_seed)
-	torch.cuda.manual_seed_all(random_seed)
-
-	torch.backends.cudnn.deterministic = True
-	torch.backends.cudnn.benchmark = False
 
 	#	-----------------------------------------------------------------	#
 	#	Caricamento o generazione (opzionale) del dataset.
@@ -847,42 +927,6 @@ if __name__ == "__main__":
 			raise ValueError(f"Strategia di preprocessing non supportata: {preprocessing_strategy}")
 
 		# end if
-
-	#	-----------------------------------------------------------------	#
-	#	Scelta e istanziazione del modello.
-
-	selected_model = get_value_from_config(session_config, "SELECTED_MODEL")
-
-	n_features = get_value_from_config(session_config, "N_FEATURES")
-	n_packets = get_value_from_config(session_config, "N_PACKETS")
-
-	# TODO: modificare la selezione del numero di layer.
-	num_layers = \
-		get_value_from_config(session_config, "N_LAYERS_RESNET") \
-		if selected_model == "resnet" \
-		else get_value_from_config(session_config, "N_LAYERS_QUANTUM")
-
-	n_qubits = get_value_from_config(session_config, "N_QUBITS")
-	dev_name = get_value_from_config(session_config, "SIMULATOR")
-
-	model, is_quantum = select_model(
-		selected_model,
-		n_features, n_packets, num_classes,
-		num_layers, n_qubits, dev_name,
-		random_seed
-	)
-
-	# Si sposta il modello sul dispositivo corretto (CPU, GPU o MPS)
-	# e si imposta il tipo di dato appropriato.
-	model = \
-		model.to(device).float() \
-		if device.type == 'mps' \
-		else model.to(device).double()
-
-	print(f"Modello selezionato: {selected_model} -> {model.get_model_name()}")
-
-	# Stampa completa delle informazioni sul modello.
-	debug_print(model)
 
 	#	-----------------------------------------------------------------	#
 	#	Scelta della strategia di ottimizzazione.
@@ -943,6 +987,8 @@ if __name__ == "__main__":
 		)
 		
 		# end __EXEC_MODE_TRAIN
+	
+	exit()
 
 	#	-----------------------------------------------------------------	#
 	#	Inizio del training / testing loop per ogni fold del dataset.
@@ -1041,8 +1087,6 @@ if __name__ == "__main__":
 		#	-------------------------------------------------------------	#
 		#	Costruzione dell'oggetto Dataset per PyTorch.
 
-		dtype = torch.float32 if device.type == "mps" else torch.float64
-
 		train_dataset = TrafficDataset(X_train, y_train, num_classes, dtype)
 		val_dataset = TrafficDataset(X_val, y_val, num_classes, dtype)
 		test_dataset = TrafficDataset(X_test, y_test, num_classes, dtype)
@@ -1072,18 +1116,16 @@ if __name__ == "__main__":
 		)
 
 		#	-------------------------------------------------------------	#
-		#	Inizializzazione dei pesi del modello.
+		#	Addestramento del modello.
 
-		model.apply(weight_init)
+		model, is_quantum = init_model(fold_index)
+
+		# Per motivi di compatibilità, si inizializza a None.
+		# Si aggiorna successivamente se la modalità di addestramento è abilitata.
+		criterion = None
 
 		print(f"\nEXEC_MODE_TRAIN impostato su {__EXEC_MODE_TRAIN}.")
-		if __EXEC_MODE_TRAIN:
-			print(
-				"Totale parametri addestrabili: "
-				f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
-			)
-
-		elif not __EXEC_MODE_TRAIN:
+		if not __EXEC_MODE_TRAIN:
 			print(f"Caricamento modello per la valutazione da: {fold_results_dir}")
 			print("Il modello non verrà addestrato, ma solo valutato sul test set.")
 
@@ -1104,16 +1146,6 @@ if __name__ == "__main__":
 
 			# Si recupera lo storico delle metriche di addestramento e validazione dal file CSV salvato.
 			df_history = pd.read_csv(fold_history_path)
-			history = df_history.to_dict(orient='list')
-
-			# end __EXEC_MODE_TRAIN
-
-		#	-------------------------------------------------------------	#
-		#	Addestramento del modello.
-
-		if not __EXEC_MODE_TRAIN:
-			print(f"EXEC_MODE_TRAIN impostato su False.")
-			print("Il modello non verrà addestrato.")
 		
 		elif __EXEC_MODE_TRAIN:
 
@@ -1121,14 +1153,11 @@ if __name__ == "__main__":
 			#	Inizializzazione delle metriche da monitorare.
 
 			# Questo dizionario terrà traccia delle metriche di addestramento e validazione per ogni epoca.
-			history = {
-				'epoch': [],
-				'time': [],
-				'accuracy': [],
-				'val_accuracy': [],
-				'loss': [],
-				'val_loss': [],
-			}
+			df_history = pd.DataFrame(columns=[
+				"epoch", "time",
+				"accuracy", "val_accuracy",
+				"loss", "val_loss",
+			])
 
 			# Inizializza le variabili per il monitoraggio della miglior loss di validazione.
 			best_val_loss = float('inf')
@@ -1169,6 +1198,7 @@ if __name__ == "__main__":
 					f"{selected_loss} | "
 					f"{selected_optimizer} | "
 					f"{selected_scheduler}\n"
+				f"[PARAMETERS] {sum(p.numel() for p in model.parameters() if p.requires_grad):,}\n"
 				f"[DATASET] {dataset_name}\n"
 					f"Training samples: {len(train_loader.dataset)} | "
 					f"Validation samples: {len(val_loader.dataset)} | "
@@ -1204,12 +1234,14 @@ if __name__ == "__main__":
 				elapsed_time = epoch_end_time - training_start_time
 
 				# Aggiorna lo storico delle metriche per l'epoca corrente.
-				history['epoch'].append(epoch + 1)
-				history['time'].append(epoch_duration)
-				history['loss'].append(train_loss)
-				history['accuracy'].append(train_acc)
-				history['val_loss'].append(val_loss)
-				history['val_accuracy'].append(val_acc)
+				df_history.loc[len(df_history)] = {
+					"epoch": epoch + 1,
+					"time": epoch_duration,
+					"accuracy": train_acc,
+					"val_accuracy": val_acc,
+					"loss": train_loss,
+					"val_loss": val_loss,
+				}
 
 				# Stampa in console le metriche dell'epoca corrente.
 				print(
@@ -1242,7 +1274,7 @@ if __name__ == "__main__":
 			#	Fine del loop di addestramento.
 
 			training_end_time = time.time()
-			print("Addestramento completato.")
+			print("\nAddestramento completato.")
 			print(f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
 			print(f"Tempo di elaborazione: {training_end_time - training_start_time:.2f} secondi")
 
@@ -1259,93 +1291,94 @@ if __name__ == "__main__":
 			del best_model
 
 			# Salva lo storico delle metriche di addestramento e validazione in un file CSV.
-			df_history = pd.DataFrame(history)
 			df_history.to_csv(fold_history_path, index=False)
-			print(f"Storico delle metriche salvato in {fold_history_path}")
+			print(f"\nStorico delle metriche salvato in {fold_history_path}")
 
 			# Salva i pesi del modello addestrato in un file .PTH
 			torch.save(model.state_dict(), fold_model_path)
 			print(f"Modello salvato in {fold_model_path}")
 
-			#	-----------------------------------------------------------------	#
-			#	Costruzione e salvataggio del soft-output per il Test set.
+			# end __EXEC_MODE_TRAIN
 
-			# Keys: [FlowID, Actual, Predicted, Soft-output]
-			predictions_df = compute_soft_output(
-				model, device, test_loader, criterion
+		#	-------------------------------------------------------------	#
+		#	Costruzione e salvataggio del soft-output per il Test set.
+
+		# Keys: [FlowID, Actual, Predicted, Soft-output]
+		predictions_df = compute_soft_output(
+			model, device, test_loader, criterion
+		)
+
+		if __SAVE_OUTPUT:
+			predictions_df.to_csv(
+				fold_predictions_path,
+				index=False, sep=",",
+				encoding="utf-8", lineterminator="\n",
 			)
 
-			if __SAVE_OUTPUT:
-				predictions_df.to_csv(
-					fold_predictions_path,
-					index=False, sep=",",
-					encoding="utf-8", lineterminator="\n",
-				)
+		#	-------------------------------------------------------------	#
+		#	Disegno dei grafici di loss / accuracy su Train / Val.
 
-			#	-----------------------------------------------------------------	#
-			#	Disegno dei grafici di loss / accuracy su Train / Val.
+		# Calcolo dell'epoca con validation loss minima per evidenziarla nel grafico.
+		best_epoch = int(np.argmin(df_history['val_loss'].to_list())) +1
 
-			# Calcolo dell'epoca con validation loss minima per evidenziarla nel grafico.
-			best_epoch = int(np.argmin(history['val_loss'])) +1
+		plt.figure(figsize=(12, 5))
+		loss_plot = plt.subplot(1, 2, 1)
+		acc_plot = plt.subplot(1, 2, 2)
 
-			plt.figure(figsize=(12, 5))
-			loss_plot = plt.subplot(1, 2, 1)
-			acc_plot = plt.subplot(1, 2, 2)
+		draw_train_val_plot(
+			loss_plot, 'Loss',
+			df_history['loss'].to_list(), df_history['val_loss'].to_list(),
+			best_epoch
+		)
+		draw_train_val_plot(
+			acc_plot, 'Accuracy',
+			df_history['accuracy'].to_list(), df_history['val_accuracy'].to_list(),
+			best_epoch
+		)
+		plt.tight_layout()
 
-			draw_train_val_plot(
-				loss_plot, 'Loss',
-				history['loss'], history['val_loss'],
-				best_epoch
-			)
-			draw_train_val_plot(
-				acc_plot, 'Accuracy',
-				history['accuracy'], history['val_accuracy'],
-				best_epoch
-			)
-			plt.tight_layout()
+		if __SAVE_OUTPUT:
+			plt.savefig(fold_plots_path, bbox_inches='tight')
 
-			if __SAVE_OUTPUT:
-				plt.savefig(fold_plots_path, bbox_inches='tight')
+		#	-------------------------------------------------------------	#
+		#	Calcolo della matrice di confusione per il Test set.
 
-			#	-----------------------------------------------------------------	#
-			#	Calcolo della matrice di confusione per il Test set.
+		cm = confusion_matrix(
+			predictions_df["Actual"],
+			predictions_df["Predicted"],
+			normalize='true'
+		)
 
-			cm = confusion_matrix(
-				predictions_df["Actual"],
-				predictions_df["Predicted"],
-				normalize='true'
-			)
+		plt.figure(figsize=(10, 8))
+		plt.title("Confusion Matrix")
+		plt.ylabel('True Label')
+		plt.xlabel('Predicted Label')
 
-			plt.figure(figsize=(10, 8))
-			plt.title("Confusion Matrix")
-			plt.ylabel('True Label')
-			plt.xlabel('Predicted Label')
+		draw_confusion_matrix(cm, labels_map.values())
+		plt.tight_layout()
 
-			draw_confusion_matrix(cm, labels_map.values())
-			plt.tight_layout()
+		if __SAVE_OUTPUT:
+			plt.savefig(fold_confusion_matrix_path, bbox_inches='tight')
 
-			if __SAVE_OUTPUT:
-				plt.savefig(fold_confusion_matrix_path, bbox_inches='tight')
+		#	-------------------------------------------------------------	#
+		#	Report di classificazione completo.
 
-			#	-----------------------------------------------------------------	#
-			#	Report di classificazione completo.
+		report_dict = classification_report(
+			predictions_df["Actual"], predictions_df["Predicted"],
+			target_names=labels_map.values(), labels=np.arange(num_classes),
+			digits=4, zero_division=0
+		)
 
-			report_dict = classification_report(
-				predictions_df["Actual"], predictions_df["Predicted"],
-				target_names=labels_map.values(), labels=np.arange(num_classes),
-				digits=4, zero_division=0
-			)
-
-			if __SAVE_OUTPUT:
-				with open(fold_report_path, "w") as f:
-					f.write(report_dict)
+		if __SAVE_OUTPUT:
+			with open(fold_report_path, "w") as f:
+				f.write(report_dict)
 
 		#	-------------------------------------------------------------	#
 		#	Fine dell'elaborazione del fold corrente.
 
 		fold_end_time = time.time()
 		print(f"\nFine elaborazione del fold {fold_index + 1}/{len(folds)}")
-		print(f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
+		print(f"Orario corrente: {datetime.fromtimestamp(fold_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 		print(f"Tempo di elaborazione: {fold_end_time - fold_start_time:.2f} secondi")
 
 		print(f"\n#  {'-'*20}  #")
@@ -1363,7 +1396,8 @@ if __name__ == "__main__":
 
 	total_end_time = time.time()
 	print(f"\nElaborazione completata.")
-	print(f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
+	print(f"Orario d'inizio: {datetime.fromtimestamp(total_start_time).strftime('%Y-%m-%d_%H:%M:%S')}")
+	print(f"Orario di fine: {datetime.fromtimestamp(total_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Tempo di elaborazione: {total_end_time - total_start_time:.2f} secondi")
 
 	exit(0)

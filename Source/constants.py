@@ -175,13 +175,13 @@ __DEBUG_CYCLE = False
 __FLOWS_TO_INSPECT = None
 """ List of flows to inspect during debugging in mirage_pickle_converter(). """
 
-__USE_PRECOMPUTED_DATASET = False
+__USE_PRECOMPUTED_DATASET = True
 """ Whether to load the FlowPic dataset from a precomputed .npz file. """
 
 __USE_CONFIG_FILE = False
 """ Whether to use a configuration file to load the constants. """
 
-__CONFIG_ID = "2026-10-15_13-46"
+__CONFIG_ID = "2026-10-16_12-25"
 """ Identifier for the configuration JSON file to load. """
 
 __EXEC_MODE_TRAIN = True
@@ -258,7 +258,7 @@ VAL_SIZE = 0.2
 TEST_FOLDS = 5
 """ Number of folds for cross-validation. """
 
-SUB_SAMPLE_RATIO = 0.2
+SUB_SAMPLE_RATIO = 0.05
 """ Ratio of the dataset to be used for sub-sampling. For example, 0.5 means using 50% of the dataset. Default should be 1.0, meaning the entire dataset is used. """
 
 BATCH_SIZE = 50
@@ -267,7 +267,7 @@ BATCH_SIZE = 50
 #   ---------------------------------------------------------------------   #
 #   Training configuration
 
-EPOCHS = 20
+EPOCHS = 3
 """ Number of training epochs. """
 
 LEARNING_RATE = 1e-3
@@ -340,11 +340,9 @@ N_QUBITS = 5
 N_SHOTS = None
 """ Number of shots for the quantum circuit execution. """
 
-N_LAYERS_QUANTUM = 3
-""" Depth of the StronglyEntanglingLayers ansatz for hybrid quantum models. """
-
-N_LAYERS_RESNET = 18
-""" Number of layers in the ResNet model.
-Possible values: 16, 18, 34. Default is 18. """
+N_LAYERS = 18 if SELECTED_MODEL == "resnet" else 3
+""" Number of layers for the selected model.
+- For ResNet, possible values are 16, 18, 34. Default is 18.
+- For Quantum models, this represents the depth of the StronglyEntanglingLayers ansatz. Default is 3. """
 
 #   ---------------------------------------------------------------------   #

@@ -52,7 +52,7 @@ def train_epoch(
     #   ################################################################    #
     #   Ciclo di addestramento sui batch del DataLoader.
 
-    for inputs, labels in tqdm(loader, desc="Addestramento "):
+    for inputs, labels in tqdm(loader, desc="Addestramento ", leave=False):
 
         # Sposta inputs e labels sul device di calcolo solo se necessario:
         # - Se il device è la CPU : il trasferimento è superfluo e viene evitato.
@@ -140,7 +140,7 @@ def evaluate(
 
     # Si utilizza "torch.no_grad()" per disabilitare il calcolo del gradiente durante la fase di valutazione, migliorando le prestazioni e riducendo l'uso della memoria.
     with torch.no_grad():
-        for inputs, labels in tqdm(loader, desc="Valutazione "):
+        for inputs, labels in tqdm(loader, desc="Valutazione ", leave=False):
 
             inputs = inputs.to(device, non_blocking=True) if device.type != 'cpu' else inputs
             labels = labels.to(device, dtype=torch.long, non_blocking=(device.type != "cpu"))
