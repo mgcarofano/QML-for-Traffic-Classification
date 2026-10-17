@@ -63,6 +63,13 @@ def build_session_config() -> dict[str, Any]:
 
 	config = {}
 
+	libraries = [
+		"torch", "numpy", "pandas",
+		"sklearn", "scipy",
+		"matplotlib", "seaborn",
+		"pennylane",
+	]
+
 	#   ################################################################    #
 	#   Costanti statiche da constants.py (chiavi MAIUSCOLE)
 
@@ -101,7 +108,7 @@ def build_session_config() -> dict[str, Any]:
 	config["platform"] = platform.platform()
 	config["processor"] = platform.processor()
 
-	for lib_name in ["torch", "numpy", "pandas", "sklearn", "pennylane"]:
+	for lib_name in libraries:
 		try:
 			module = __import__(lib_name)
 			config[f"{lib_name}_version"] = getattr(module, "__version__", "unknown")
@@ -181,16 +188,14 @@ __USE_PRECOMPUTED_DATASET = True
 __USE_CONFIG_FILE = False
 """ Whether to use a configuration file to load the constants. """
 
-__CONFIG_ID = "2026-10-16_12-25"
+__CONFIG_ID = "2026-10-17_13-06"
 """ Identifier for the configuration JSON file to load. """
 
 __EXEC_MODE_TRAIN = True
 """ Set this flag to choose between training a new model
 or running validation on an already saved model. \n
 - True  : Execute the training loop.
-- False : Skip training and run validation only on a pre-saved model. \n
-This allows running "Run All" in the notebook and automatically selecting
-the appropriate branch without manually skipping cells. """
+- False : Skip training and run validation only on a pre-saved model. """
 
 __SAVE_OUTPUT = True
 """ Whether to save the output of the notebook. """
@@ -258,7 +263,7 @@ VAL_SIZE = 0.2
 TEST_FOLDS = 5
 """ Number of folds for cross-validation. """
 
-SUB_SAMPLE_RATIO = 0.05
+SUB_SAMPLE_RATIO = 1.0
 """ Ratio of the dataset to be used for sub-sampling. For example, 0.5 means using 50% of the dataset. Default should be 1.0, meaning the entire dataset is used. """
 
 BATCH_SIZE = 50
@@ -267,7 +272,7 @@ BATCH_SIZE = 50
 #   ---------------------------------------------------------------------   #
 #   Training configuration
 
-EPOCHS = 3
+EPOCHS = 20
 """ Number of training epochs. """
 
 LEARNING_RATE = 1e-3

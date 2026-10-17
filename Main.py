@@ -136,8 +136,6 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 	#   ################################################################    #
 	#	Inizializzazione
 
-	global session_config
-
 	use_flowpic_dataset = get_value_from_config(session_config, "USE_FLOWPIC_DATASET")
 	data_path = get_value_from_config(session_config, "DATA_PATH")
 	dataset_name = get_value_from_config(session_config, "DATASET_NAME")
@@ -186,7 +184,11 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 			print(f"\nSalvato dataset (shape={histograms.shape}) in: {npz_path}")
 
 			# Salvataggio dei metadati in formato CSV.
-			metadata.to_csv(meta_path, index=False)
+			metadata.to_csv(
+				meta_path,
+				index=False,
+				lineterminator="\n",
+			)
 			print(f"Salvati metadati (di {len(metadata)} righe) in: {meta_path} ")
 
 		elif __USE_PRECOMPUTED_DATASET:
@@ -221,10 +223,11 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 #   ####################################################################    #
 #	Generazione delle etichette per le classi del dataset.
 
-def encode_labels(y_raw, labels_map_path):
+def encode_labels(X_raw, y_raw, labels_map_path):
 	"""Codifica le etichette del dataset utilizzando LabelEncoder.
 
 	Args:
+		X_raw (array-like): Array contenente i dati grezzi del dataset.
 		y_raw (array-like): Array contenente le etichette grezze del dataset.
 		labels_map_path (str): Percorso del file JSON in cui salvare o leggere la mappatura delle etichette.
 
@@ -288,8 +291,6 @@ def reduce_dataset(X_raw, y_encoded, metadata) -> tuple:
 	#   ################################################################    #
 	#	Inizializzazione
 
-	global session_config
-
 	sub_sample_ratio = get_value_from_config(session_config, "SUB_SAMPLE_RATIO")
 	random_seed = get_value_from_config(session_config, "RANDOM_SEED")
 	
@@ -332,10 +333,27 @@ def split_dataset(X_raw, y_encoded) -> list:
 	#   ################################################################    #
 	#	Inizializzazione
 
-	global session_config
-
 	test_folds = get_value_from_config(session_config, "TEST_FOLDS")
+	test_size = get_value_from_config(session_config, "VAL_SIZE")
 	random_seed = get_value_from_config(session_config, "RANDOM_SEED")
+
+	assert test_folds > 0, "Il numero di folds deve essere maggiore di 0!"
+	assert test_folds <= len(X_raw), "Il numero di folds non può superare il numero di campioni nel dataset!"
+
+	#   ################################################################    #
+	#	CASO SPECIALE: unico fold
+
+	# Nel caso in cui si vuole una singola iterazione, si restituisce l'intero dataset come unico fold. Si effettua comunque la separazione in una porzione temporanea e una porzione dedicata al Test.
+	if test_folds == 1:
+
+		train_indices, test_indices = train_test_split(
+			np.arange(len(X_raw)),
+			test_size=test_size,
+			stratify=y_encoded,
+			random_state=random_seed
+		)
+
+		return [(train_indices, test_indices)]
 
 	#   ################################################################    #
 	#	Suddivisione del dataset in folds.
@@ -368,8 +386,6 @@ def split_train_val(train_indices_temp: np.ndarray, y_temp: np.ndarray) -> tuple
 
 	#   ################################################################    #
 	#	Inizializzazione
-
-	global session_config
 
 	random_seed = get_value_from_config(session_config, "RANDOM_SEED")
 
@@ -411,8 +427,6 @@ def apply_data_preprocessing(X, scaler):
 	#   ################################################################    #
 	#	Inizializzazione
 
-	global session_config
-
 	n_packets = get_value_from_config(session_config, "N_PACKETS")
 	n_features = get_value_from_config(session_config, "N_FEATURES")
 
@@ -428,12 +442,13 @@ def apply_data_preprocessing(X, scaler):
 	# end
 
 #   ####################################################################    #
-#	Inizializzazione per il fold selezionato.
+#	Creazione dei percorsi dei file di output.
 
-def get_fold_directory(fold_index: int) -> str:
+def get_fold_directory(output_dir: Path, fold_index: int) -> str:
 	"""Crea e restituisce il percorso della directory dei risultati per il fold selezionato in modalità di addestramento, altrimenti verifica che esista (in base alla directory di output fornita nel file di configurazione).
 
 	Args:
+		output_dir (Path): Directory di output principale.
 		fold_index (int): Indice del fold selezionato.
 
 	Raises:
@@ -446,7 +461,6 @@ def get_fold_directory(fold_index: int) -> str:
 	#   ################################################################    #
 	#	Inizializzazione
 
-	global session_config
 	test_folds = get_value_from_config(session_config, "TEST_FOLDS")
 
 	assert 0 <= fold_index < test_folds, \
@@ -473,12 +487,16 @@ def get_fold_directory(fold_index: int) -> str:
 
 	# end
 
-def init_model(fold_index):
+#   ####################################################################    #
+#   Configurazione dei componenti di addestramento.
+
+def init_model(device, fold_index: int, num_classes: int):
 	"""Inizializza e restituisce il modello selezionato.
 
 	Args:
-		random_seed (int): Seed casuale per la riproducibilità.
+		device: Dispositivo su cui eseguire il modello (CPU, GPU o MPS).
 		fold_index (int): Indice del fold corrente per la cross-validation.
+		num_classes (int): Numero di classi per la classificazione.
 
 	Returns:
 		tuple: Una tupla contenente il modello inizializzato e un booleano che indica se il modello è quantistico.
@@ -486,8 +504,6 @@ def init_model(fold_index):
 
 	#   ################################################################    #
 	#	Inizializzazione
-
-	global session_config
 
 	selected_model = get_value_from_config(session_config, "SELECTED_MODEL")
 
@@ -545,9 +561,6 @@ def init_model(fold_index):
 	return model, is_quantum
 
 	# end
-
-#   ####################################################################    #
-#   Configurazione dei componenti di addestramento.
 
 def build_optimizer(
 		selected_optimizer : str,
@@ -750,10 +763,159 @@ def build_loss_function(
 	# end
 
 #   ####################################################################    #
+#	Addestramento del modello.
+
+def train_model(
+		model, device,
+		train_loader, val_loader,
+		optimizer, lr_sched, criterion,
+		fold_model_path
+	):
+
+	#	################################################################	#
+	#	Inizializzazione
+
+	selected_loss = get_value_from_config(session_config, "SELECTED_LOSS")
+	selected_optimizer = get_value_from_config(session_config, "SELECTED_OPTIMIZER")
+	selected_scheduler = get_value_from_config(session_config, "SELECTED_SCHEDULER")
+
+	dataset_name = get_value_from_config(session_config, "DATASET_NAME")
+	batch_size = get_value_from_config(session_config, "BATCH_SIZE")
+
+	patience = get_value_from_config(session_config, "PATIENCE")
+	epochs = get_value_from_config(session_config, "EPOCHS")
+	early_stopping = get_value_from_config(session_config, "EARLY_STOPPING")
+
+	#	################################################################	#
+	#	Inizializzazione delle metriche da monitorare.
+
+	# Questo dizionario terrà traccia delle metriche di addestramento e validazione per ogni epoca.
+	train_history_df = pd.DataFrame(columns=[
+		"epoch", "time",
+		"accuracy", "val_accuracy",
+		"loss", "val_loss",
+	])
+
+	# Inizializza le variabili per il monitoraggio della miglior loss di validazione.
+	best_val_loss = float('inf')
+	patience_counter = 0
+
+	#	################################################################	#
+	#	Inizio del loop di addestramento.
+
+	training_start_time = time.time()
+	print(
+		f"Addestramento iniziato.\n"
+		f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}\n"
+		f"[MODEL] {model.get_model_name()} | "
+			f"{selected_loss} | "
+			f"{selected_optimizer} | "
+			f"{selected_scheduler}\n"
+		f"[PARAMETERS] {sum(p.numel() for p in model.parameters() if p.requires_grad):,}\n"
+		f"[DATASET] {dataset_name}\n"
+			f"Training samples: {len(train_loader.dataset)} | "
+			f"Validation samples: {len(val_loader.dataset)} | "
+			f"Batch size: {batch_size}"
+	)
+
+	#	################################################################	#
+	#	Esecuzione del loop di addestramento.
+
+	for epoch in range(epochs):
+		
+		# Salva il timestamp di inizio epoca per calcolare la durata dell'epoca corrente.
+		epoch_start_time = time.time()
+		print(f"\nEpoch {epoch+1}/{epochs}\n")
+		
+		# Calcola la loss e l'accuratezza per il training set e il validation set.
+		train_loss, train_acc = train_epoch(
+			model, device,
+			train_loader,
+			criterion, optimizer, lr_sched
+		)
+
+		# In fase di addestramento, non serve restituire le predizioni e le etichette predette. Si inserisce '_' per ignorarle.
+		val_loss, val_acc, _, _, _ = evaluate(
+			model, device,
+			val_loader,
+			criterion
+		)
+		
+		# Calcola la durata dell'epoca corrente e il tempo totale trascorso dall'inizio dell'addestramento.
+		epoch_end_time = time.time()
+		epoch_duration = epoch_end_time - epoch_start_time
+		elapsed_time = epoch_end_time - training_start_time
+
+		# Aggiorna lo storico delle metriche per l'epoca corrente.
+		train_history_df.loc[len(train_history_df)] = {
+			"epoch": epoch + 1,
+			"time": epoch_duration,
+			"accuracy": train_acc,
+			"val_accuracy": val_acc,
+			"loss": train_loss,
+			"val_loss": val_loss,
+		}
+
+		# Stampa in console le metriche dell'epoca corrente.
+		print(
+			f"\nLoss: {train_loss:.4f} | Acc: {train_acc:.2f}%\n"
+			f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%\n"
+			f"Epoch time: {epoch_duration:.2f}s | Elapsed time: {elapsed_time:.2f}s"
+		)
+
+		# CHECK : se la loss di validazione migliora,
+		# salva il modello e resetta il contatore per la patience.
+		if val_loss < best_val_loss:
+			best_val_loss = val_loss
+			torch.save(model.state_dict(), fold_model_path)
+			patience_counter = 0
+			print(
+				f"  -> Validation loss improved. "
+				f"Model saved in {fold_model_path}."
+			)
+		else:
+			patience_counter += 1
+			print(f"  -> No improvement. ", end="")
+			print(f"Patience: {patience_counter} of {patience}" if True else "")
+
+		# Se il contatore di patience raggiunge il limite
+		# e l'early stopping è abilitato, si interrompe il training.
+		if patience_counter >= patience and early_stopping:
+			print("Early stopping triggered.")
+			break
+
+		# end for epoch
+
+	#	################################################################	#
+	#	Fine del loop di addestramento.
+
+	training_end_time = time.time()
+	print("\nAddestramento completato.")
+	print(f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
+	print(f"Tempo di elaborazione: {training_end_time - training_start_time:.2f} secondi")
+
+	#	################################################################	#
+	#	Salvataggio dei risultati.
+
+	# Ricarica i pesi del modello con la miglior loss di validazione.
+	best_model = torch.load(
+		fold_model_path,
+		map_location=device,
+		weights_only=True,
+	)
+	model.load_state_dict(best_model)
+	del best_model
+
+	return model, train_history_df
+
+	# end
+
+#   ####################################################################    #
 #	Costruzione del soft-output per il Test set.
 
 def compute_soft_output(
-		model, device, test_loader,
+		model, device,
+		test_loader, metadata_test,
 		criterion=None
 	):
 	"""Calcola il soft-output per il test set, restituendo un Dataframe contenente il FlowID, i risultati effettivi, le predizioni e il soft-output.
@@ -762,13 +924,14 @@ def compute_soft_output(
 		model: Il modello da valutare.
 		device: Il dispositivo su cui eseguire il calcolo.
 		test_loader: Il DataLoader per il test set.
+		metadata_test: Il DataFrame contenente i metadati del test set.
 		criterion (opzionale): La funzione di loss da utilizzare. Defaults to None.
 
 	Returns:
 		pd.DataFrame: Contiene il FlowID, i risultati effettivi, le predizioni e il soft-output.
 	"""
 
-	print(f"EXEC_MODE_TRAIN impostato su {__EXEC_MODE_TRAIN}.")
+	print(f"\nEXEC_MODE_TRAIN impostato su {__EXEC_MODE_TRAIN}.")
 	if not __EXEC_MODE_TRAIN:
 		print("Non è stato eseguito alcun addestramento.\n"
 			"Il modello da valutare è stato caricato da un checkpoint salvato.\n")
@@ -792,7 +955,7 @@ def compute_soft_output(
 	#	Ritorno dei risultati.
 
 	soft_output = [
-		";".join(f"{probability:.10f}" for probability in row)
+		";".join(f"{probability:.8f}" for probability in row)
 		for row in y_probs.tolist()
 	]
 
@@ -810,7 +973,7 @@ def compute_soft_output(
 #   ####################################################################    #
 #   Main
 
-if __name__ == "__main__":
+def main():
 
 	total_start_time = time.time()
 	print(f"\nInizio elaborazione.")
@@ -835,6 +998,8 @@ if __name__ == "__main__":
 
 	#	-----------------------------------------------------------------	#
 	#	Caricamento e salvataggio dei parametri di sessione.
+
+	global session_config
 
 	session_id = \
 		datetime.now().strftime("%Y-%m-%d_%H-%M") \
@@ -896,20 +1061,11 @@ if __name__ == "__main__":
 	# Creazione del percorso di output per la mappatura delle etichette.
 	labels_map_path = output_dir / "labels_map.json"
 
-	y_encoded, labels_map = encode_labels(y_raw, labels_map_path)
+	y_encoded, labels_map = encode_labels(X_raw, y_raw, labels_map_path)
 	num_classes = len(labels_map)
 
 	print(f"\nNumero di classi: {num_classes}")
 	print(f"Etichette delle classi generate: {labels_map.values()}\n")
-
-	#	-----------------------------------------------------------------	#
-	#	Implementazione della K-fold cross-validation.
-
-	# Riduzione del dataset (opzionale).
-	X_raw, y_encoded, metadata = reduce_dataset(X_raw, y_encoded, metadata)
-
-	# Suddivisione del dataset.
-	folds = split_dataset(X_raw, y_encoded)
 
 	#	-----------------------------------------------------------------	#
 	#	Selezione della strategia di data preprocessing.
@@ -987,8 +1143,15 @@ if __name__ == "__main__":
 		)
 		
 		# end __EXEC_MODE_TRAIN
-	
-	exit()
+
+	#	-----------------------------------------------------------------	#
+	#	Implementazione della K-fold cross-validation.
+
+	# Riduzione del dataset (opzionale).
+	X_raw, y_encoded, metadata = reduce_dataset(X_raw, y_encoded, metadata)
+
+	# Suddivisione del dataset.
+	folds = split_dataset(X_raw, y_encoded)
 
 	#	-----------------------------------------------------------------	#
 	#	Inizio del training / testing loop per ogni fold del dataset.
@@ -1006,13 +1169,9 @@ if __name__ == "__main__":
 	
 	print(f"\n#  {'-'*20}  #")
 
-	dataset_name = get_value_from_config(session_config, "DATASET_NAME")
 	batch_size = get_value_from_config(session_config, "BATCH_SIZE")
-
 	epochs = get_value_from_config(session_config, "EPOCHS")
 	learning_rate = get_value_from_config(session_config, "LEARNING_RATE")
-	early_stopping = get_value_from_config(session_config, "EARLY_STOPPING")
-	patience = get_value_from_config(session_config, "PATIENCE")
 
 	for fold_index, current_fold in enumerate(folds):
 
@@ -1023,7 +1182,7 @@ if __name__ == "__main__":
 		#	-----------------------------------------------------------------	#
 		#	Creazione dei percorsi dei file di output.
 
-		fold_results_dir = get_fold_directory(fold_index)
+		fold_results_dir = get_fold_directory(output_dir, fold_index)
 		print(f"Directory dei risultati per il fold selezionato: {fold_results_dir}")
 
 		fold_confusion_matrix_path = fold_results_dir / "confusion_matrix.png"
@@ -1070,7 +1229,7 @@ if __name__ == "__main__":
 			print(metadata_test.head())
 
 		#	-----------------------------------------------------------------	#
-		#	Applicazione delle strategia di data preprocessing.
+		#	Applicazione della strategia di data preprocessing.
 
 		if not use_flowpic_dataset:
 
@@ -1118,7 +1277,7 @@ if __name__ == "__main__":
 		#	-------------------------------------------------------------	#
 		#	Addestramento del modello.
 
-		model, is_quantum = init_model(fold_index)
+		model, is_quantum = init_model(device, fold_index, num_classes)
 
 		# Per motivi di compatibilità, si inizializza a None.
 		# Si aggiorna successivamente se la modalità di addestramento è abilitata.
@@ -1145,42 +1304,28 @@ if __name__ == "__main__":
 			model.eval()
 
 			# Si recupera lo storico delle metriche di addestramento e validazione dal file CSV salvato.
-			df_history = pd.read_csv(fold_history_path)
+			train_history_df = pd.read_csv(fold_history_path)
 		
 		elif __EXEC_MODE_TRAIN:
 
 			#	-------------------------------------------------------------	#
-			#	Inizializzazione delle metriche da monitorare.
-
-			# Questo dizionario terrà traccia delle metriche di addestramento e validazione per ogni epoca.
-			df_history = pd.DataFrame(columns=[
-				"epoch", "time",
-				"accuracy", "val_accuracy",
-				"loss", "val_loss",
-			])
-
-			# Inizializza le variabili per il monitoraggio della miglior loss di validazione.
-			best_val_loss = float('inf')
-			patience_counter = 0
-
-			#	-------------------------------------------------------------	#
 			#	Configurazione dei componenti di addestramento.
 
-			# Scelta dell'optimizer
+			# Scelta dell'optimizer.
 			optimizer = build_optimizer(
 				selected_optimizer, model,
 				learning_rate, weight_decay,
 				epsilon, momentum
 			)
 
-			# Scelta del learning rate scheduler
+			# Scelta del learning rate scheduler.
 			lr_sched = build_scheduler(
 				selected_scheduler, optimizer, train_loader,
 				epochs, max_lr, start_factor,
 				step_size, steplr_gamma
 			)
 
-			# Scelta della loss function
+			# Scelta della loss function.
 			criterion = build_loss_function(
 				selected_loss, y_train, num_classes, device,
 				next(model.parameters()).dtype,
@@ -1188,190 +1333,114 @@ if __name__ == "__main__":
 			)
 
 			#	-------------------------------------------------------------	#
-			#	Inizio del loop di addestramento.
-
-			training_start_time = time.time()
-			print(
-				f"Addestramento iniziato.\n"
-				f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}\n"
-				f"[MODEL] {model.get_model_name()} | "
-					f"{selected_loss} | "
-					f"{selected_optimizer} | "
-					f"{selected_scheduler}\n"
-				f"[PARAMETERS] {sum(p.numel() for p in model.parameters() if p.requires_grad):,}\n"
-				f"[DATASET] {dataset_name}\n"
-					f"Training samples: {len(train_loader.dataset)} | "
-					f"Validation samples: {len(val_loader.dataset)} | "
-					f"Batch size: {batch_size}"
-			)
-
-			#	-------------------------------------------------------------	#
 			#	Esecuzione del loop di addestramento.
 
-			for epoch in range(epochs):
-				
-				# Salva il timestamp di inizio epoca per calcolare la durata dell'epoca corrente.
-				epoch_start_time = time.time()
-				print(f"\nEpoch {epoch+1}/{epochs}\n")
-				
-				# Calcola la loss e l'accuratezza per il training set e il validation set.
-				train_loss, train_acc = train_epoch(
-					model, device,
-					train_loader,
-					criterion, optimizer, lr_sched
-				)
-
-				# In fase di addestramento, non serve restituire le predizioni e le etichette predette. Si inserisce '_' per ignorarle.
-				val_loss, val_acc, _, _, _ = evaluate(
-					model, device,
-					val_loader,
-					criterion
-				)
-				
-				# Calcola la durata dell'epoca corrente e il tempo totale trascorso dall'inizio dell'addestramento.
-				epoch_end_time = time.time()
-				epoch_duration = epoch_end_time - epoch_start_time
-				elapsed_time = epoch_end_time - training_start_time
-
-				# Aggiorna lo storico delle metriche per l'epoca corrente.
-				df_history.loc[len(df_history)] = {
-					"epoch": epoch + 1,
-					"time": epoch_duration,
-					"accuracy": train_acc,
-					"val_accuracy": val_acc,
-					"loss": train_loss,
-					"val_loss": val_loss,
-				}
-
-				# Stampa in console le metriche dell'epoca corrente.
-				print(
-					f"\nLoss: {train_loss:.4f} | Acc: {train_acc:.2f}%\n"
-					f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%\n"
-					f"Epoch time: {epoch_duration:.2f}s | Elapsed time: {elapsed_time:.2f}s"
-				)
-
-				# CHECK : se la loss di validazione migliora,
-				# salva il modello e resetta il contatore per la patience.
-				if val_loss < best_val_loss:
-					best_val_loss = val_loss
-					torch.save(model.state_dict(), fold_model_path)
-					patience_counter = 0
-					print(f"  -> Validation loss improved. Model saved.")
-				else:
-					patience_counter += 1
-					print(f"  -> No improvement. ", end="")
-					print(f"Patience: {patience_counter} of {patience}" if True else "")
-
-				# Se il contatore di patience raggiunge il limite
-				# e l'early stopping è abilitato, si interrompe il training.
-				if patience_counter >= patience and early_stopping:
-					print("Early stopping triggered.")
-					break
-
-				# end for epoch
-
-			#	-------------------------------------------------------------	#
-			#	Fine del loop di addestramento.
-
-			training_end_time = time.time()
-			print("\nAddestramento completato.")
-			print(f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
-			print(f"Tempo di elaborazione: {training_end_time - training_start_time:.2f} secondi")
-
-			#	-------------------------------------------------------------	#
-			#	Salvataggio dei risultati.
-
-			# Salva i pesi del modello con la miglior loss di validazione.
-			best_model = torch.load(
-				fold_model_path,
-				map_location=device,
-				weights_only=True,
+			model, train_history_df = train_model(
+				model, device,
+				train_loader, val_loader,
+				optimizer, lr_sched, criterion,
+				fold_model_path
 			)
-			model.load_state_dict(best_model)
-			del best_model
 
 			# Salva lo storico delle metriche di addestramento e validazione in un file CSV.
-			df_history.to_csv(fold_history_path, index=False)
-			print(f"\nStorico delle metriche salvato in {fold_history_path}")
-
-			# Salva i pesi del modello addestrato in un file .PTH
-			torch.save(model.state_dict(), fold_model_path)
-			print(f"Modello salvato in {fold_model_path}")
+			if __SAVE_OUTPUT:
+				train_history_df.to_csv(
+					fold_history_path,
+					index=False,
+					lineterminator="\n",
+					float_format="%.8f"
+				)
+				print(f"\nStorico delle metriche salvato in {fold_history_path}")
 
 			# end __EXEC_MODE_TRAIN
 
 		#	-------------------------------------------------------------	#
-		#	Costruzione e salvataggio del soft-output per il Test set.
-
-		# Keys: [FlowID, Actual, Predicted, Soft-output]
-		predictions_df = compute_soft_output(
-			model, device, test_loader, criterion
-		)
-
-		if __SAVE_OUTPUT:
-			predictions_df.to_csv(
-				fold_predictions_path,
-				index=False, sep=",",
-				encoding="utf-8", lineterminator="\n",
-			)
-
-		#	-------------------------------------------------------------	#
 		#	Disegno dei grafici di loss / accuracy su Train / Val.
 
-		# Calcolo dell'epoca con validation loss minima per evidenziarla nel grafico.
-		best_epoch = int(np.argmin(df_history['val_loss'].to_list())) +1
+		if __SAVE_OUTPUT:
+			# Calcolo dell'epoca con validation loss minima per evidenziarla nel grafico.
+			best_epoch = int(np.argmin(train_history_df['val_loss'].to_list())) +1
 
-		plt.figure(figsize=(12, 5))
-		loss_plot = plt.subplot(1, 2, 1)
-		acc_plot = plt.subplot(1, 2, 2)
+			plt.figure(figsize=(12, 5))
+			plt.tight_layout()
+			loss_plot = plt.subplot(1, 2, 1)
+			acc_plot = plt.subplot(1, 2, 2)
 
-		draw_train_val_plot(
-			loss_plot, 'Loss',
-			df_history['loss'].to_list(), df_history['val_loss'].to_list(),
-			best_epoch
+			draw_train_val_plot(
+				loss_plot, 'Loss',
+				train_history_df['loss'].to_list(), train_history_df['val_loss'].to_list(),
+				best_epoch
+			)
+
+			draw_train_val_plot(
+				acc_plot, 'Accuracy',
+				train_history_df['accuracy'].to_list(), train_history_df['val_accuracy'].to_list(),
+				best_epoch
+			)
+			
+			plt.savefig(fold_plots_path, bbox_inches='tight')
+
+			if __DEBUG:
+				plt.show()
+
+			# end __SAVE_OUTPUT
+
+		#	-------------------------------------------------------------	#
+		#	Costruzione del soft-output per il Test set.
+
+		# Keys: [FlowID, Actual, Predicted, Soft-output]
+		test_predictions_df = compute_soft_output(
+			model, device,
+			test_loader, metadata_test,
+			criterion
 		)
-		draw_train_val_plot(
-			acc_plot, 'Accuracy',
-			df_history['accuracy'].to_list(), df_history['val_accuracy'].to_list(),
-			best_epoch
-		)
-		plt.tight_layout()
 
 		if __SAVE_OUTPUT:
-			plt.savefig(fold_plots_path, bbox_inches='tight')
+			test_predictions_df.to_csv(
+				fold_predictions_path,
+				index=False,
+				lineterminator="\n",
+				float_format="%.8f"
+			)
 
 		#	-------------------------------------------------------------	#
 		#	Calcolo della matrice di confusione per il Test set.
 
-		cm = confusion_matrix(
-			predictions_df["Actual"],
-			predictions_df["Predicted"],
-			normalize='true'
-		)
-
-		plt.figure(figsize=(10, 8))
-		plt.title("Confusion Matrix")
-		plt.ylabel('True Label')
-		plt.xlabel('Predicted Label')
-
-		draw_confusion_matrix(cm, labels_map.values())
-		plt.tight_layout()
-
 		if __SAVE_OUTPUT:
+			cm = confusion_matrix(
+				test_predictions_df["Actual"],
+				test_predictions_df["Predicted"],
+				normalize='true'
+			)
+
+			plt.figure(figsize=(10, 8))
+			plt.tight_layout()
+			plt.title("Confusion Matrix")
+			plt.ylabel('True Label')
+			plt.xlabel('Predicted Label')
+
+			draw_confusion_matrix(cm, labels_map.values())
 			plt.savefig(fold_confusion_matrix_path, bbox_inches='tight')
+
+			if __DEBUG:
+				plt.show()
+
+			# end __SAVE_OUTPUT
 
 		#	-------------------------------------------------------------	#
 		#	Report di classificazione completo.
 
-		report_dict = classification_report(
-			predictions_df["Actual"], predictions_df["Predicted"],
-			target_names=labels_map.values(), labels=np.arange(num_classes),
-			digits=4, zero_division=0
-		)
-
 		if __SAVE_OUTPUT:
+			report_dict = classification_report(
+				test_predictions_df["Actual"], test_predictions_df["Predicted"],
+				target_names=labels_map.values(), labels=np.arange(num_classes),
+				digits=4, zero_division=0
+			)
+
 			with open(fold_report_path, "w") as f:
 				f.write(report_dict)
+
+			# end __SAVE_OUTPUT
 
 		#	-------------------------------------------------------------	#
 		#	Fine dell'elaborazione del fold corrente.
@@ -1403,3 +1472,6 @@ if __name__ == "__main__":
 	exit(0)
 
 	# end
+
+if __name__ == "__main__":
+	main()
