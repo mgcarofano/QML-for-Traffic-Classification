@@ -19,21 +19,15 @@ import numpy as np
 import pandas as pd
 import pickle
 from pathlib import Path
-import sys
 
-from constants import \
-	__DEBUG, \
-	__DEBUG_CYCLE, \
-	__FLOWS_TO_INSPECT
-
-from constants import get_value_from_config
+from Source.configuration import SessionConfig
 
 #   ########################################################################    #
 #   FUNZIONI di ANALISI del traffico
 
 def mirage_pickle_converter(
 	file_path: str,
-	config: dict,
+	config: SessionConfig,
 ) -> Tuple[np.ndarray, pd.DataFrame]:
 	
 	""" Converte un file .pickle di traffico di rete in un dataset
@@ -58,7 +52,7 @@ def mirage_pickle_converter(
 
 	Args:
 		file_path (str): Percorso del file PICKLE da convertire.
-		config (dict): Dizionario contenente la configurazione dei parametri per la conversione.
+		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 
 	Returns:
 		numpy.ndarray: Array di shape (N, 1, D, D) contenente gli
@@ -72,40 +66,13 @@ def mirage_pickle_converter(
 	"""
 
 	#   ####################################################################    #
-	#   VALIDITÀ DEI PARAMETRI
-
-	filters = get_value_from_config(config, "TRAFFIC_FILTERS")
-
-	if __FLOWS_TO_INSPECT is not None and not isinstance(__FLOWS_TO_INSPECT, list):
-		raise ValueError("Il parametro '__FLOWS_TO_INSPECT' deve essere una lista di indici.")
-	
-	if filters is not None:
-		if not isinstance(filters, dict):
-			raise ValueError("Il parametro 'TRAFFIC_FILTERS' deve essere un dizionario.")
-		else:
-			allowed_keys = {"min_tps", "min_packets", "min_dim"}
-			invalid_keys = filters.keys() - allowed_keys
-
-			if invalid_keys:
-				print(
-					"Il parametro 'TRAFFIC_FILTERS' contiene chiavi non consentite: \n"
-					f"{', '.join(map(repr, invalid_keys))}. \n"
-					f"Chiavi ammesse: {', '.join(map(repr, allowed_keys))}.",
-					file=sys.stderr
-				)
-				raise ValueError()
-
-	#   ####################################################################    #
 	#   INIZIALIZZAZIONE
 
-	debug = __DEBUG or (__FLOWS_TO_INSPECT is not None)
-	debug_cycle = __DEBUG_CYCLE or (__FLOWS_TO_INSPECT is not None)
+	debug = config.execution.debug or (config.execution.flows_to_inspect is not None)
+	debug_cycle = config.execution.debug_cycle or (config.execution.flows_to_inspect is not None)
 
 	if debug:
 		print(f"[DEBUG] Inizio conversione del file: {file_path}")
-
-	mtu = get_value_from_config(config, "MTU")
-	bin_size = get_value_from_config(config, "BIN_SIZE")
 
 	dataset = []
 
@@ -117,40 +84,31 @@ def mirage_pickle_converter(
 		# Contatore delle finestre temporali valide.
 		"valid": 0,
 
-		# Contatore delle finestre temporali scartate
-		# perché non contengono pacchetti reali (solo padding).
+		# Contatore delle finestre temporali scartate perché non contengono pacchetti reali (solo padding).
 		"no_real_packets": 0,
 
-		# Contatore delle finestre temporali scartate
-		# per durata non valida.
+		# Contatore delle finestre temporali scartate per durata non valida.
 		"invalid_duration": 0,
 
-		# Contatore delle finestre temporali scartate
-		# per numero di pacchetti insufficiente.
+		# Contatore delle finestre temporali scartate per numero di pacchetti insufficiente.
 		"insufficient_packets": 0,
 
-		# Contatore delle finestre temporali scartate
-		# per dimensione insufficiente.
+		# Contatore delle finestre temporali scartate per dimensione insufficiente.
 		"insufficient_dim": 0,
 
-		# Contatore delle finestre temporali scartate
-		# per durata insufficiente.
+		# Contatore delle finestre temporali scartate per durata insufficiente.
 		"insufficient_tps": 0
 	}
-
-	min_packets = None
-	min_dim = None
-	min_tps = None
 	
-	if filters:
+	if config.traffic.filters:
 		# Numero minimo di pacchetti che una finestra deve contenere per essere considerata valida.
-		min_packets = filters.get('min_packets', None)
+		min_packets = config.traffic.filters.min_packets
 
 		# Numero minimo di byte che una finestra deve contenere per essere considerata valida.
-		min_dim = filters.get('min_dim', None)
+		min_dim = config.traffic.filters.min_dim
 
 		# Durata minima in secondi che una finestra deve coprire per essere considerata valida.
-		min_tps = filters.get('min_tps', None)
+		min_tps = config.traffic.filters.min_tps
 
 	if debug:
 		print(f"[DEBUG] Parametri di filtro\n")
@@ -174,12 +132,12 @@ def mirage_pickle_converter(
 		#   ################################################################    #
 		#   Recupero dei biflussi selezionati.
 
-		if __FLOWS_TO_INSPECT is not None:
+		if config.execution.flows_to_inspect is not None:
 			iterable = (
 				(id, x_raw[id], y_raw[id])
-				for id in __FLOWS_TO_INSPECT
+				for id in config.execution.flows_to_inspect
 			)
-			total = len(__FLOWS_TO_INSPECT)
+			total = len(config.execution.flows_to_inspect)
 		else:
 			iterable = (
 				(id, flow, label)
@@ -206,8 +164,7 @@ def mirage_pickle_converter(
 		for (i, flow, label) in progress:
 
 			#   ############################################################    #
-			#   Stampa un messaggio di debug all'inizio
-			#   per monitorare l'avanzamento.
+			#   Stampa un messaggio di debug all'inizio per monitorare l'avanzamento.
 
 			if debug_cycle:
 				print(f"[DEBUG] Elaborazione del flusso n.{i}")
@@ -241,8 +198,7 @@ def mirage_pickle_converter(
 			#   ############################################################    #
 			#   Estrazione dei timestamp e delle dimensioni dei pacchetti
 
-			# Array dei timestamp di arrivo di ciascun pacchetto,
-			# espressi in secondi assoluti dall'inizio della cattura.
+			# Array dei timestamp di arrivo di ciascun pacchetto, espressi in secondi assoluti dall'inizio della cattura.
 			# Dato che i timestamp sono in millisecondi, si divide per 1000.0 per ottenere i secondi.
 			ts = np.cumsum(real_rows[:, 3]) / 1000.0
 
@@ -255,7 +211,7 @@ def mirage_pickle_converter(
 				print(pd.DataFrame({'Size': sizes, 'Timestamp': ts}), "\n")
 
 			#   ############################################################    #
-			#   Applicazione di filtri di qualità
+			#   Applicazione di filtri di qualità.
 
 			if ts.max() - ts.min() <= 0:
 				counter["invalid_duration"] += 1
@@ -307,7 +263,7 @@ def mirage_pickle_converter(
 			
 			hist = session_2d_histogram(
 				sizes, ts,
-				mtu, bin_size,
+				config.traffic.mtu, config.traffic.bin_size,
 				plot = debug_cycle,
 				title = label
 			)
@@ -495,6 +451,7 @@ def session_2d_histogram(
 def flow_debug(
 		histograms: np.ndarray,
 		metadata: pd.DataFrame,
+		config: SessionConfig,
 	) -> None:
 
 	"""Stampa informazioni di debug sui flussi specificati, se il flag di debug è attivo.
@@ -504,11 +461,12 @@ def flow_debug(
 	Args:
 		histograms (np.ndarray): Array NumPy contenente gli istogrammi 2D (FlowPic).
 		metadata (pd.DataFrame): DataFrame contenente i metadati dei flussi.
+		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 	"""
 
-	if __DEBUG and __FLOWS_TO_INSPECT is not None:
+	if config.execution.debug and config.execution.flows_to_inspect is not None:
 	
-		for fid in __FLOWS_TO_INSPECT:
+		for fid in config.execution.flows_to_inspect:
 
 			flow_metadata = metadata.loc[metadata['FlowID'] == fid]
 
