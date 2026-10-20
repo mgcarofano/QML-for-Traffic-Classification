@@ -11,11 +11,8 @@
 
 # Importing session parameters
 from dataclasses import asdict
-from Source.configuration import SessionConfig, RuntimeConfig
-from Source.configuration import \
-	USE_CONFIG_FILE, \
-	CONFIG_ID, \
-	EXEC_MODE_TRAIN
+from Source.configuration import SessionConfig, RuntimeConfig, ExecutionConfig
+from Source.configuration import parse_args
 
 # Dataset loading and manipulation
 import numpy as np
@@ -25,8 +22,7 @@ from pathlib import Path
 import pickle
 from Source.traffic_converter import \
 	get_flowpic_dir, \
-	mirage_pickle_converter, \
-	flow_debug
+	mirage_pickle_converter
 from Source.classes import TrafficDataset
 from torch.utils.data import DataLoader
 
@@ -56,7 +52,6 @@ from sklearn.metrics import \
 	classification_report
 
 # More libraries
-from typing import Any
 import random
 import json
 import time
@@ -65,98 +60,26 @@ from datetime import datetime
 #	####################################################################	#
 #	Funzioni di utilità
 
-def _json_default(obj):
-	"""Serializzatore di fallback per json.dump, usato per convertire tipi non nativamente serializzabili in JSON (tuple annidate, set, oggetti torch.device, classi, ecc.).
-	"""
-
-	# Caso speciale: 
-	# torch.device, np.dtype e oggetti simili: si usa la rappresentazione a stringa.
-	if hasattr(obj, "__class__") and obj.__class__.__name__ in ("device", "dtype"):
-		return str(obj)
-
-	if isinstance(obj, set):
-		return sorted(obj)
-
-	if isinstance(obj, (tuple,)):
-		return list(obj)
-
-	# Per le classi, si restituisce il nome della classe.
-	# In Python, ogni classe è un'istanza di 'type'.
-	if isinstance(obj, type):
-		return obj.__name__
-
-	# Ultima risorsa: rappresentazione testuale, per non far fallire il salvataggio.
-	return str(obj)
-
-	# end
-
-def debug_print(message: str, config: SessionConfig) -> None:
+def debug_print(message: str) -> None:
 	"""Stampa un messaggio di debug se la modalità di debug è abilitata.
 
 	Args:
 		message (str): Messaggio da stampare.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 	"""
 
-	if config.execution.debug:
+	if runtime_config.flags.debug:
 		print(f"[DEBUG] {message}")
-
-	# end
-
-#	####################################################################	#
-#	Caricamento dei parametri di sessione.
-
-def create_session(id: str) -> tuple[dict[str, Any], Path, Path]:
-	"""Crea una nuova sessione caricandone i parametri da un file di configurazione esistente o inizializzandoli con valori di default.
-
-	Args:
-		id (str): Identificatore della sessione.
-
-	Returns:
-		dict[str, Any]: Dizionario dei parametri di sessione.
-		Path: Percorso della directory dei risultati per la sessione corrente.
-		Path: Percorso del file di configurazione per la sessione corrente.
-
-	Raises:
-		FileNotFoundError: Se la directory dei risultati o il file di configurazione non vengono trovati.
-		ValueError: Se l'ID della sessione nel file di configurazione non corrisponde a quello specificato.
-	"""
-
-	# Nuova sessione
-	if not USE_CONFIG_FILE:
-		output_dir = Path(f"Results/{id}/")
-		output_dir.mkdir(parents=True, exist_ok=True)
-
-		config_path = output_dir / "config.json"
-		config_path.parent.mkdir(parents=True, exist_ok=True)
-
-	# Ripristino da file di configurazione esistente
-	elif USE_CONFIG_FILE:
-		output_dir = Path(f"Results/{CONFIG_ID}/")
-		if not output_dir.exists():
-			raise FileNotFoundError(f"Directory dei risultati non trovata: {output_dir}")
-
-		config_path = output_dir / "config.json"
-		if not config_path.exists():
-			raise FileNotFoundError(f"File di configurazione non trovato: {config_path}")
-
-		# end if
-
-	return output_dir, config_path
 
 	# end
 
 #	####################################################################	#
 #	Caricamento o generazione (opzionale) del dataset.
 
-def load_dataset(config: SessionConfig) -> tuple[np.ndarray, np.ndarray, dict]:
+def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 	"""Carica il dataset dal file PICKLE specificato.
 
 	Se `USE_FLOWPIC_DATASET` è impostato su True nella configurazione della sessione,
 	questa funzione dovrebbe caricare il dataset FlowPic precomputato dal file .npz corrispondente.
-
-	Args:
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 
 	Returns:
 		tuple[np.ndarray, np.ndarray, dict]: Una tupla contenente i dati dei flussi (X_raw), le etichette (y_raw) e i relativi metadati.
@@ -165,17 +88,17 @@ def load_dataset(config: SessionConfig) -> tuple[np.ndarray, np.ndarray, dict]:
 	#	################################################################	#
 	#	Inizializzazione.
 
-	dataset_path = Path(f"{config.dataset.path}/{config.dataset.name}")
+	dataset_path = Path(f"{session_config.dataset.path}/{session_config.dataset.name}")
 
 	#	################################################################	#
 
-	if not config.dataset.is_flowpic:
+	if not session_config.dataset.is_flowpic:
 
 		# Il file pickle contiene due oggetti salvati in sequenza:
 		# 1. X_raw : i dati numerici dei flussi di traffico, in formato numpy array.
 		# 2. y_raw : le etichette corrispondenti ai flussi.
 		# Ogni chiamata a pickle.load() legge il successivo oggetto nel file.
-		with open(dataset_path, "rb") as f:
+		with open(dataset_path.with_suffix(".pickle"), "rb") as f:
 			X_raw = np.array(pickle.load(f), dtype=np.float32)
 			y_raw = np.array(pickle.load(f))
 
@@ -187,21 +110,16 @@ def load_dataset(config: SessionConfig) -> tuple[np.ndarray, np.ndarray, dict]:
 			"Label": y_raw,
 		})
 
-	elif config.dataset.is_flowpic:
+	elif session_config.dataset.is_flowpic:
 
-		flowpics_name = config.dataset.name.split('.')[0]
-
-		flowpics_dir = get_flowpic_dir(config.dataset.path)
+		flowpics_dir = get_flowpic_dir(session_config)
 		flowpics_dir.mkdir(parents=True, exist_ok=True)
 
-		npz_path = flowpics_dir / f"{flowpics_name}.npz"
-		meta_path = flowpics_dir / f"{flowpics_name}.csv"
+		npz_path = flowpics_dir / f"{session_config.dataset.name}.npz"
+		meta_path = flowpics_dir / f"{session_config.dataset.name}.csv"
 
-		if not config.execution.use_precomputed_dataset:
-			histograms, metadata = mirage_pickle_converter(dataset_path, config)
-
-			# Se il flag di debug è attivo, si stampano informazioni dettagliate sui flussi specificati.
-			flow_debug(histograms, metadata, config)
+		if not runtime_config.flags.use_precomputed_dataset:
+			histograms, metadata = mirage_pickle_converter(session_config, runtime_config)
 
 			# Salvataggio degli istogrammi 2D FlowPic in formato NumPy.
 			np.savez_compressed(npz_path, data=histograms)
@@ -215,7 +133,7 @@ def load_dataset(config: SessionConfig) -> tuple[np.ndarray, np.ndarray, dict]:
 			)
 			print(f"Salvati metadati (di {len(metadata)} righe) in: {meta_path} ")
 
-		elif config.execution.use_precomputed_dataset:
+		elif runtime_config.flags.use_precomputed_dataset:
 			if not npz_path.exists():
 				raise FileNotFoundError(f"Array di istogrammi precomputati non trovato: {npz_path}")
 			if not meta_path.exists():
@@ -232,8 +150,10 @@ def load_dataset(config: SessionConfig) -> tuple[np.ndarray, np.ndarray, dict]:
 		# end if __USE_PRECOMPUTED_DATASET
 
 		# Prima di procedere con split/training, si verifica che gli istogrammi e i metadati siano allineati.
-		assert histograms.shape[0] == len(metadata), "Disallineamento tra istogrammi e metadati!"
-		assert list(metadata["DatasetID"]) == list(range(len(metadata))), "DatasetID non contiguo!"
+		if histograms.shape[0] != len(metadata):
+			raise ValueError("Disallineamento tra istogrammi e metadati!")
+		if list(metadata["DatasetID"]) != list(range(len(metadata))):
+			raise ValueError("DatasetID non contiguo!")
 
 		X_raw = histograms
 		y_raw = metadata["Label"].values
@@ -247,18 +167,13 @@ def load_dataset(config: SessionConfig) -> tuple[np.ndarray, np.ndarray, dict]:
 #	####################################################################	#
 #	Generazione delle etichette per le classi del dataset.
 
-def encode_labels(
-		X_raw, y_raw,
-		labels_map_path,
-		config: SessionConfig
-	):
+def encode_labels(X_raw, y_raw, labels_map_path):
 	"""Codifica le etichette del dataset utilizzando LabelEncoder.
 
 	Args:
 		X_raw (array-like): Array contenente i dati grezzi del dataset.
 		y_raw (array-like): Array contenente le etichette grezze del dataset.
 		labels_map_path (str): Percorso del file JSON in cui salvare o leggere la mappatura delle etichette.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 
 	Raises:
 		ValueError: Se le etichette del dataset non corrispondono a quelle salvate nella configurazione.
@@ -275,11 +190,11 @@ def encode_labels(
 	for l, c in zip(ordinal_classes, le.inverse_transform(ordinal_classes)):
 		labels_map[int(l)] = c
 
-	if not USE_CONFIG_FILE:
+	if not runtime_config.launch.use_config_file():
 		with open(labels_map_path, "w", encoding="utf-8") as f:
 			json.dump(labels_map, f)
 
-	elif USE_CONFIG_FILE:
+	elif runtime_config.launch.use_config_file():
 		# Se il file di configurazione esiste, si verifica che le classi nel dataset corrispondano a quelle nel file di configurazione.
 		with open(labels_map_path, "r", encoding="utf-8") as f:
 			config_labels_map = json.load(f)
@@ -294,46 +209,43 @@ def encode_labels(
 				f"a quelle salvate nella configurazione ({config_labels_map})."
 			)
 
-		# end __USE_CONFIG_FILE
+		# end USE_CONFIG_FILE
 
-	assert len(X_raw) == len(y_encoded), (
-		"Disallineamento tra dati e etichette!"
-	)
+	if len(X_raw) != len(y_encoded):
+		raise ValueError("Disallineamento tra dati e etichette!")
 
 	return y_encoded, labels_map
 
 #	####################################################################	#
 #	Implementazione della K-fold cross-validation.
 
-def reduce_dataset(X_raw, y_encoded, metadata, config: SessionConfig) -> tuple:
+def reduce_dataset(X_raw, y_encoded, metadata) -> tuple:
 	"""Riduce il dataset in base ai parametri della sessione corrente.
 
 	Args:
 		X_raw (array-like): Array contenente i dati grezzi del dataset.
 		y_encoded (array-like): Array contenente le etichette codificate del dataset.
 		metadata (DataFrame): DataFrame contenente i metadati associati ai campioni del dataset.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 
 	Returns:
 		tuple: Una tupla contenente i tre input ridotti, se la configurazione lo richiede. Altrimenti, restituisce gli input originali.
 	"""
 
 	# Se il rapporto di sub-sampling è inferiore a 1.0, si riduce il dataset di conseguenza.
-	if config.kfold.sub_sample_ratio < 1.0 and len(X_raw) > 0:
+	if session_config.kfold.sub_sample_ratio < 1.0 and len(X_raw) > 0:
 		selected_indices, _ = train_test_split(
 			np.arange(len(X_raw)),
-			train_size=config.kfold.sub_sample_ratio,
+			train_size=session_config.kfold.sub_sample_ratio,
 			stratify=y_encoded,
-			random_state=config.execution.random_seed
+			random_state=runtime_config.launch.random_seed
 		)
 
 		X_raw = X_raw[selected_indices]
 		y_encoded = y_encoded[selected_indices]
 		metadata = metadata.iloc[selected_indices].copy().reset_index(drop=True)
 
-		assert len(X_raw) == len(y_encoded) == len(metadata), (
-			"Disallineamento dopo la riduzione del dataset!"
-		)
+		if len(X_raw) != len(y_encoded) or len(X_raw) != len(metadata):
+			raise ValueError("Disallineamento dopo la riduzione del dataset!")
 
 		# end if SUB_SAMPLE_RATIO
 
@@ -341,13 +253,12 @@ def reduce_dataset(X_raw, y_encoded, metadata, config: SessionConfig) -> tuple:
 
 	# end
 
-def split_dataset(X_raw, y_encoded, config: SessionConfig) -> list:
+def split_dataset(X_raw, y_encoded) -> list:
 	"""Suddivide il dataset in folds per la K-fold cross-validation.
 
 	Args:
 		X_raw (array-like): Array contenente i dati grezzi del dataset.
 		y_encoded (array-like): Array contenente le etichette codificate del dataset.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 
 	Returns:
 		list: Una lista contenente le suddivisioni del dataset in folds.
@@ -356,22 +267,25 @@ def split_dataset(X_raw, y_encoded, config: SessionConfig) -> list:
 	#	################################################################	#
 	#	Verifica dei parametri
 
-	assert config.kfold.test_folds > 0, "Il numero di folds deve essere maggiore di 0!"
-	assert config.kfold.test_folds <= len(X_raw), "Il numero di folds non può superare il numero di campioni nel dataset!"
+	if session_config.kfold.test_folds <= 0:
+		raise ValueError("Il numero di folds deve essere maggiore di 0!")
+	if session_config.kfold.test_folds > len(X_raw):
+		raise ValueError("Il numero di folds non può superare il numero di campioni nel dataset!")
 
 	#	################################################################	#
 	#	CASO SPECIALE: unico fold
 
 	# Nel caso in cui si vuole una singola iterazione, si restituisce l'intero dataset come unico fold. Si effettua comunque la separazione in una porzione temporanea e una porzione dedicata al Test.
-	if config.kfold.test_folds == 1:
+	if session_config.kfold.test_folds == 1:
 
-		assert config.kfold.test_ratio is not None, "La dimensione del test set deve essere specificata quando si utilizza un unico fold."
+		if session_config.kfold.test_ratio is None:
+			raise ValueError("La dimensione del test set deve essere specificata quando si utilizza un unico fold.")
 
 		train_indices, test_indices = train_test_split(
 			np.arange(len(X_raw)),
-			test_size=config.kfold.test_ratio,
+			test_size=session_config.kfold.test_ratio,
 			stratify=y_encoded,
-			random_state=config.execution.random_seed
+			random_state=runtime_config.launch.random_seed
 		)
 
 		return [(train_indices, test_indices)]
@@ -380,49 +294,45 @@ def split_dataset(X_raw, y_encoded, config: SessionConfig) -> list:
 	#	Suddivisione del dataset in folds.
 
 	skf = StratifiedKFold(
-		n_splits = config.kfold.test_folds,
+		n_splits = session_config.kfold.test_folds,
 		shuffle = True,
-		random_state = config.execution.random_seed
+		random_state = runtime_config.launch.random_seed
 	)
 
 	folds = list(skf.split(X_raw, y_encoded))
 
-	assert len(folds) > 0, "Nessun fold generato da StratifiedKFold!"
-	assert len(folds) == config.kfold.test_folds, "Il numero di folds generati non corrisponde al numero di test_folds specificato!"
+	#	################################################################	#
+	#	Verifica e ritorno dei risultati.
+
+	if len(folds) == 0:
+		raise ValueError("Nessun fold generato da StratifiedKFold!")
+	if len(folds) != session_config.kfold.test_folds:
+		raise ValueError("Il numero di folds generati non corrisponde al numero di test_folds specificato!")
+	
 	return folds
 
 	# end
 
-def split_train_val(train_indices_temp, y_temp, config: SessionConfig) -> tuple:
+def split_train_val(train_indices_temp, y_temp) -> tuple:
 	"""Suddivide il dataset temporaneo per il training in Train e Validation in base ai parametri della sessione corrente.
 
 	Args:
 		train_indices_temp (np.ndarray): Array contenente gli indici di training temporanei.
 		y_temp (np.ndarray): Array contenente le etichette codificate corrispondenti agli indici di training temporanei.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 
 	Returns:
 		tuple: Una tupla contenente gli indici di training e validation suddivisi.
 	"""
 
 	#	################################################################	#
-	#	Verifica dei parametri.
-
-	assert config.kfold.train_ratio + config.kfold.val_ratio == 1.0, \
-		"Le percentuali di Train e Val devono sommare a 1.\n" \
-		f"Train: {config.kfold.train_ratio:.4f}, " \
-		f"Val: {config.kfold.val_ratio:.4f}, " \
-		f"Total: {(config.kfold.train_ratio + config.kfold.val_ratio):.4f}"
-
-	#	################################################################	#
 	#	Suddivisione del dataset in Train e Validation.
 
-	val_fraction_of_temp = config.kfold.val_ratio / (config.kfold.train_ratio + config.kfold.val_ratio)
+	val_fraction_of_temp = session_config.kfold.val_ratio / (session_config.kfold.train_ratio + session_config.kfold.val_ratio)
 	train_indices, val_indices = train_test_split(
 		train_indices_temp,
 		test_size=val_fraction_of_temp,
 		stratify=y_temp,
-		random_state=config.execution.random_seed
+		random_state=runtime_config.launch.random_seed
 	)
 
 	return train_indices, val_indices
@@ -430,22 +340,21 @@ def split_train_val(train_indices_temp, y_temp, config: SessionConfig) -> tuple:
 #	####################################################################	#
 #	Applicazione della strategia di data preprocessing.
 
-def apply_data_preprocessing(input, scaler, config: SessionConfig):
+def apply_data_preprocessing(X, scaler):
 	"""Applica il preprocessing ai dati utilizzando lo scaler specificato.
 
 	Args:
-		input (np.ndarray): Array contenente i dati da preprocessare.
+		X (np.ndarray): Array contenente i dati da preprocessare.
 		scaler: Oggetto scaler utilizzato per normalizzare i dati.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 
 	Returns:
 		np.ndarray: Array contenente i dati preprocessati.
 	"""
 
-	X_proc = input.copy().astype(np.float32)
-	X_proc = X_proc[:, :config.dataset.n_packets, :]
-	X_proc = scaler.transform(np.reshape(X_proc, [-1, config.dataset.n_features]))
-	X_proc = np.reshape(X_proc, [-1, config.dataset.n_packets, config.dataset.n_features])
+	X_proc = X.copy().astype(np.float32)
+	X_proc = X_proc[:, :session_config.dataset.n_packets, :]
+	X_proc = scaler.transform(np.reshape(X_proc, [-1, session_config.dataset.n_features]))
+	X_proc = np.reshape(X_proc, [-1, session_config.dataset.n_packets, session_config.dataset.n_features])
 
 	return X_proc
 
@@ -454,36 +363,35 @@ def apply_data_preprocessing(input, scaler, config: SessionConfig):
 #	####################################################################	#
 #	Creazione dei percorsi dei file di output.
 
-def get_fold_directory(output_dir: Path, fold_index: int, config: SessionConfig) -> str:
+def get_fold_directory(output_dir: Path, fold_index: int) -> Path:
 	"""Crea e restituisce il percorso della directory dei risultati per il fold selezionato in modalità di addestramento, altrimenti verifica che esista (in base alla directory di output fornita nel file di configurazione).
 
 	Args:
 		output_dir (Path): Directory di output principale.
 		fold_index (int): Indice del fold selezionato.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 
 	Raises:
 		FileNotFoundError: Se la directory dei risultati per il fold selezionato non viene trovata.
 
 	Returns:
-		str: Percorso della directory dei risultati per il fold selezionato.
+		Path: Percorso della directory dei risultati per il fold selezionato.
 	"""
 
 	#	################################################################	#
 	#	Verifica dei parametri.
 
-	assert 0 <= fold_index < config.kfold.test_folds, \
-		f"fold_index deve essere compreso tra 0 e {config.kfold.test_folds-1}."
+	if not 0 <= fold_index < session_config.kfold.test_folds:
+		raise ValueError(f"fold_index deve essere compreso tra 0 e {session_config.kfold.test_folds-1}.")
 
 	#	################################################################	#
 	#	Creazione della directory dei risultati per il fold selezionato.
 
 	fold_results_dir = output_dir / f"fold{fold_index}"
 
-	if EXEC_MODE_TRAIN:
+	if runtime_config.launch.exec_mode_train:
 		fold_results_dir.mkdir(parents=True, exist_ok=True)
 
-	elif not EXEC_MODE_TRAIN:
+	elif not runtime_config.launch.exec_mode_train:
 		if not fold_results_dir.exists():
 			raise FileNotFoundError(
 				f"Directory dei risultati per il fold {fold_index} "
@@ -491,6 +399,7 @@ def get_fold_directory(output_dir: Path, fold_index: int, config: SessionConfig)
 			)
 
 		# end if
+
 	return fold_results_dir
 
 	# end
@@ -498,7 +407,7 @@ def get_fold_directory(output_dir: Path, fold_index: int, config: SessionConfig)
 #	####################################################################	#
 #	Configurazione dei componenti di addestramento.
 
-def init_model(device, fold_index: int, num_classes: int, config: SessionConfig):
+def init_model(device, fold_index: int, num_classes: int):
 	"""Inizializza e restituisce il modello selezionato.
 
 	Args:
@@ -513,10 +422,10 @@ def init_model(device, fold_index: int, num_classes: int, config: SessionConfig)
 	#	################################################################	#
 	#	Configurazione del seed per la riproducibilità.
 
-	os.environ['PYTHONHASHSEED'] = str(config.execution.random_seed)
+	os.environ['PYTHONHASHSEED'] = str(runtime_config.launch.random_seed)
 
 	# Si calcola il seed specifico per il fold corrente.
-	fold_seed = config.execution.random_seed + fold_index
+	fold_seed = runtime_config.launch.random_seed + fold_index
 
 	random.seed(fold_seed)
 	np.random.seed(fold_seed)
@@ -532,9 +441,9 @@ def init_model(device, fold_index: int, num_classes: int, config: SessionConfig)
 	#	Scelta e istanziazione del modello.
 
 	model, is_quantum = select_model(
-		config.model.name,
-		config.dataset.n_features, config.dataset.n_packets, num_classes,
-		config.model.n_layers, config.model.n_qubits, config.model.simulator,
+		session_config.model.name,
+		session_config.dataset.n_features, session_config.dataset.n_packets, num_classes,
+		session_config.model.n_layers, session_config.model.n_qubits, session_config.model.n_shots, session_config.model.simulator,
 		fold_seed
 	)
 
@@ -552,19 +461,18 @@ def init_model(device, fold_index: int, num_classes: int, config: SessionConfig)
 	#	Ritorno dei risultati.
 
 	# Stampa completa delle informazioni sul modello.
-	print(f"Modello selezionato: {config.model.name} -> {model.get_model_name()}")
-	debug_print(model, config)
+	print(f"\nModello selezionato: {session_config.model.name} -> {model.get_model_name()}")
+	debug_print(model)
 
 	return model, is_quantum
 
 	# end
 
-def build_optimizer(model, config: SessionConfig):
+def build_optimizer(model):
 	"""Costruisce l'ottimizzatore in base alla selezione dell'utente.
 
 	Args:
 		model (nn.Module): Modello da ottimizzare.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 
 	Raises:
 		ValueError: Se il tipo di ottimizzatore selezionato non è supportato.
@@ -573,36 +481,36 @@ def build_optimizer(model, config: SessionConfig):
 		L'ottimizzatore costruito in base alla selezione dell'utente.
 	"""
 
-	if config.optimizer.name == 'SGD':
+	if session_config.optimizer.name == 'SGD':
 		optimizer = torch.optim.SGD(
 			model.parameters(),
-			lr=config.optimizer.learning_rate,
-			weight_decay=config.optimizer.weight_decay,
-			momentum=config.optimizer.momentum
+			lr=session_config.optimizer.learning_rate,
+			weight_decay=session_config.optimizer.weight_decay,
+			momentum=session_config.optimizer.momentum
 		)
 
-	elif config.optimizer.name == 'Adam':
-		optimizer = torch.optim.Adam(model.parameters(), lr=config.optimizer.learning_rate)
+	elif session_config.optimizer.name == 'Adam':
+		optimizer = torch.optim.Adam(model.parameters(), lr=session_config.optimizer.learning_rate)
 
-	elif config.optimizer.name == 'RMSprop':
+	elif session_config.optimizer.name == 'RMSprop':
 		optimizer = torch.optim.RMSprop(
 			model.parameters(),
-			lr=config.optimizer.learning_rate,
-			weight_decay=config.optimizer.weight_decay,
-			momentum=config.optimizer.momentum
+			lr=session_config.optimizer.learning_rate,
+			weight_decay=session_config.optimizer.weight_decay,
+			momentum=session_config.optimizer.momentum
 		)
 
-	elif config.optimizer.name == 'AdamW':
+	elif session_config.optimizer.name == 'AdamW':
 		optimizer = torch.optim.AdamW(
 			model.parameters(),
-			lr=config.optimizer.learning_rate,
-			weight_decay=config.optimizer.weight_decay,
-			eps=config.optimizer.epsilon
+			lr=session_config.optimizer.learning_rate,
+			weight_decay=session_config.optimizer.weight_decay,
+			eps=session_config.optimizer.epsilon
 		)
 
 	else:
 		raise ValueError(
-			f"Tipo di optimizer non supportato: {config.optimizer.name}. "
+			f"Tipo di optimizer non supportato: {session_config.optimizer.name}. "
 			"Usare: 'Adam', 'AdamW', 'SGD' oppure 'RMSprop'."
 		)
 
@@ -610,13 +518,12 @@ def build_optimizer(model, config: SessionConfig):
 
 	# end
 
-def build_scheduler(optimizer, train_loader, config: SessionConfig):
+def build_scheduler(optimizer, train_loader):
 	"""Costruisce lo scheduler di apprendimento in base alla selezione dell'utente.
 
 	Args:
 		optimizer (torch.optim.Optimizer): Ottimizzatore da associare allo scheduler.
 		train_loader (torch.utils.data.DataLoader): DataLoader del set di addestramento.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 
 	Raises:
 		ValueError: Se il tipo di scheduler selezionato non è supportato.
@@ -626,34 +533,34 @@ def build_scheduler(optimizer, train_loader, config: SessionConfig):
 		oppure None se 'NoSched' è selezionato.
 	"""
 
-	if config.scheduler.name == 'OneCycleSched':
+	if session_config.scheduler.name == 'OneCycleSched':
 		lr_sched = torch.optim.lr_scheduler.OneCycleLR(
 			optimizer,
-			max_lr=config.scheduler.max_lr,
+			max_lr=session_config.scheduler.max_lr,
 			steps_per_epoch=len(train_loader),
-			epochs=config.training.epochs
+			epochs=session_config.training.epochs
 		)
 
-	elif config.scheduler.name == 'LinearSched':
+	elif session_config.scheduler.name == 'LinearSched':
 		lr_sched = torch.optim.lr_scheduler.LinearLR(
 			optimizer,
-			start_factor=config.scheduler.start_factor,
-			total_iters=config.training.epochs
+			start_factor=session_config.scheduler.start_factor,
+			total_iters=session_config.training.epochs
 		)
 
-	elif config.scheduler.name == 'StepSched':
+	elif session_config.scheduler.name == 'StepSched':
 		lr_sched = torch.optim.lr_scheduler.StepLR(
 			optimizer,
-			step_size=config.scheduler.step_size,
-			gamma=config.scheduler.gamma
+			step_size=session_config.scheduler.step_size,
+			gamma=session_config.scheduler.gamma
 		)
 
-	elif config.scheduler.name == 'NoSched':
+	elif session_config.scheduler.name == 'NoSched':
 		lr_sched = None
 
 	else:
 		raise ValueError(
-			f"Tipo di scheduler non supportato: {config.scheduler.name}. "
+			f"Tipo di scheduler non supportato: {session_config.scheduler.name}. "
 			"Usare: 'OneCycleSched', 'LinearSched', 'StepSched' oppure 'NoSched'."
 		)
 
@@ -666,7 +573,6 @@ def build_loss_function(
 		num_classes : int,
 		device : torch.device,
 		dtype: torch.dtype,
-		config: SessionConfig
 	) -> nn.Module:
 	"""Costruisce la funzione di loss in base alla selezione dell'utente.
 
@@ -675,7 +581,6 @@ def build_loss_function(
 		num_classes (int): Numero totale di classi.
 		device (torch.device): Il device su cui eseguire i calcoli.
 		dtype (torch.dtype): Il tipo di dato da utilizzare per i tensori.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 
 	Raises:
 		ValueError: Se il tipo di loss selezionato non è supportato.
@@ -700,39 +605,37 @@ def build_loss_function(
 
 		# end
 
-	if config.loss.name == "CrossEntropy":
+	if session_config.loss.name == "CrossEntropy":
 		return nn.CrossEntropyLoss()
 
-	elif config.loss.name == "WeightedCrossEntropy":
+	elif session_config.loss.name == "WeightedCrossEntropy":
 		w = compute_class_weights().to(device)
 		return nn.CrossEntropyLoss(weight=w)
 
-	elif config.loss.name == "Focal":
-		if config.loss.alpha == "class_weights":
+	elif session_config.loss.name == "Focal":
+		if session_config.loss.alpha == "class_weights":
 			alpha_tensor = compute_class_weights()
-		elif config.loss.alpha == "uniform":
+		elif session_config.loss.alpha == "uniform":
 			alpha_tensor = torch.ones(
 				num_classes,
 				dtype=dtype,
 				device=device
 			)
 		else:
-			raise ValueError(
-				f"Tipo di alpha non supportato: {config.loss.alpha}. "
-				"Usare: 'class_weights' oppure 'uniform'."
-			)
+			# Controllo già eseguito in configuration.py
+			pass
 
 		return torch.hub.load(
 			'adeelh/pytorch-multi-class-focal-loss',
 			model='FocalLoss',
-			alpha=alpha_tensor, gamma=config.loss.focal_gamma,
+			alpha=alpha_tensor, gamma=session_config.loss.focal_gamma,
 			reduction='mean',
 			force_reload=False
 		)
 
 	else:
 		raise ValueError(
-			f"Tipo di loss non supportato: {config.loss.name}. "
+			f"Tipo di loss non supportato: {session_config.loss.name}. "
 			"Usare: 'CrossEntropy', 'WeightedCrossEntropy' oppure 'Focal'."
 		)
 
@@ -746,7 +649,6 @@ def train_model(
 		train_loader, val_loader,
 		optimizer, lr_sched, criterion,
 		fold_model_path: str,
-		config: SessionConfig
 	) -> tuple[torch.nn.Module, pd.DataFrame]:
 	"""Addestra il modello per un numero specificato di epoche.
 
@@ -764,7 +666,6 @@ def train_model(
 		lr_sched: Il scheduler del learning rate.
 		criterion: La funzione di loss.
 		fold_model_path (str): Il percorso dove viene salvato il modello aggiornato.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 	
 	Returns:
 		tuple: il modello addestrato e il DataFrame contenente la cronologia dell'addestramento.
@@ -790,26 +691,26 @@ def train_model(
 	training_start_time = time.time()
 	print(
 		f"Addestramento iniziato.\n"
-		f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}\n"
+		f"Orario corrente: {datetime.fromtimestamp(training_start_time).strftime('%Y-%m-%d_%H:%M:%S')}\n"
 		f"[MODEL] {model.get_model_name()} | "
-			f"{config.loss.name} | "
-			f"{config.optimizer.name} | "
-			f"{config.scheduler.name}\n"
+			f"{session_config.loss.name} | "
+			f"{session_config.optimizer.name} | "
+			f"{session_config.scheduler.name}\n"
 		f"[PARAMETERS] {sum(p.numel() for p in model.parameters() if p.requires_grad):,}\n"
-		f"[DATASET] {config.dataset.name}\n"
+		f"[DATASET] {session_config.dataset.name}\n"
 			f"Training samples: {len(train_loader.dataset)} | "
 			f"Validation samples: {len(val_loader.dataset)} | "
-			f"Batch size: {config.training.batch_size}"
+			f"Batch size: {session_config.training.batch_size}"
 	)
 
 	#	################################################################	#
 	#	Esecuzione del loop di addestramento.
 
-	for epoch in range(config.training.epochs):
+	for epoch in range(session_config.training.epochs):
 
 		# Salva il timestamp di inizio epoca per calcolare la durata dell'epoca corrente.
 		epoch_start_time = time.time()
-		print(f"\nEpoch {epoch+1}/{config.training.epochs}\n")
+		print(f"\nEpoch {epoch+1}/{session_config.training.epochs}\n")
 
 		# Calcola la loss e l'accuratezza per il training set e il validation set.
 		train_loss, train_acc = train_epoch(
@@ -854,18 +755,20 @@ def train_model(
 			torch.save(model.state_dict(), fold_model_path)
 			patience_counter = 0
 			print(
-				f"  -> Validation loss improved. "
-				f"Model saved in {fold_model_path}."
+				f"  -> Validation loss improved.\n"
+				f"     Model saved in {fold_model_path}."
 			)
 		else:
-			patience_counter += 1
-			print(f"  -> No improvement. ", end="")
-			print(f"Patience: {patience_counter} of {config.training.patience}" if True else "")
+			print(f"  -> No improvement.")
+
+			if session_config.training.early_stopping:
+				patience_counter += 1
+				print(f"     Patience: {patience_counter} of {session_config.training.patience}" if True else "")
 
 		# Se il contatore di patience raggiunge il limite
 		# e l'early stopping è abilitato, si interrompe il training.
-		if patience_counter >= config.training.patience and config.training.early_stopping:
-			print("Early stopping triggered.")
+		if patience_counter >= session_config.training.patience and session_config.training.early_stopping:
+			print("     Early stopping triggered.")
 			break
 
 		# end for epoch
@@ -875,7 +778,7 @@ def train_model(
 
 	training_end_time = time.time()
 	print("\nAddestramento completato.")
-	print(f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
+	print(f"Orario corrente: {datetime.fromtimestamp(training_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Tempo di elaborazione: {training_end_time - training_start_time:.2f} secondi")
 
 	#	################################################################	#
@@ -901,7 +804,6 @@ def compute_soft_output(
 		model, device,
 		test_loader, metadata_test,
 		criterion,
-		config: SessionConfig,
 	):
 	"""Calcola il soft-output per il test set, restituendo un Dataframe contenente il FlowID, i risultati effettivi, le predizioni e il soft-output.
 
@@ -911,14 +813,13 @@ def compute_soft_output(
 		test_loader: Il DataLoader per il test set.
 		metadata_test: Il DataFrame contenente i metadati del test set.
 		criterion (opzionale): La funzione di loss da utilizzare.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
 
 	Returns:
 		pd.DataFrame: Contiene il FlowID, i risultati effettivi, le predizioni e il soft-output.
 	"""
 
-	print(f"\nEXEC_MODE_TRAIN impostato su {EXEC_MODE_TRAIN}.")
-	if not EXEC_MODE_TRAIN:
+	print(f"\nEXEC_MODE_TRAIN impostato su {runtime_config.launch.exec_mode_train}.")
+	if not runtime_config.launch.exec_mode_train:
 		print("Non è stato eseguito alcun addestramento.\n"
 			"Il modello da valutare è stato caricato da un checkpoint salvato.\n")
 		test_loss, test_acc, y_preds, y_true, y_probs = evaluate(
@@ -926,9 +827,10 @@ def compute_soft_output(
 			test_loader,
 		)
 
-	elif EXEC_MODE_TRAIN:
+	elif runtime_config.launch.exec_mode_train:
 
-		assert criterion is not None, "La funzione di loss deve essere specificata durante l'addestramento!"
+		if criterion is None:
+			raise ValueError("Funzione di loss mancante!")
 
 		test_loss, test_acc, y_preds, y_true, y_probs = evaluate(
 			model, device,
@@ -966,13 +868,17 @@ def compute_soft_output(
 
 def main():
 
+	#	-----------------------------------------------------------------	#
+	#	Inizio dell'elaborazione.
+
 	total_start_time = time.time()
 	print(f"\nInizio elaborazione.")
-	print(f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
+	print(f"Orario corrente: {datetime.fromtimestamp(total_start_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 
 	#	-----------------------------------------------------------------	#
-	# 	Selezione del dispositivo.
+	# 	Calcolo dei parametri di esecuzione.
 
+	# Dispositivo utilizzato per il calcolo.
 	if torch.backends.mps.is_available():
 		device = torch.device("mps")
 	elif torch.cuda.is_available():
@@ -984,73 +890,67 @@ def main():
 	if device.type == "cuda":
 		print(f"GPU: {torch.cuda.get_device_name(0)}")
 
+	# Tipo di dato utilizzato per il calcolo.
 	dtype = torch.float32 if device.type == "mps" else torch.float64
 
-	#	-----------------------------------------------------------------	#
-	#	Caricamento e salvataggio dei parametri di sessione.
-
-	# Definizione dell'identificatore della sessione.
+	# Identificatore della sessione corrente.
+	# Può identificare una nuova sessione, a partire dall'orario di lancio, oppure una sessione esistente se si utilizza un file di configurazione.
 	session_id = \
-		datetime.now().strftime("%Y-%m-%d_%H-%M") \
-		if not USE_CONFIG_FILE \
-		else CONFIG_ID
+		datetime.fromtimestamp(total_start_time).strftime("%Y-%m-%d_%H-%M") \
+		if not runtime_config.launch.use_config_file() \
+		else runtime_config.launch.source_session_id
 
-	output_dir, config_path = create_session(session_id)
-	
-	# Creazione dell'oggetto con i parametri della sessione.
-	session_config = \
-		session_config = SessionConfig.from_constants() \
-		if not USE_CONFIG_FILE \
-		else SessionConfig.from_json(config_path)
+	# Directory per i risultati
+	output_dir = Path(f"Results/{session_id}/")
 
-	# Creazione dell'oggetto con i parametri di runtime.
-	runtime_config = \
-		RuntimeConfig.from_environment(session_id, device, dtype) \
-		if not USE_CONFIG_FILE \
-		else RuntimeConfig.from_json(config_path)
+	# Percorso per il file di configurazione.
+	config_path = output_dir / "config.json"
 
-	# Verifica della corretta creazione degli oggetti di configurazione e della compatibilità con l'ambiente corrente.
-	if USE_CONFIG_FILE:
-		assert session_config is not None, "Errore nel caricamento del file di configurazione (session)!"
+	#	-----------------------------------------------------------------	#
+	#	Salvataggio di tutti i parametri di configurazione.
 
-		assert runtime_config is not None, "Errore nel caricamento del file di configurazione (runtime)!"
+	execution_config = \
+		ExecutionConfig.from_args(session_id, device.type, str(dtype)) \
+		if not runtime_config.launch.use_config_file() \
+		else ExecutionConfig.from_json(config_path)
 
-		assert \
-			runtime_config.device == device.type \
-			or runtime_config.dtype == str(dtype), \
-			f"La configurazione attuale della macchina ({(device.type, str(dtype))}) non è compatibile con quella salvata nel file di configurazione ({(runtime_config.device, runtime_config.dtype)})!"
+	# Verifica della compatibilità con l'ambiente corrente.
+	if runtime_config.launch.use_config_file():
+		if execution_config.device != device.type or execution_config.dtype != str(dtype):
+			raise RuntimeError(
+				"La configurazione attuale della macchina "
+				f"({(device.type, str(dtype))}) "
+				"non è compatibile con quella salvata nel file di configurazione "
+				f"({(execution_config.device, execution_config.dtype)})!"
+			)
 
 	# Se non si utilizza un file di configurazione, si salvano i parametri correnti.
-	elif not USE_CONFIG_FILE:
-		with open(config_path, "w", encoding="utf-8") as file:
-			json.dump({
-					"runtime": asdict(runtime_config),
-					**asdict(session_config)
+	elif not runtime_config.launch.use_config_file():
+		if output_dir.exists():
+			raise FileExistsError(f"La directory dei risultati '{output_dir}' esiste già.")
+		output_dir.mkdir(parents=True, exist_ok=False)
+		with config_path.open("w", encoding="utf-8") as file:
+			json.dump(
+				{
+					"execution": asdict(execution_config),
+					**asdict(runtime_config),
+					**asdict(session_config),
 				},
-				file, indent=4,
-				default=_json_default,
-				ensure_ascii=False
+				file, indent=4, ensure_ascii=False, allow_nan=False,
 			)
 
 		# end USE_CONFIG_FILE
 
+	del execution_config
+
 	print(f"Directory dei risultati per la sessione corrente: {output_dir}")
 	print(f"Percorso del file di configurazione per la sessione corrente: {config_path}")
-
-	debug_print(
-		f"Parametri di sessione in 'session_config':" \
-		f"\n{session_config}" \
-		"\n\n" \
-		f"Parametri di runtime in 'runtime_config':" \
-		f"\n{runtime_config}",
-		session_config
-	)
 
 	#	-----------------------------------------------------------------	#
 	#	Caricamento o generazione (opzionale) del dataset.
 
 	print("\nLoading dataset...")
-	X_raw, y_raw, metadata = load_dataset(session_config)
+	X_raw, y_raw, metadata = load_dataset()
 
 	#	-----------------------------------------------------------------	#
 	#	Generazione delle etichette per le classi del dataset.
@@ -1058,7 +958,7 @@ def main():
 	# Creazione del percorso di output per la mappatura delle etichette.
 	labels_map_path = output_dir / "labels_map.json"
 
-	y_encoded, labels_map = encode_labels(X_raw, y_raw, labels_map_path, session_config)
+	y_encoded, labels_map = encode_labels(X_raw, y_raw, labels_map_path)
 	num_classes = len(labels_map)
 
 	print(f"\nNumero di classi: {num_classes}")
@@ -1068,10 +968,7 @@ def main():
 	#	Selezione della strategia di data preprocessing.
 
 	if session_config.dataset.is_flowpic:
-		debug_print(
-			"La fase di preprocessing è disponibile solo per il dataset grezzo (Mirage).",
-			session_config
-		)
+		debug_print("La fase di preprocessing è disponibile solo per il dataset grezzo (Mirage).")
 
 	elif not session_config.dataset.is_flowpic:
 		if session_config.preprocessing.strategy == "MinMax":
@@ -1085,10 +982,10 @@ def main():
 	#	Implementazione della K-fold cross-validation.
 
 	# Riduzione del dataset (opzionale).
-	X_raw, y_encoded, metadata = reduce_dataset(X_raw, y_encoded, metadata, session_config)
+	X_raw, y_encoded, metadata = reduce_dataset(X_raw, y_encoded, metadata)
 
 	# Suddivisione del dataset.
-	folds = split_dataset(X_raw, y_encoded, session_config)
+	folds = split_dataset(X_raw, y_encoded)
 
 	#	-----------------------------------------------------------------	#
 	#	Inizio del training / testing loop per ogni fold del dataset.
@@ -1110,12 +1007,12 @@ def main():
 
 		fold_start_time = time.time()
 		print(f"\nInizio elaborazione del fold {fold_index + 1}/{len(folds)}")
-		print(f"Orario corrente: {datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
+		print(f"Orario corrente: {datetime.fromtimestamp(fold_start_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 
-		#	-----------------------------------------------------------------	#
+		#	-------------------------------------------------------------	#
 		#	Creazione dei percorsi dei file di output.
 
-		fold_results_dir = get_fold_directory(output_dir, fold_index, session_config)
+		fold_results_dir = get_fold_directory(output_dir, fold_index)
 		print(f"Directory dei risultati per il fold selezionato: {fold_results_dir}")
 
 		fold_confusion_matrix_path = fold_results_dir / "confusion_matrix.png"
@@ -1129,7 +1026,7 @@ def main():
 		#	Suddivisione del dataset in Train / Val / Test.
 
 		temp_indices, test_indices = current_fold
-		train_indices, val_indices = split_train_val(temp_indices, y_encoded[temp_indices], session_config)
+		train_indices, val_indices = split_train_val(temp_indices, y_encoded[temp_indices])
 
 		X_train, y_train, metadata_train = extract_subset(train_indices)
 		X_val, y_val, metadata_val = extract_subset(val_indices)
@@ -1139,21 +1036,21 @@ def main():
 		#	Verifica della correttezza degli split.
 
 		# Verifica della lunghezza dei set risultanti rispetto al dataset originale.
-		assert len(X_train) + len(X_val) + len(X_test) == len(X_raw), \
-			"La somma dei campioni Train, Val e Test non corrisponde al totale!"
+		if len(X_train) + len(X_val) + len(X_test) != len(X_raw):
+			raise ValueError("La somma dei campioni Train, Val e Test non corrisponde al totale!")
 
 		all_indices = np.arange(len(X_raw))
 		split_indices = np.concatenate([train_indices, val_indices, test_indices])
-		assert np.array_equal(np.sort(all_indices), np.sort(split_indices)), \
-			"Gli split non coprono esattamente il dataset originale!"
+		if not np.array_equal(np.sort(all_indices), np.sort(split_indices)):
+			raise ValueError("Gli split non coprono esattamente il dataset originale!")
 
 		# Verifica dell'allineamento in ciascuno split.
 		# TODO: vedi notebook.
 
-		#	-------------------------------------------------------------	#
+		#	------------------------------------------------------------	#
 		#	Stampa dei risultati.
 
-		if session_config.execution.debug:
+		if runtime_config.flags.debug:
 			print(f"\nTrain shape: {X_train.shape} ({len(X_train)/len(X_raw):.1%})")
 			print(metadata_train.head())
 			print(f"\nValidation shape: {X_val.shape} ({len(X_val)/len(X_raw):.1%})")
@@ -1161,28 +1058,28 @@ def main():
 			print(f"\nTest shape: {X_test.shape} ({len(X_test)/len(X_raw):.1%})")
 			print(metadata_test.head())
 
-		#	-----------------------------------------------------------------	#
+		#	------------------------------------------------------------	#
 		#	Applicazione della strategia di data preprocessing.
 
 		if not session_config.dataset.is_flowpic:
 			scaler.fit(np.reshape(X_train, [-1, session_config.dataset.n_features]))
 
-			X_train = apply_data_preprocessing(X_train, scaler, session_config)
-			X_val = apply_data_preprocessing(X_val, scaler, session_config)
-			X_test = apply_data_preprocessing(X_test, scaler, session_config)
+			X_train = apply_data_preprocessing(X_train, scaler)
+			X_val = apply_data_preprocessing(X_val, scaler)
+			X_test = apply_data_preprocessing(X_test, scaler)
 
 			print("Train shape:", X_train.shape)
 			print("Val shape:", X_val.shape)
 			print("Test shape:", X_test.shape)
 
-		#	-------------------------------------------------------------	#
+		#	------------------------------------------------------------	#
 		#	Costruzione dell'oggetto Dataset per PyTorch.
 
 		train_dataset = TrafficDataset(X_train, y_train, num_classes, dtype)
 		val_dataset = TrafficDataset(X_val, y_val, num_classes, dtype)
 		test_dataset = TrafficDataset(X_test, y_test, num_classes, dtype)
 
-		#	-------------------------------------------------------------	#
+		#	------------------------------------------------------------	#
 		#	Costruzione dei DataLoader per PyTorch.
 
 		train_loader = DataLoader(
@@ -1206,17 +1103,17 @@ def main():
 			pin_memory=(device.type == "cuda"),
 		)
 
-		#	-------------------------------------------------------------	#
+		#	------------------------------------------------------------	#
 		#	Addestramento del modello.
 
-		model, is_quantum = init_model(device, fold_index, num_classes, session_config)
+		model, is_quantum = init_model(device, fold_index, num_classes)
 
 		# Per motivi di compatibilità, si inizializza a None.
 		# Si aggiorna successivamente se la modalità di addestramento è abilitata.
 		criterion = None
 
-		print(f"\nEXEC_MODE_TRAIN impostato su {EXEC_MODE_TRAIN}.")
-		if not EXEC_MODE_TRAIN:
+		print(f"\nEXEC_MODE_TRAIN impostato su {runtime_config.launch.exec_mode_train}.")
+		if not runtime_config.launch.exec_mode_train:
 			print(f"Caricamento modello per la valutazione da: {fold_results_dir}")
 			print("Il modello non verrà addestrato, ma solo valutato sul test set.")
 
@@ -1235,25 +1132,21 @@ def main():
 			# per disabilitare il dropout e la batch normalization.
 			model.eval()
 
-			# Si recupera lo storico delle metriche di addestramento e validazione dal file CSV salvato.
-			train_history_df = pd.read_csv(fold_history_path)
+		elif runtime_config.launch.exec_mode_train:
 
-		elif EXEC_MODE_TRAIN:
-
-			#	-------------------------------------------------------------	#
+			#	--------------------------------------------------------	#
 			#	Configurazione dei componenti di addestramento.
 
-			optimizer = build_optimizer(model, session_config)
+			optimizer = build_optimizer(model)
 
-			lr_sched = build_scheduler(optimizer, train_loader, session_config)
+			lr_sched = build_scheduler(optimizer, train_loader)
 
 			criterion = build_loss_function(
 				y_train, num_classes, device,
 				next(model.parameters()).dtype,
-				session_config
 			)
 
-			#	-------------------------------------------------------------	#
+			#	--------------------------------------------------------	#
 			#	Esecuzione del loop di addestramento.
 
 			model, train_history_df = train_model(
@@ -1261,11 +1154,10 @@ def main():
 				train_loader, val_loader,
 				optimizer, lr_sched, criterion,
 				fold_model_path,
-				session_config
 			)
 
 			# Salva lo storico delle metriche di addestramento e validazione in un file CSV.
-			if session_config.execution.save_output:
+			if runtime_config.flags.save_output:
 				train_history_df.to_csv(
 					fold_history_path,
 					index=False,
@@ -1276,10 +1168,10 @@ def main():
 
 			# end __EXEC_MODE_TRAIN
 
-		#	-------------------------------------------------------------	#
+		#	------------------------------------------------------------	#
 		#	Disegno dei grafici di loss / accuracy su Train / Val.
 
-		if session_config.execution.save_output:
+		if runtime_config.launch.exec_mode_train and runtime_config.flags.save_output:
 			# Calcolo dell'epoca con validation loss minima per evidenziarla nel grafico.
 			best_epoch = int(np.argmin(train_history_df['val_loss'].to_list())) +1
 
@@ -1301,13 +1193,14 @@ def main():
 			)
 
 			plt.savefig(fold_plots_path, bbox_inches='tight')
+			print(f"\nGrafici salvati in {fold_plots_path}")
 
-			if session_config.execution.debug:
+			if runtime_config.flags.debug:
 				plt.show()
 
 			# end __SAVE_OUTPUT
 
-		#	-------------------------------------------------------------	#
+		#	------------------------------------------------------------	#
 		#	Costruzione del soft-output per il Test set.
 
 		# Keys: [FlowID, Actual, Predicted, Soft-output]
@@ -1315,21 +1208,21 @@ def main():
 			model, device,
 			test_loader, metadata_test,
 			criterion,
-			session_config
 		)
 
-		if session_config.execution.save_output:
+		if runtime_config.flags.save_output:
 			test_predictions_df.to_csv(
 				fold_predictions_path,
 				index=False,
 				lineterminator="\n",
 				float_format="%.8f"
 			)
+			print(f"\nPredizioni salvate in {fold_predictions_path}")
 
-		#	-------------------------------------------------------------	#
+		#	------------------------------------------------------------	#
 		#	Calcolo della matrice di confusione per il Test set.
 
-		if session_config.execution.save_output:
+		if runtime_config.flags.save_output:
 			cm = confusion_matrix(
 				test_predictions_df["Actual"],
 				test_predictions_df["Predicted"],
@@ -1344,8 +1237,9 @@ def main():
 
 			draw_confusion_matrix(cm, labels_map.values())
 			plt.savefig(fold_confusion_matrix_path, bbox_inches='tight')
+			print(f"\nMatrice di confusione salvata in {fold_confusion_matrix_path}")
 
-			if session_config.execution.debug:
+			if runtime_config.flags.debug:
 				plt.show()
 
 			# end __SAVE_OUTPUT
@@ -1353,12 +1247,13 @@ def main():
 		#	-------------------------------------------------------------	#
 		#	Report di classificazione completo.
 
-		if session_config.execution.save_output:
+		if runtime_config.flags.save_output:
 			report_dict = classification_report(
 				test_predictions_df["Actual"], test_predictions_df["Predicted"],
 				target_names=labels_map.values(), labels=np.arange(num_classes),
 				digits=4, zero_division=0
 			)
+			print(f"\nReport di classificazione salvato in {fold_report_path}")
 
 			with open(fold_report_path, "w") as f:
 				f.write(report_dict)
@@ -1392,9 +1287,45 @@ def main():
 	print(f"Orario di fine: {datetime.fromtimestamp(total_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Tempo di elaborazione: {total_end_time - total_start_time:.2f} secondi")
 
-	exit(0)
+	return
 
 	# end
 
 if __name__ == "__main__":
+
+	#	-----------------------------------------------------------------	#
+	#	Creazione degli oggetti con i parametri di sessione e runtime.
+
+	global session_config
+	global runtime_config
+
+	# Lettura degli argomenti da linea di comando.
+	args = parse_args()
+
+	session_config = SessionConfig.from_args(args)
+	runtime_config = RuntimeConfig.from_args(args)
+
+	# Verifica della corretta creazione degli oggetti di configurazione.
+	if session_config is None:
+		raise ValueError("Errore nel caricamento del file di configurazione (session)!")
+
+	if runtime_config is None:
+		raise ValueError("Errore nel caricamento del file di configurazione (runtime)!")
+
+	# Stampa di debug dei parametri di configurazione.
+	print(
+		f"Parametri di sessione in 'session_config':" \
+		f"\n{session_config}" \
+		"\n\n" \
+		f"Parametri di runtime in 'runtime_config':" \
+		f"\n{runtime_config}"
+	)
+
+	#	-----------------------------------------------------------------	#
+	#	Funzione principale per l'esecuzione del programma.
+
 	main()
+
+	exit(0)
+
+	# end

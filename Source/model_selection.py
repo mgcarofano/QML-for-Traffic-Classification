@@ -141,7 +141,7 @@ def check_model_compatibility(model, weights):
 def select_model(
         model_name: str,
         n_features: int, n_packets: int, num_classes: int,
-        n_layers: int, n_qubits: int, dev_name: str,
+        n_layers: int, n_qubits: int, n_shots: int, dev_name: str,
         random_seed: int
     ):
     """Seleziona e restituisce il modello specificato.
@@ -153,6 +153,7 @@ def select_model(
         num_classes (int): Numero di classi per la classificazione.
         n_layers (int): Numero di layer nel circuito quantistico (se applicabile).
         n_qubits (int): Numero di qubit nel circuito quantistico (se applicabile).
+        n_shots (int): Numero di ripetizioni per il circuito quantistico (se applicabile).
         dev_name (str): Nome del dispositivo quantistico (se applicabile).
         random_seed (int): Seed per la generazione casuale (se applicabile).
 
@@ -187,7 +188,7 @@ def select_model(
         is_quantum = True
         model = QModel(
             n_features, n_packets, num_classes,
-            n_layers, n_qubits, dev_name,
+            n_layers, n_qubits, n_shots, dev_name,
             random_seed
         )
 
@@ -196,7 +197,7 @@ def select_model(
         is_quantum = True
         model = QModel(
             n_features, n_packets, num_classes,
-            n_layers, n_qubits, dev_name,
+            n_layers, n_qubits, n_shots, dev_name,
             random_seed
         )
 
@@ -205,7 +206,7 @@ def select_model(
         is_quantum = True
         model = QModel(
             n_features, n_packets, num_classes,
-            n_layers, n_qubits, dev_name,
+            n_layers, n_qubits, n_shots, dev_name,
             random_seed
         )
 

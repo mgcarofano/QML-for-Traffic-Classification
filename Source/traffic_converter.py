@@ -20,14 +20,14 @@ import pandas as pd
 import pickle
 from pathlib import Path
 
-from Source.configuration import SessionConfig
+from Source.configuration import SessionConfig, RuntimeConfig
 
 #   ########################################################################    #
 #   FUNZIONI di ANALISI del traffico
 
 def mirage_pickle_converter(
-	file_path: str,
-	config: SessionConfig,
+	sc: SessionConfig,
+	rc: RuntimeConfig,
 ) -> Tuple[np.ndarray, pd.DataFrame]:
 	
 	""" Converte un file .pickle di traffico di rete in un dataset
@@ -51,8 +51,8 @@ def mirage_pickle_converter(
 	- IAT (Inter-Arrival Time)  : Tempo tra pacchetti consecutivi in secondi.
 
 	Args:
-		file_path (str): Percorso del file PICKLE da convertire.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
+		sc (SessionConfig): Configurazione dei parametri di sessione per l'esperimento corrente.
+		rc (RuntimeConfig): Configurazione dei parametri di runtime per l'esperimento corrente.
 
 	Returns:
 		numpy.ndarray: Array di shape (N, 1, D, D) contenente gli
@@ -68,9 +68,10 @@ def mirage_pickle_converter(
 	#   ####################################################################    #
 	#   INIZIALIZZAZIONE
 
-	debug = config.execution.debug or (config.execution.flows_to_inspect is not None)
-	debug_cycle = config.execution.debug_cycle or (config.execution.flows_to_inspect is not None)
+	debug = rc.flags.debug or (rc.launch.flows_to_inspect is not None)
+	debug_cycle = rc.flags.debug_cycle or (rc.launch.flows_to_inspect is not None)
 
+	file_path = Path(f"{sc.dataset.path}/{sc.dataset.name}.pickle")
 	if debug:
 		print(f"[DEBUG] Inizio conversione del file: {file_path}")
 
@@ -100,15 +101,15 @@ def mirage_pickle_converter(
 		"insufficient_tps": 0
 	}
 	
-	if config.traffic.filters:
+	if sc.traffic.filters:
 		# Numero minimo di pacchetti che una finestra deve contenere per essere considerata valida.
-		min_packets = config.traffic.filters.min_packets
+		min_packets = sc.traffic.filters.min_packets
 
 		# Numero minimo di byte che una finestra deve contenere per essere considerata valida.
-		min_dim = config.traffic.filters.min_dim
+		min_dim = sc.traffic.filters.min_dim
 
 		# Durata minima in secondi che una finestra deve coprire per essere considerata valida.
-		min_tps = config.traffic.filters.min_tps
+		min_tps = sc.traffic.filters.min_tps
 
 	if debug:
 		print(f"[DEBUG] Parametri di filtro\n")
@@ -132,12 +133,12 @@ def mirage_pickle_converter(
 		#   ################################################################    #
 		#   Recupero dei biflussi selezionati.
 
-		if config.execution.flows_to_inspect is not None:
+		if rc.launch.flows_to_inspect is not None:
 			iterable = (
 				(id, x_raw[id], y_raw[id])
-				for id in config.execution.flows_to_inspect
+				for id in rc.launch.flows_to_inspect
 			)
-			total = len(config.execution.flows_to_inspect)
+			total = len(rc.launch.flows_to_inspect)
 		else:
 			iterable = (
 				(id, flow, label)
@@ -153,9 +154,10 @@ def mirage_pickle_converter(
 			iterable,
 			total = total,
 			desc = "Elaborazione flussi",
+			leave = False,
 
 			# Nasconde la barra di avanzamento se il debug è attivo, per evitare output ridondanti.
-			disable = debug_cycle
+			disable = debug_cycle,
 		)
 
 		#   ################################################################    #
@@ -263,9 +265,9 @@ def mirage_pickle_converter(
 			
 			hist = session_2d_histogram(
 				sizes, ts,
-				config.traffic.mtu, config.traffic.bin_size,
+				sc.traffic.mtu, sc.traffic.bin_size,
 				plot = debug_cycle,
-				title = label
+				title = f"Flusso n.{i} ({label})"
 			)
 
 			#   ########################################################    #
@@ -286,9 +288,8 @@ def mirage_pickle_converter(
 
 	debug_counter = pd.DataFrame(counter, index=["[DEBUG] Conteggio dei pacchetti"]).T
 	if debug_counter is not None and not debug_counter.empty:
-		assert debug_counter.sum().iloc[0] == len(x_raw), \
-			"[ERROR] Il conteggio dei pacchetti" \
-			"non corrisponde al numero di flussi in input."
+		assert debug_counter.sum().iloc[0] == total, \
+			"[ERROR] Il conteggio dei pacchetti non corrisponde al numero di flussi in input."
 
 	ret = np.asarray(dataset, dtype=np.float32)
 
@@ -298,12 +299,17 @@ def mirage_pickle_converter(
 		"Label": labels,
 	})
 
+	# Se il flag di debug è attivo, si stampano informazioni dettagliate sui flussi specificati.
 	if debug:
 		print(f"\n[DEBUG] Conversione completata.")
 		print(debug_counter)
 		print(f"\n[DEBUG] Numero totale di flussi nel file: {len(x_raw)}")
 		print(f"[DEBUG] Percentuale di finestre temporali valide: {counter['valid']}/{len(x_raw)} = {counter['valid']/len(x_raw) * 100:.2f}%")
 		print(f"[DEBUG] Dimensione del dataset risultante: {ret.shape}")
+
+		flow_debug(ret, metadata, rc)
+
+		# end if
 
 	return ret, metadata
 
@@ -451,7 +457,7 @@ def session_2d_histogram(
 def flow_debug(
 		histograms: np.ndarray,
 		metadata: pd.DataFrame,
-		config: SessionConfig,
+		rc: RuntimeConfig,
 	) -> None:
 
 	"""Stampa informazioni di debug sui flussi specificati, se il flag di debug è attivo.
@@ -461,66 +467,65 @@ def flow_debug(
 	Args:
 		histograms (np.ndarray): Array NumPy contenente gli istogrammi 2D (FlowPic).
 		metadata (pd.DataFrame): DataFrame contenente i metadati dei flussi.
-		config (SessionConfig): Configurazione dei parametri per l'esperimento corrente.
+		rc (RuntimeConfig): Configurazione dei parametri di runtime per l'esperimento corrente.
 	"""
 
-	if config.execution.debug and config.execution.flows_to_inspect is not None:
+	if rc.launch.flows_to_inspect is None:
+		return
 	
-		for fid in config.execution.flows_to_inspect:
+	for fid in rc.launch.flows_to_inspect:
 
-			flow_metadata = metadata.loc[metadata['FlowID'] == fid]
+		flow_metadata = metadata.loc[metadata['FlowID'] == fid]
 
-			if flow_metadata.empty:
-				print(f"[DEBUG] Flusso n.{fid} non trovato.")
-				continue
+		if flow_metadata.empty:
+			print(f"[DEBUG] Flusso n.{fid} non trovato.")
+			continue
 
-			did = flow_metadata['DatasetID'].values[0]
-			flow = histograms[did][0]
+		did = flow_metadata['DatasetID'].values[0]
+		flow = histograms[did][0]
 
-			#   ########################################################    #
-			#	Stampa di shape e metadati del flusso
+		#   ########################################################    #
+		#	Stampa di shape e metadati del flusso
 
-			print(f"[DEBUG] Elaborazione del flusso n.{fid}")
-			print(f"Shape: {histograms[did].shape}")
-			print(f"Metadata:\n{flow_metadata.to_string(index=False)}")
+		print(f"\n[DEBUG] Elaborazione del flusso n.{fid}")
 
-			#   ########################################################    #
-			#	Stampa degli elementi non nulli
-			#	Mostra le coordinate (riga, colonna) e il valore corrispondente.
+		print(f"\nShape: {histograms[did].shape}")
+		print(f"Metadata:\n{flow_metadata.to_string(index=False)}")
 
-			rows, cols = np.nonzero(flow)
-			values = flow[rows, cols]
+		#   ########################################################    #
+		#	Stampa degli elementi non nulli
+		#	Mostra le coordinate (riga, colonna) e il valore corrispondente.
 
-			print("Coordinate degli elementi non nulli:")
-			for r, c, v in zip(rows, cols, values):
-				print(f"[{r},{c}] = {v}", end=" | ")
+		rows, cols = np.nonzero(flow)
+		values = flow[rows, cols]
 
-			print()
+		print("\nCoordinate degli elementi non nulli:")
+		for r, c, v in zip(rows, cols, values):
+			print(f"[{r},{c}] = {v:.8f}", end=" | ")
+		print()
 
-			#   ########################################################    #
-			#	Stampa delle statistiche di base
+		#   ########################################################    #
+		#	Stampa delle statistiche di base
 
-			print(f"Min: {np.min(histograms[did])}")
-			print(f"Max: {np.max(histograms[did])}")
-			print(f"Mean: {np.mean(histograms[did])}")
-			print(f"Std: {np.std(histograms[did])}")
-			print(f"Sum: {np.sum(histograms[did])}\n")
+		print(f"\nMin: {np.min(histograms[did]):.8f}")
+		print(f"Max: {np.max(histograms[did]):.8f}")
+		print(f"Mean: {np.mean(histograms[did]):.8f}")
+		print(f"Std: {np.std(histograms[did]):.8f}")
+		print(f"Sum: {np.sum(histograms[did]):.8f}")
 
-			# end for fid
-			
-		# end if
+		# end for fid
 
 	# end
 
-def get_flowpic_dir(data_path: str) -> Path:
+def get_flowpic_dir(session_config: SessionConfig) -> Path:
 	""" Sostituisce il nome 'flowpic' al posto di 'mirage' nel percorso del dataset. """
 
-	p = Path(data_path)
+	p = Path(session_config.dataset.path)
 	parts = p.parts
 
 	if "mirage" not in parts:
 		raise ValueError(
-			f"Il percorso '{data_path}' non contiene la cartella 'mirage'.\n"
+			f"Il percorso '{session_config.dataset.path}' non contiene la cartella 'mirage'.\n"
 			"Assicurati di fornire un percorso valido che contenga 'mirage'."
 		)
 

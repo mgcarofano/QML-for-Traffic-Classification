@@ -3,71 +3,177 @@
 	by Mario Gabriele Carofano
 
 	Questo modulo definisce le classi di configurazione dove vengono centralizzati tutti i parametri di sessione. Tali parametri contengono le impostazioni specifiche per una sessione di esecuzione del progetto. Sono presenti funzioni di salvataggio e caricamento in file JSON, in modo da poter riprodurre gli esperimenti e confrontare i risultati.
-
-	Inoltre contiene altre costanti, dette strutturali, che non vengono caricate / salvate tramite le classi di configurazione nel file JSON.
 """
 
-from dataclasses import dataclass
+#	####################################################################	#
+#	Librerie
+
+from dataclasses import dataclass, fields, is_dataclass, replace
+from argparse import ArgumentParser, Namespace, SUPPRESS, BooleanOptionalAction
+from typing import get_args, get_origin, get_type_hints
+
+from pathlib import Path
+import json
 
 #	####################################################################	#
-#	Costanti strutturali
+#	Funzioni di utilità
 
-EXEC_MODE_TRAIN = True
-""" Set this flag to choose between training a new model
-or running validation on an already saved model. \n
-- True  : Execute the training loop.
-- False : Skip training and run validation only on a pre-saved model. """
+def _overrides(
+		config_class,
+		args: Namespace,
+		prefix: str = "",
+	) -> dict:
 
-USE_CONFIG_FILE = False
-""" Whether to use a configuration file to load the constants. """
+	values = vars(args)
+	overrides = {}
 
-CONFIG_ID = "2026-10-18_17-21"
-""" Identifier for the configuration JSON file to load. """
+	for field in fields(config_class):
+		if not field.init:
+			continue
 
-# TODO: rimettere SAVE_OUTPUT, DEBUG, DEBUG_CYCLE
-
-#	####################################################################	#
-#	Configurazione dei parametri di sessione.
-
-@dataclass(frozen=True)
-class ExecutionConfig:
-	random_seed: int
-	""" Random seed for reproducibility. """
-	
-	debug: bool
-	""" Whether to enable debug mode. """
-	
-	debug_cycle: bool
-	""" Whether to enable debug mode inside each cycle of the execution loop in mirage_pickle_converter(). """
-	
-	flows_to_inspect: tuple[int, ...] | None
-	""" List of flows to inspect during debugging in mirage_pickle_converter(). """
-	
-	use_precomputed_dataset: bool
-	""" Whether to load the FlowPic dataset from a precomputed .npz file. """
-	
-	save_output: bool
-	""" Whether to save the output of the notebook. """
-
-	@classmethod
-	def from_constants(cls) -> "ExecutionConfig":
-		return cls(
-			random_seed= 2025,
-			debug= False,
-			debug_cycle= False,
-			flows_to_inspect= None,
-			use_precomputed_dataset= True,
-			save_output= True,
+		argument_name = (
+			f"{prefix}.{field.name}"
+			if prefix
+			else field.name
 		)
 
-		# end
+		if argument_name in values:
+			overrides[field.name] = values[argument_name]
 
-	def __repr__(self) -> str:
-		return f"\nExecutionConfig(\n\trandom_seed={self.random_seed}, \n\tdebug={self.debug}, \n\tdebug_cycle={self.debug_cycle}, \n\tflows_to_inspect={self.flows_to_inspect}, \n\tuse_precomputed_dataset={self.use_precomputed_dataset}, \n\tsave_output={self.save_output}\n)"
+	return overrides
 
-		# end
+	# end
 
-	# end class
+def parse_args(argv=None) -> Namespace:
+	"""_summary_
+
+	Args:
+		argv (_type_, optional): _description_. Defaults to None.
+
+	Raises:
+		TypeError: _description_
+		TypeError: _description_
+		TypeError: _description_
+
+	Returns:
+		Namespace: _description_
+	"""
+	parser = ArgumentParser(
+		description="Configurazione degli esperimenti QML.",
+		argument_default=SUPPRESS,
+		allow_abbrev=False,
+	)
+
+	def add_fields(config_class, prefix: str = "") -> None:
+		type_hints = get_type_hints(config_class)
+
+		for field in fields(config_class):
+			if not field.init:
+				continue
+
+			argument_name = (
+				f"{prefix}.{field.name}"
+				if prefix
+				else field.name
+			)
+
+			value_type = type_hints[field.name]
+
+			# Le sezioni composte vengono visitate ricorsivamente.
+			if is_dataclass(value_type):
+				add_fields(value_type, argument_name)
+				continue
+
+			# Gestione dei tipi opzionali: int | None, ecc.
+			nullable = type(None) in get_args(value_type)
+
+			if nullable:
+				non_null_types = [
+					item
+					for item in get_args(value_type)
+					if item is not type(None)
+				]
+
+				if len(non_null_types) != 1:
+					raise TypeError(
+						"Tipo CLI non supportato per "
+						f"'{argument_name}': {value_type}"
+					)
+
+				value_type = non_null_types[0]
+
+			options = {
+				"dest": argument_name,
+				"default": SUPPRESS,
+			}
+
+			# Booleani: --debug / --no-debug.
+			if value_type is bool:
+				parser.add_argument(
+					f"--{argument_name}",
+					action=BooleanOptionalAction,
+					**options,
+				)
+
+			# Caso attuale: flows_to_inspect.
+			elif get_origin(value_type) is tuple:
+				if get_args(value_type) != (int, Ellipsis):
+					raise TypeError(
+						"Tipo di tuple non supportato per "
+						f"'{argument_name}'."
+					)
+
+				parser.add_argument(
+					f"--{argument_name}",
+					type=int,
+					nargs="+",
+					**options,
+				)
+
+			# Tipi scalari.
+			elif value_type in (str, int, float):
+				converter = value_type
+
+				if nullable:
+					def optional_value(
+						value,
+						convert=value_type,
+					):
+						if value.lower() in ("none", "null"):
+							return None
+
+						return convert(value)
+
+					converter = optional_value
+
+				parser.add_argument(
+					f"--{argument_name}",
+					type=converter,
+					**options,
+				)
+
+			else:
+				raise TypeError(
+					"Tipo CLI non supportato per "
+					f"'{argument_name}': {value_type}"
+				)
+
+			# end
+
+	# Runtime
+	# Non registriamo ExecutionConfig ed EnvironmentConfig nel parser: session ID corrente, device effettivo e versioni installate devono descrivere ciò che è stato realmente rilevato, non essere metadati arbitrariamente sovrascrivibili.
+	add_fields(LaunchConfig)
+	add_fields(FlagsConfig)
+
+	# Session
+	add_fields(SessionConfig)
+
+	return parser.parse_args(argv)
+
+	# end
+	
+#	####################################################################	#
+#	Configurazione dei parametri di sessione.
 
 @dataclass(frozen=True)
 class DatasetConfig:
@@ -87,14 +193,33 @@ class DatasetConfig:
 	""" Number of features for each packet in the dataset. """
 
 	@classmethod
-	def from_constants(cls) -> "DatasetConfig":
+	def from_defaults(cls) -> "DatasetConfig":
 		return cls(
 			path= "Dataset/mirage/2019",
-			name= "mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata.pickle",
+			name= "mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata",
 			is_flowpic= False,
 			n_packets= 100,
 			n_features= 4,
 		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "DatasetConfig":
+		return replace(
+			cls.from_defaults(),
+			**_overrides(cls, args, "dataset"),
+		)
+
+	def __post_init__(self) -> None:
+		if self.n_packets <= 0:
+			raise ValueError("Il numero di pacchetti deve essere maggiore di zero.")
+		if self.n_features <= 0:
+			raise ValueError("Il numero di caratteristiche deve essere maggiore di zero.")
+		if not self.path:
+			raise ValueError("Percorso del dataset non definito.")
+		if not self.name:
+			raise ValueError("Nome del dataset non definito.")
 
 		# end
 
@@ -111,10 +236,26 @@ class PreprocessingConfig:
 	""" Strategy for preprocessing the dataset. Default is 'MinMax'. """
 
 	@classmethod
-	def from_constants(cls) -> "PreprocessingConfig":
+	def from_defaults(cls) -> "PreprocessingConfig":
 		return cls(
 			strategy= "MinMax",
 		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "PreprocessingConfig":
+		return replace(
+			cls.from_defaults(),
+			**_overrides(cls, args, "preprocessing"),
+		)
+
+	def __post_init__(self) -> None:
+		if not self.strategy:
+			raise ValueError("Strategia di preprocessing non definita.")
+
+		if self.strategy not in ["MinMax"]:
+			raise NotImplementedError(f"Strategia di preprocessing non supportata: {self.strategy}")
 
 		# end
 
@@ -137,13 +278,29 @@ class TrafficFiltersConfig:
 	""" Minimum flow dimension (payload) in bytes. Flows smaller than this will be discarded. Default is 10000 if not specified. """
 
 	@classmethod
-	def from_constants(cls) -> "TrafficFiltersConfig":
-
+	def from_defaults(cls) -> "TrafficFiltersConfig":
 		return cls(
 			min_tps= 50,
 			min_packets= None,
 			min_dim= None,
 		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "TrafficFiltersConfig":
+		return replace(
+			cls.from_defaults(),
+			**_overrides(cls, args, "traffic.filters"),
+		)
+
+	def __post_init__(self) -> None:
+		if self.min_tps is not None and self.min_tps <= 0:
+			raise ValueError("La durata minima della sessione deve essere maggiore di zero.")
+		if self.min_packets is not None and self.min_packets <= 0:
+			raise ValueError("Il numero minimo di pacchetti deve essere maggiore di zero.")
+		if self.min_dim is not None and self.min_dim <= 0:
+			raise ValueError("La dimensione minima del flusso deve essere maggiore di zero.")
 
 		# end
 
@@ -167,12 +324,30 @@ class TrafficConfig:
 	""" A custom object containing the filtering criteria for traffic flows. """
 
 	@classmethod
-	def from_constants(cls) -> "TrafficConfig":
+	def from_defaults(cls) -> "TrafficConfig":
 		return cls(
 			mtu= 1500,
 			bin_size= 10,
-			filters=TrafficFiltersConfig.from_constants(),
+			filters=TrafficFiltersConfig.from_defaults(),
 		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "TrafficConfig":
+		changes = _overrides(cls, args, "traffic")
+		changes["filters"] = TrafficFiltersConfig.from_args(args)
+		return replace(
+			cls.from_defaults(),
+			**changes,
+		)
+
+	def __post_init__(self) -> None:
+		if self.mtu <= 0:
+			raise ValueError("MTU deve essere maggiore di zero.")
+
+		if self.bin_size <= 0:
+			raise ValueError("Dimensione del bin deve essere maggiore di zero.")
 
 		# end
 
@@ -201,9 +376,7 @@ class CrossValidationConfig:
 	""" Ratio of the dataset to be used for sub-sampling. For example, 0.5 means using 50% of the dataset. Default should be 1.0, meaning the entire dataset is used. """
 
 	@classmethod
-	def from_constants(cls) -> "CrossValidationConfig":
-		test_folds = 1
-
+	def from_defaults(cls, test_folds= 1) -> "CrossValidationConfig":
 		return cls(
 			train_ratio= 0.8,
 			val_ratio= 0.2,
@@ -211,6 +384,55 @@ class CrossValidationConfig:
 			test_ratio= None if test_folds > 1 else 0.2,
 			sub_sample_ratio= 0.01,
 		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "CrossValidationConfig":
+		changes = _overrides(cls, args, "kfold")
+
+		derived_inputs = {
+			name: changes[name]
+			for name in ("test_folds")
+			if name in changes
+		}
+
+		return replace(
+			cls.from_defaults(**derived_inputs),
+			**changes,
+		)
+
+		# end
+
+	def __post_init__(self) -> None:
+		from math import isclose
+
+		if not 0 < self.train_ratio < 1:
+			raise ValueError(f"La percentuale di campioni per il Train set ({self.train_ratio}) deve essere compresa tra 0 e 1.")
+
+		if not 0 < self.val_ratio < 1:
+			raise ValueError(f"La percentuale di campioni per il Validation set ({self.val_ratio}) deve essere compresa tra 0 e 1.")
+
+		if not isclose(
+			self.train_ratio + self.val_ratio, 1.0,
+			rel_tol=0.0, abs_tol=1e-9
+		):
+			raise ValueError(
+				"Le percentuali di campioni per Train e Validation set devono sommare a 1.\n" \
+				f"Train: {self.train_ratio:.4f}, " \
+				f"Val: {self.val_ratio:.4f}, " \
+				f"Total: {(self.train_ratio + self.val_ratio):.4f}"
+			)
+
+		if self.test_folds <= 0:
+			raise ValueError("Il numero di folds per il test deve essere maggiore di zero.")
+
+		if self.test_folds == 1:
+			if self.test_ratio is None or not 0 < self.test_ratio < 1:
+				raise ValueError("Il valore di 'test_ratio' deve essere compreso tra 0 e 1, se specificato, quando la K-fold cross-validation è disabilitata.")
+
+		if not 0 < self.sub_sample_ratio <= 1:
+			raise ValueError("La percentuale di campioni per il sub-sampling deve essere compresa tra 0 e 1.")
 
 		# end
 
@@ -236,23 +458,11 @@ class TrainingConfig:
 	""" Number of epochs to wait for improvement before stopping training. If None, it will be automatically calculated based on the total number of epochs. """
 
 	@classmethod
-	def from_constants(cls) -> "TrainingConfig":
-		epochs = 20
-		patience = None
+	def from_defaults(cls, epochs = 20, patience = None) -> "TrainingConfig":
 
-		def _get_patience() -> int:
-			return \
-				max(2, epochs // 10) \
-				if epochs <= 100 \
-				else 10
-
-			# end
-
-		patience = (
-			patience
-			if patience is not None
-			else _get_patience()
-		)
+		patience = \
+			patience if patience is not None \
+			else max(2, epochs // 10) if epochs <= 100 else 10
 
 		return cls(
 			epochs= epochs,
@@ -260,6 +470,35 @@ class TrainingConfig:
 			early_stopping= True,
 			patience= patience,
 		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "TrainingConfig":
+		changes = _overrides(cls, args, "training")
+
+		derived_inputs = {
+			name: changes[name]
+			for name in ("epochs", "patience")
+			if name in changes
+		}
+
+		return replace(
+			cls.from_defaults(**derived_inputs),
+			**changes,
+		)
+
+		# end
+
+	def __post_init__(self) -> None:
+		if self.epochs <= 0:
+			raise ValueError("Il numero di epoche deve essere maggiore di zero.")
+
+		if self.batch_size <= 0:
+			raise ValueError("La dimensione del batch deve essere maggiore di zero.")
+
+		if self.patience <= 0:
+			raise ValueError("Il valore di 'patience' deve essere maggiore di zero.")
 
 		# end
 	
@@ -286,7 +525,7 @@ class OptimizerConfig:
 	""" Momentum for the optimizer SGD. """
 
 	@classmethod
-	def from_constants(cls) -> "OptimizerConfig":
+	def from_defaults(cls) -> "OptimizerConfig":
 		return cls(
 			name= "AdamW",
 			learning_rate= 1e-3,
@@ -294,6 +533,28 @@ class OptimizerConfig:
 			epsilon= 1e-2,
 			momentum= 0.9,
 		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "OptimizerConfig":
+		return replace(
+			cls.from_defaults(),
+			**_overrides(cls, args, "optimizer"),
+		)
+
+	def __post_init__(self) -> None:
+		if self.learning_rate <= 0:
+			raise ValueError("Il learning rate deve essere maggiore di zero.")
+
+		if self.weight_decay < 0:
+			raise ValueError("Il weight decay non può essere negativo.")
+
+		if self.epsilon <= 0:
+			raise ValueError("Il valore di epsilon deve essere maggiore di zero.")
+
+		if self.momentum < 0 or self.momentum > 1:
+			raise ValueError("Il valore di momentum deve essere compreso tra 0 e 1.")
 
 		# end
 
@@ -322,26 +583,40 @@ class SchedulerConfig:
 	""" Multiplicative factor of learning rate decay for the StepLR scheduler. """
 
 	@classmethod
-	def from_constants(cls, learning_rate: float) -> "SchedulerConfig":
-		max_lr = None
-
-		def _get_max_lr(learning_rate: float) -> float:
-			return learning_rate * 3
-
-		# end
-
-		max_lr = \
-			max_lr \
-			if max_lr is not None \
-			else _get_max_lr(learning_rate)
-
+	def from_defaults(cls, learning_rate: float) -> "SchedulerConfig":
 		return cls(
 			name= "OneCycleSched",
-			max_lr= max_lr,
+			max_lr= (learning_rate * 3),
 			start_factor= 0.1,
 			step_size= 5,
 			gamma= 0.1,
 		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace, learning_rate: float) -> "SchedulerConfig":
+		return replace(
+			cls.from_defaults(learning_rate),
+			**_overrides(cls, args, "scheduler"),
+		)
+
+		# end
+
+	def __post_init__(self) -> None:
+		if self.name == "OneCycleSched" and self.max_lr <= 0:
+			raise ValueError("Il valore di 'max_lr' deve essere positivo per OneCycleSched.")
+			
+		if self.start_factor <= 0 or self.start_factor > 1:
+			raise ValueError("Il valore di start_factor deve essere compreso tra 0 e 1.")
+
+		if self.step_size <= 0:
+			raise ValueError("Il valore di step_size deve essere maggiore di zero.")
+
+		if self.gamma <= 0 or self.gamma > 1:
+			raise ValueError("Il valore di gamma deve essere compreso tra 0 e 1.")
+
+		# end
 
 	def __repr__(self) -> str:
 		return f"\nSchedulerConfig(\n\tname={self.name}, \n\tmax_lr={self.max_lr}, \n\tstart_factor={self.start_factor}, \n\tstep_size={self.step_size}, \n\tgamma={self.gamma}\n)"
@@ -355,19 +630,47 @@ class LossConfig:
 	name: str
 	""" Selected loss function for training. Default is "WeightedCrossEntropy". """
 	
-	alpha: str
-	""" Alpha parameter for the Focal Loss. Can be "class_weights", "uniform" or "custom". """
+	alpha: str | None
+	""" Alpha parameter for the Focal Loss. Default is "class_weights". """
 	
-	focal_gamma: float
-	""" Gamma parameter for the Focal Loss, typically between 1 and 5. """
+	focal_gamma: float | None
+	""" Gamma parameter for the Focal Loss, typically between 1 and 5. Default is 2.0. """
 
 	@classmethod
-	def from_constants(cls) -> "LossConfig":
+	def from_defaults(cls) -> "LossConfig":
 		return cls(
 			name= "WeightedCrossEntropy",
 			alpha= "class_weights",
 			focal_gamma= 2.0,
 		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "LossConfig":
+		return replace(
+			cls.from_defaults(),
+			**_overrides(cls, args, "loss"),
+		)
+
+	def __post_init__(self) -> None:
+		if self.name not in ["CrossEntropy", "WeightedCrossEntropy", "Focal"]:
+			raise NotImplementedError(f"Loss {self.name} non supportata. Loss disponibili: ['CrossEntropy', 'WeightedCrossEntropy', 'Focal']")
+
+		if self.name == "Focal":
+			if self.alpha is None:
+				raise ValueError("Il parametro 'alpha' deve essere specificato per la Focal Loss.")
+			
+			if self.alpha not in ["class_weights", "uniform"]:
+				raise NotImplementedError(f"Parametro alpha '{self.alpha}' non supportato. Opzioni disponibili: ['class_weights', 'uniform']")
+		
+			if self.focal_gamma is None:
+				raise ValueError("Il parametro 'focal_gamma' deve essere specificato per la Focal Loss.")
+			
+			if self.focal_gamma <= 0:
+				raise ValueError("Il valore di focal_gamma deve essere maggiore di zero per la Focal Loss.")
+
+		# end
 
 	def __repr__(self) -> str:
 		return f"\nLossConfig(\n\tname={self.name}, \n\talpha={self.alpha}, \n\tfocal_gamma={self.focal_gamma}\n)"
@@ -396,36 +699,67 @@ class ModelConfig:
 	- For Quantum models, this represents the depth of the StronglyEntanglingLayers ansatz. Default is 3. """
 
 	@classmethod
-	def from_constants(cls) -> "ModelConfig":
-		selected_model = "hybrid"
-		n_layers = None
-
+	def from_defaults(cls, name= "hybrid", n_layers = None) -> "ModelConfig":
+		
 		def _get_num_layers() -> int:
-
 			available_models = {
 				"resnet" : 18,
 				"hybrid" : 3,
 			}
 
-			if selected_model not in available_models:
-				raise ValueError(f"Modello {selected_model} non supportato. Modelli disponibili: {available_models}")
+			if name not in available_models:
+				raise ValueError(f"Modello {name} non supportato. Modelli disponibili: {available_models}")
 
-			return available_models[selected_model]
+			return available_models[name]
 
 			# end
 
-		n_layers = \
-			n_layers \
-			if n_layers is not None \
-			else _get_num_layers()
+		n_layers = n_layers if n_layers is not None else _get_num_layers()
 
 		return cls(
-			name= selected_model,
+			name= name,
 			simulator= "default.qubit",
 			n_qubits= 5,
 			n_shots= 20,
 			n_layers= n_layers,
 		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "ModelConfig":
+		changes = _overrides(cls, args, "model")
+
+		derived_inputs = {
+			key: changes[key]
+			for key in ("name", "n_layers")
+			if key in changes
+		}
+
+		return replace(
+			cls.from_defaults(**derived_inputs),
+			**changes,
+		)
+
+		# end
+
+	def __post_init__(self) -> None:
+		if self.name not in ["resnet", "hybrid"]:
+			raise NotImplementedError(f"Modello {self.name} non supportato. Modelli disponibili: ['resnet', 'hybrid']")
+
+		if self.simulator not in ["default.qubit"]:
+			raise NotImplementedError(f"Simulatore {self.simulator} non supportato. Simulatori disponibili: ['default.qubit']")
+		
+		if self.n_qubits <= 0:
+			raise ValueError("Il numero di qubit deve essere maggiore di zero.")
+
+		if self.n_shots <= 0:
+			raise ValueError("Il numero di shots deve essere maggiore di zero.")
+
+		if self.n_layers <= 0:
+			raise ValueError("Il numero di layers deve essere maggiore di zero.")
+
+		# end
 
 	def __repr__(self) -> str:
 		return f"\nModelConfig(\n\tname={self.name}, \n\tsimulator={self.simulator}, \n\tn_qubits={self.n_qubits}, \n\tn_shots={self.n_shots}, \n\tn_layers={self.n_layers}\n)"
@@ -434,8 +768,120 @@ class ModelConfig:
 
 	# end class
 
+#	####################################################################	#
+#	Configurazione dei parametri di runtime.
+
 @dataclass(frozen=True)
-class LibrariesConfig:
+class FlagsConfig:
+	debug: bool
+	""" Whether to enable debug mode. """
+	
+	debug_cycle: bool
+	""" Whether to enable debug mode inside each cycle of the execution loop in mirage_pickle_converter(). """
+	
+	use_precomputed_dataset: bool
+	""" Whether to load the FlowPic dataset from a precomputed .npz file. """
+	
+	save_output: bool
+	""" Whether to save the output of the notebook. """
+
+	@classmethod
+	def from_defaults(cls) -> "FlagsConfig":
+		return cls(
+			debug= False,
+			debug_cycle= False,
+			use_precomputed_dataset= True,
+			save_output= True,
+		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "FlagsConfig":
+		return replace(
+			cls.from_defaults(),
+			**_overrides(cls, args),
+		)
+
+	def __post_init__(self) -> None:
+		pass
+
+		# end
+
+	def __repr__(self) -> str:
+		return f"\nFlagsConfig(\n\tdebug={self.debug}, \n\tdebug_cycle={self.debug_cycle}, \n\tuse_precomputed_dataset={self.use_precomputed_dataset}, \n\tsave_output={self.save_output}\n)"
+
+		# end
+
+	# end class
+
+@dataclass(frozen=True)
+class LaunchConfig:
+	source_session_id: str | None
+	""" Identifier for the configuration JSON file to load. """
+
+	exec_mode_train: bool
+	""" Whether to execute the training loop (True) or only run validation on a pre-saved model (False). """
+
+	random_seed: int
+	""" Random seed for reproducibility. """
+	
+	flows_to_inspect: tuple[int, ...] | None
+	""" List of flows to inspect during debugging in mirage_pickle_converter(). """
+
+	@classmethod
+	def from_defaults(cls) -> "LaunchConfig":
+		import time
+
+		return cls(
+			source_session_id= None,
+			exec_mode_train= True,
+			random_seed= int(time.time()),
+			flows_to_inspect= None,
+		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "LaunchConfig":
+		changes = _overrides(cls, args)
+
+		if changes.get("flows_to_inspect") is not None:
+			changes["flows_to_inspect"] = tuple(changes["flows_to_inspect"])
+
+		return replace(
+			cls.from_defaults(),
+			**changes,
+		)
+
+		# end
+
+	def use_config_file(self) -> bool:
+		return self.source_session_id is not None
+
+		# end
+	
+	def __post_init__(self) -> None:
+		if self.source_session_id is not None:
+			if not isinstance(self.source_session_id, str) or not self.source_session_id.strip():
+				raise ValueError("Il 'source_session_id' deve essere una stringa non vuota.")
+
+		if not self.exec_mode_train and self.source_session_id is None:
+			raise ValueError("La modalità di sola valutazione richiede una sessione sorgente specificata tramite 'source_session_id'.")
+
+		# end
+
+	def __repr__(self) -> str:
+		return f"\nLaunchConfig(\n\tsource_session_id={self.source_session_id}, \n\texec_mode_train={self.exec_mode_train}, \n\trandom_seed={self.random_seed}, \n\tflows_to_inspect={self.flows_to_inspect}\n)"
+
+		# end
+
+	# end class
+
+@dataclass(frozen=True)
+class EnvironmentConfig:
+	python_version: str | None
+	platform: str | None
 	torch_version: str | None
 	numpy_version: str | None
 	pandas_version: str | None
@@ -446,7 +892,8 @@ class LibrariesConfig:
 	pennylane_version: str | None
 
 	@classmethod
-	def from_environment(cls) -> "LibrariesConfig":
+	def from_environment(cls) -> "EnvironmentConfig":
+		import platform
 
 		def _get_package_version(package_name: str) -> str | None:
 			from importlib.metadata import PackageNotFoundError, version
@@ -459,6 +906,8 @@ class LibrariesConfig:
 			# end
 		
 		return cls(
+			python_version=platform.python_version(),
+			platform=platform.platform(),
 			torch_version=_get_package_version('torch'),
 			numpy_version=_get_package_version('numpy'),
 			pandas_version=_get_package_version('pandas'),
@@ -470,9 +919,15 @@ class LibrariesConfig:
 		)
 
 		# end
+	
+	@classmethod
+	def from_args(cls) -> "EnvironmentConfig":
+		raise NotImplementedError("La classe EnvironmentConfig non supporta la creazione da argomenti.")
+
+		# end
 
 	def __repr__(self) -> str:
-		return f"LibrariesConfig(\n\ttorch_version={self.torch_version}, \n\tnumpy_version={self.numpy_version}, \n\tpandas_version={self.pandas_version}, \n\tscipy_version={self.scipy_version}, \n\tsklearn_version={self.sklearn_version}, \n\tmatplotlib_version={self.matplotlib_version}, \n\tseaborn_version={self.seaborn_version}, \n\tpennylane_version={self.pennylane_version}\n\t)"
+		return f"\nEnvironmentConfig(\n\ttorch_version={self.torch_version}, \n\tnumpy_version={self.numpy_version}, \n\tpandas_version={self.pandas_version}, \n\tscipy_version={self.scipy_version}, \n\tsklearn_version={self.sklearn_version}, \n\tmatplotlib_version={self.matplotlib_version}, \n\tseaborn_version={self.seaborn_version}, \n\tpennylane_version={self.pennylane_version}\n)"
 
 		# end
 
@@ -483,7 +938,6 @@ class LibrariesConfig:
 
 @dataclass(frozen=True)
 class SessionConfig:
-	execution: ExecutionConfig
 	dataset: DatasetConfig
 	preprocessing: PreprocessingConfig
 	traffic: TrafficConfig
@@ -495,26 +949,65 @@ class SessionConfig:
 	model: ModelConfig
 
 	@classmethod
-	def from_constants(cls) -> "SessionConfig":
-		optimizer = OptimizerConfig.from_constants()
+	def from_defaults(cls) -> "SessionConfig":
+		optimizer = OptimizerConfig.from_defaults()
 
 		return cls(
-			execution=ExecutionConfig.from_constants(),
-			dataset=DatasetConfig.from_constants(),
-			preprocessing=PreprocessingConfig.from_constants(),
-			traffic=TrafficConfig.from_constants(),
-			kfold=CrossValidationConfig.from_constants(),
-			training=TrainingConfig.from_constants(),
+			dataset=DatasetConfig.from_defaults(),
+			preprocessing=PreprocessingConfig.from_defaults(),
+			traffic=TrafficConfig.from_defaults(),
+			kfold=CrossValidationConfig.from_defaults(),
+			training=TrainingConfig.from_defaults(),
 			optimizer= optimizer,
 
-			scheduler = SchedulerConfig.from_constants(
+			scheduler = SchedulerConfig.from_defaults(
 				learning_rate=optimizer.learning_rate,
 			),
 
-			loss=LossConfig.from_constants(),
-			model=ModelConfig.from_constants(),
+			loss=LossConfig.from_defaults(),
+			model=ModelConfig.from_defaults(),
 		)
 
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "SessionConfig":
+		source_session_id = getattr(args, "source_session_id", None)
+
+		#	-------------------------------------------------------------	#
+		#	Scenario 1 (caricamento da default)
+		#	Scenario 2 (caricamento da argomenti con override)
+
+		if source_session_id is None:
+			optimizer = OptimizerConfig.from_args(args)
+
+			return cls(
+				dataset=DatasetConfig.from_args(args),
+				preprocessing=PreprocessingConfig.from_args(args),
+				traffic=TrafficConfig.from_args(args),
+				kfold=CrossValidationConfig.from_args(args),
+				training=TrainingConfig.from_args(args),
+				optimizer=optimizer,
+				scheduler=SchedulerConfig.from_args(args, optimizer.learning_rate),
+				loss=LossConfig.from_args(args),
+				model=ModelConfig.from_args(args),
+			)
+
+		#	-------------------------------------------------------------	#
+		#	Scenario 3 (caricamento da sessione esistente)
+
+		elif source_session_id is not None:
+			section_names = {field.name for field in fields(cls)}
+			more_overrides = [name for name in vars(args) if name.split(".", 1)[0] in section_names]
+
+			if more_overrides:
+				raise ValueError(
+					"Non è consentito combinare source_session_id con altri parametri.\n"
+					f"Parametri trovati: {sorted(more_overrides)}"
+				)
+
+			return cls.from_json(Path("Results") / source_session_id / "config.json")
+			
 		# end
 
 	@classmethod
@@ -522,23 +1015,23 @@ class SessionConfig:
 
 		def _from_dict(session_dict) -> "SessionConfig":
 
-			assert isinstance(session_dict, dict), "La configurazione deve essere rappresentata da un oggetto JSON."
+			if not isinstance(session_dict, dict):
+				raise ValueError("La configurazione deve essere rappresentata da un oggetto JSON.")
 
 			required_sections = {
-				"execution", "dataset", "preprocessing",
+				"dataset", "preprocessing",
 				"traffic", "kfold", "training",
 				"optimizer", "scheduler", "loss", "model",
 			}
 
 			missing_sections = required_sections - session_dict.keys()
-			assert not missing_sections, f"Sezioni mancanti nel file di configurazione: {sorted(missing_sections)}"
+			if missing_sections:
+				raise ValueError(
+					"Sezioni mancanti nel file di configurazione: "
+					f"{sorted(missing_sections)}"
+				)
 
 			try:
-
-				execution_dict = dict(session_dict["execution"])
-				flows_to_inspect = execution_dict.get("flows_to_inspect")
-				if flows_to_inspect is not None:
-					execution_dict["flows_to_inspect"] = tuple(flows_to_inspect)
 
 				traffic_dict = dict(session_dict["traffic"])
 				traffic_filters = TrafficFiltersConfig(**traffic_dict["filters"])
@@ -548,7 +1041,6 @@ class SessionConfig:
 					filters=traffic_filters,
 				)
 
-				execution = ExecutionConfig(**execution_dict)
 				dataset = DatasetConfig(**session_dict["dataset"])
 				preprocessing = PreprocessingConfig(**session_dict["preprocessing"])
 				kfold = CrossValidationConfig(**session_dict["kfold"])
@@ -564,7 +1056,6 @@ class SessionConfig:
 				raise ValueError(f"Struttura del file di configurazione non valida: {e}") from e
 
 			return cls(
-				execution=execution,
 				dataset=dataset,
 				preprocessing=preprocessing,
 				traffic=traffic,
@@ -577,9 +1068,6 @@ class SessionConfig:
 			)
 
 			# end
-
-		from pathlib import Path
-		import json
 
 		session_path = Path(session_path)
 
@@ -598,9 +1086,14 @@ class SessionConfig:
 		return _from_dict(session_dict)
 
 		# end
+
+	def __post_init__(self) -> None:
+		pass
+
+		# end
 	
 	def __repr__(self) -> str:
-		return f"\nSessionConfig(\n\t{repr(self.execution)}, \n\t{repr(self.dataset)}, \n\t{repr(self.preprocessing)}, \n\t{repr(self.traffic)}, \n\t{repr(self.kfold)}, \n\t{repr(self.training)}, \n\t{repr(self.optimizer)}, \n\t{repr(self.scheduler)}, \n\t{repr(self.loss)}, \n\t{repr(self.model)}\n)"
+		return f"\nSessionConfig(\n{repr(self.dataset)}, \n{repr(self.preprocessing)}, \n{repr(self.traffic)}, \n{repr(self.kfold)}, \n{repr(self.training)}, \n{repr(self.optimizer)}, \n{repr(self.scheduler)}, \n{repr(self.loss)}, \n{repr(self.model)}\n)"
 
 		# end
 
@@ -608,51 +1101,179 @@ class SessionConfig:
 
 @dataclass(frozen=True)
 class RuntimeConfig:
-	session_id: str
-	device: str
-	dtype: str
-	python_version: str
-	platform: str
-	libraries: LibrariesConfig
+	flags: FlagsConfig
+	""" Configuration of the flags for the current session. """
+
+	launch: LaunchConfig
+	""" Configuration of the launch parameters for the current session. """
+
+	environment: EnvironmentConfig
+	""" Configuration of the environment for the current session. """
 
 	@classmethod
-	def from_environment(cls,
-		session_id, device, dtype
-	) -> "RuntimeConfig":
-		import platform
-
+	def from_defaults(cls) -> "RuntimeConfig":
 		return cls(
-			session_id, device, dtype,
-			python_version=platform.python_version(),
-			platform=platform.platform(),
-			libraries=LibrariesConfig.from_environment(),
+			flags=FlagsConfig.from_defaults(),
+			launch=LaunchConfig.from_defaults(),
+			environment=EnvironmentConfig.from_environment(),
 		)
 
 		# end
 
 	@classmethod
-	def from_json(cls, runtime_path) -> "RuntimeConfig":
+	def from_args(cls, args: Namespace) -> "RuntimeConfig":
+		source_session_id = getattr(args, "source_session_id", None)
 
-		def _from_dict(runtime_dict) -> "RuntimeConfig":
+		#	-------------------------------------------------------------	#
+		#	Scenario 1 (caricamento da default)
+		#	Scenario 2 (caricamento da argomenti con override)
 
-			assert isinstance(runtime_dict, dict), "La configurazione deve essere rappresentata da un oggetto JSON."
+		if source_session_id is None:
 
-			required_keys = {
-				"session_id", "device", "dtype",
-				"python_version", "platform", "libraries"
-			}
+			return cls(
+				flags= FlagsConfig.from_args(args),
+				launch= LaunchConfig.from_args(args),
+				environment= EnvironmentConfig.from_environment(),
+			)
+		
+		#	-------------------------------------------------------------	#
+		#	Scenario 3 (caricamento da sessione esistente)
 
-			missing_keys = required_keys - runtime_dict.keys()
-			assert not missing_keys, f"Chiavi mancanti nel file di configurazione: {sorted(missing_keys)}"
+		elif source_session_id is not None:
+			section_names = {field.name for field in fields(cls)}
+			more_overrides = [name for name in vars(args) if name.split(".", 1)[0] in section_names]
+
+			print(section_names, more_overrides)
+
+			if more_overrides:
+				raise ValueError(
+					"Non è consentito combinare source_session_id con altri parametri.\n"
+					f"Parametri trovati: {sorted(more_overrides)}"
+				)
+
+			return cls.from_json(
+				Path("Results") / source_session_id / "config.json",
+				source_session_id
+			)
+			
+		# end
+
+	@classmethod
+	def from_json(cls, runtime_path, source_session_id=None) -> "RuntimeConfig":
+
+		def _from_dict(runtime_dict, source_session_id=None) -> "RuntimeConfig":
+
+			if not isinstance(runtime_dict, dict):
+				raise ValueError("La configurazione deve essere rappresentata da un oggetto JSON.")
+
+			required_sections = {"flags", "launch", "environment"}
+
+			missing_sections = required_sections - runtime_dict.keys()
+			if missing_sections:
+				raise ValueError(
+					"Chiavi mancanti nel file di configurazione: "
+					f"{sorted(missing_sections)}"
+				)
+
+			launch_dict = dict(runtime_dict["launch"])
+			flows_to_inspect = launch_dict.get("flows_to_inspect")
+
+			if flows_to_inspect is not None:
+				launch_dict["flows_to_inspect"] = tuple(flows_to_inspect)
+			if source_session_id is not None:
+				launch_dict["source_session_id"] = source_session_id
 
 			try:
+				flags = FlagsConfig(**runtime_dict["flags"])
+				launch = LaunchConfig(**launch_dict)
+				environment = EnvironmentConfig(**runtime_dict["environment"])
 
-				session_id = runtime_dict["session_id"]
-				device = runtime_dict["device"]
-				dtype = runtime_dict["dtype"]
-				python_version = runtime_dict["python_version"]
-				platform = runtime_dict["platform"]
-				libraries = LibrariesConfig(**runtime_dict["libraries"])
+			except KeyError as e:
+				raise ValueError(f"Chiave mancante nel file di configurazione: {e}") from e
+			except TypeError as e:
+				raise ValueError(f"Struttura del file di configurazione non valida: {e}") from e
+
+			return cls(
+				flags=flags,
+				launch=launch,
+				environment=environment,
+			)
+
+			# end
+
+		runtime_path = Path(runtime_path)
+
+		if not runtime_path.is_file():
+			raise FileNotFoundError(f"File di configurazione non trovato: {runtime_path}")
+
+		try:
+			with open(runtime_path, "r", encoding="utf-8") as f:
+				runtime_dict = json.load(f)
+		except json.JSONDecodeError as error:
+			raise ValueError(
+				f"JSON non valido in '{runtime_path}': "
+				f"riga {error.lineno}, colonna {error.colno}."
+			) from error
+
+		return _from_dict(runtime_dict, source_session_id)
+
+		# end
+
+	@classmethod
+	def __post_init__(self) -> None:
+		pass
+
+		# end
+
+	def __repr__(self) -> str:
+		return f"\nRuntimeConfig(\n{repr(self.flags)}, \n{repr(self.launch)}, \n{repr(self.environment)}\n)"
+
+		# end
+
+	# end class
+
+@dataclass(frozen=True)
+class ExecutionConfig:
+	session_id: str
+	""" Unique identifier for the session. """
+
+	device: str
+	""" Name of the device used for computation. """
+
+	dtype: str
+	""" Data type used for computation. """
+	
+	@classmethod
+	def from_args(cls, session_id, device, dtype) -> "ExecutionConfig":
+		return cls(
+			session_id=session_id,
+			device=device,
+			dtype=dtype,
+		)
+
+		# end
+
+	@classmethod
+	def from_json(cls, execution_path) -> "ExecutionConfig":
+
+		def _from_dict(execution_dict) -> "ExecutionConfig":
+
+			if not isinstance(execution_dict, dict):
+				raise ValueError("La configurazione deve essere rappresentata da un oggetto JSON.")
+
+			required_keys = {"session_id", "device", "dtype"}
+
+			missing_keys = required_keys - execution_dict.keys()
+			if missing_keys:
+				raise ValueError(
+					"Chiavi mancanti nel file di configurazione: "
+					f"{sorted(missing_keys)}"
+				)
+
+			try:
+				session_id = execution_dict["session_id"]
+				device = execution_dict["device"]
+				dtype = execution_dict["dtype"]
 
 			except KeyError as e:
 				raise ValueError(f"Chiave mancante nel file di configurazione: {e}") from e
@@ -663,28 +1284,21 @@ class RuntimeConfig:
 				session_id=session_id,
 				device=device,
 				dtype=dtype,
-				python_version=python_version,
-				platform=platform,
-				libraries=libraries,
 			)
 
 			# end
 
-		from pathlib import Path
-		import json
+		execution_path = Path(execution_path)
 
-		runtime_path = Path(runtime_path)
-
-		if not runtime_path.is_file():
-			raise FileNotFoundError(f"File di configurazione non trovato: {runtime_path}")
+		if not execution_path.is_file():
+			raise FileNotFoundError(f"File di configurazione non trovato: {execution_path}")
 
 		try:
-			with open(runtime_path, "r", encoding="utf-8") as f:
-				runtime_dict = json.load(f)
-				runtime_dict = runtime_dict["runtime"]
+			with open(execution_path, "r", encoding="utf-8") as f:
+				execution_dict = json.load(f)["execution"]
 		except json.JSONDecodeError as error:
 			raise ValueError(
-				f"JSON non valido in '{runtime_path}': "
+				f"JSON non valido in '{execution_path}': "
 				f"riga {error.lineno}, colonna {error.colno}."
 			) from error
 		except KeyError as e:
@@ -692,12 +1306,22 @@ class RuntimeConfig:
 		except TypeError as e:
 			raise ValueError(f"Struttura del file di configurazione non valida: {e}") from e
 
-		return _from_dict(runtime_dict)
+		return _from_dict(execution_dict)
+
+		# end
+
+	def __post_init__(self) -> None:
+		if self.session_id is None or (self.session_id.strip() == ""):
+			raise ValueError("Identificatore della sessione mancante.")
+		if self.device is None or (self.device.strip() == ""):
+			raise ValueError("Dispositivo mancante.")
+		if self.dtype is None or (self.dtype.strip() == ""):
+			raise ValueError("Tipo di dato mancante.")
 
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nRuntimeConfig(\n\tsession_id={self.session_id}, \n\tdevice={self.device}, \n\tdtype={self.dtype}, \n\tpython_version={self.python_version}, \n\tplatform={self.platform}, \n\tlibraries={repr(self.libraries)}\n)"
+		return f"\nExecutionConfig(\n\tsession_id={self.session_id}, \n\tdevice={self.device}, \n\tdtype={self.dtype}\n)"
 
 		# end
 
