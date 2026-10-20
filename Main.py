@@ -209,7 +209,7 @@ def encode_labels(X_raw, y_raw, labels_map_path):
 				f"a quelle salvate nella configurazione ({config_labels_map})."
 			)
 
-		# end USE_CONFIG_FILE
+		# end use_config_file()
 
 	if len(X_raw) != len(y_encoded):
 		raise ValueError("Disallineamento tra dati e etichette!")
@@ -818,7 +818,7 @@ def compute_soft_output(
 		pd.DataFrame: Contiene il FlowID, i risultati effettivi, le predizioni e il soft-output.
 	"""
 
-	print(f"\nEXEC_MODE_TRAIN impostato su {runtime_config.launch.exec_mode_train}.")
+	runtime_config.print_exec_mode()
 	if not runtime_config.launch.exec_mode_train:
 		print("Non è stato eseguito alcun addestramento.\n"
 			"Il modello da valutare è stato caricato da un checkpoint salvato.\n")
@@ -828,7 +828,6 @@ def compute_soft_output(
 		)
 
 	elif runtime_config.launch.exec_mode_train:
-
 		if criterion is None:
 			raise ValueError("Funzione di loss mancante!")
 
@@ -939,7 +938,7 @@ def main():
 				file, indent=4, ensure_ascii=False, allow_nan=False,
 			)
 
-		# end USE_CONFIG_FILE
+		# end use_config_file()
 
 	del execution_config
 
@@ -1112,7 +1111,7 @@ def main():
 		# Si aggiorna successivamente se la modalità di addestramento è abilitata.
 		criterion = None
 
-		print(f"\nEXEC_MODE_TRAIN impostato su {runtime_config.launch.exec_mode_train}.")
+		runtime_config.print_exec_mode()
 		if not runtime_config.launch.exec_mode_train:
 			print(f"Caricamento modello per la valutazione da: {fold_results_dir}")
 			print("Il modello non verrà addestrato, ma solo valutato sul test set.")
@@ -1166,7 +1165,7 @@ def main():
 				)
 				print(f"\nStorico delle metriche salvato in {fold_history_path}")
 
-			# end __EXEC_MODE_TRAIN
+			# end exec_mode_train
 
 		#	------------------------------------------------------------	#
 		#	Disegno dei grafici di loss / accuracy su Train / Val.
@@ -1198,7 +1197,7 @@ def main():
 			if runtime_config.flags.debug:
 				plt.show()
 
-			# end __SAVE_OUTPUT
+			# end save_output
 
 		#	------------------------------------------------------------	#
 		#	Costruzione del soft-output per il Test set.
@@ -1242,7 +1241,7 @@ def main():
 			if runtime_config.flags.debug:
 				plt.show()
 
-			# end __SAVE_OUTPUT
+			# end save_output
 
 		#	-------------------------------------------------------------	#
 		#	Report di classificazione completo.
@@ -1258,7 +1257,7 @@ def main():
 			with open(fold_report_path, "w") as f:
 				f.write(report_dict)
 
-			# end __SAVE_OUTPUT
+			# end save_output
 
 		#	-------------------------------------------------------------	#
 		#	Fine dell'elaborazione del fold corrente.

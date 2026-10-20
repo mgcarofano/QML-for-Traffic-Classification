@@ -343,7 +343,7 @@ def session_2d_histogram(
 		title (str, optional): Titolo della finestra di traffico, usato per il plot. Defaults to None.
 
 	Returns:
-		numpy.ndarray: Matrice 2D di shape (D, D) e dtype uint16,
+		numpy.ndarray: Matrice 2D di shape (D, D) e dtype float32,
 			dove H[y, x] è il numero di pacchetti con dimensione y byte arrivati
 			al tempo normalizzato x. La dimensione D è calcolata in base ai parametri MTU e BIN_SIZE.
 	"""

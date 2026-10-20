@@ -347,7 +347,13 @@ class TrafficConfig:
 			raise ValueError("MTU deve essere maggiore di zero.")
 
 		if self.bin_size <= 0:
-			raise ValueError("Dimensione del bin deve essere maggiore di zero.")
+			raise ValueError("La dimensione dei bin deve essere maggiore di zero.")
+
+		if self.bin_size > self.mtu:
+			raise ValueError("La dimensione dei bin non può essere maggiore di MTU.")
+
+		if self.mtu % self.bin_size != 0:
+			raise ValueError("La dimensione dei bin deve dividere esattamente l'MTU.")
 
 		# end
 
@@ -1219,11 +1225,13 @@ class RuntimeConfig:
 
 		# end
 
-	@classmethod
 	def __post_init__(self) -> None:
 		pass
 
 		# end
+
+	def print_exec_mode(self) -> None:
+		print(f"Modalità di {'addestramento' if self.launch.exec_mode_train else 'valutazione'}.")
 
 	def __repr__(self) -> str:
 		return f"\nRuntimeConfig(\n{repr(self.flags)}, \n{repr(self.launch)}, \n{repr(self.environment)}\n)"
