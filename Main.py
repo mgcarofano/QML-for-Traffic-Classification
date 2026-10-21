@@ -118,7 +118,8 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 		npz_path = flowpics_dir / f"{session_config.dataset.name}.npz"
 		meta_path = flowpics_dir / f"{session_config.dataset.name}.csv"
 
-		if not runtime_config.flags.use_precomputed_dataset:
+		if not npz_path.exists() or not meta_path.exists():
+			# Se i file precomputati non esistono, vengono generati utilizzando mirage_pickle_converter().
 			histograms, metadata = mirage_pickle_converter(session_config, runtime_config)
 
 			# Salvataggio degli istogrammi 2D FlowPic in formato NumPy.
@@ -133,12 +134,7 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 			)
 			print(f"Salvati metadati (di {len(metadata)} righe) in: {meta_path} ")
 
-		elif runtime_config.flags.use_precomputed_dataset:
-			if not npz_path.exists():
-				raise FileNotFoundError(f"Array di istogrammi precomputati non trovato: {npz_path}")
-			if not meta_path.exists():
-				raise FileNotFoundError(f"DataFrame di metadati precomputati non trovato: {meta_path}")
-
+		else:
 			# Caricamento degli istogrammi 2D FlowPic precomputati.
 			histograms = np.load(npz_path)['data']
 			print(f"\nCaricato dataset (shape={histograms.shape}) da: {npz_path}")
@@ -146,8 +142,6 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 			# Caricamento dei metadati in formato CSV.
 			metadata = pd.read_csv(meta_path)
 			print(f"Caricati metadati (di {len(metadata)} righe) da: {meta_path} ")
-
-		# end if __USE_PRECOMPUTED_DATASET
 
 		# Prima di procedere con split/training, si verifica che gli istogrammi e i metadati siano allineati.
 		if histograms.shape[0] != len(metadata):
@@ -865,7 +859,7 @@ def compute_soft_output(
 #	####################################################################	#
 #	Main
 
-def main():
+def main(cli_overrides: bool):
 
 	#	-----------------------------------------------------------------	#
 	#	Inizio dell'elaborazione.
@@ -924,10 +918,16 @@ def main():
 			)
 
 	# Se non si utilizza un file di configurazione, si salvano i parametri correnti.
-	elif not runtime_config.launch.use_config_file():
-		if output_dir.exists():
-			raise FileExistsError(f"La directory dei risultati '{output_dir}' esiste già.")
-		output_dir.mkdir(parents=True, exist_ok=False)
+	# elif not runtime_config.launch.use_config_file():
+	if not runtime_config.launch.use_config_file() or cli_overrides:
+
+		# Per una nuova sessione la directory non deve già esistere.
+		# Per una sessione caricata, invece, si riutilizza quella esistente.
+		if not runtime_config.launch.use_config_file():
+			if output_dir.exists():
+				raise FileExistsError(f"La directory dei risultati '{output_dir}' esiste già. Aspetta un minuto prima di eseguire un nuovo esperimento.")
+			output_dir.mkdir(parents=True, exist_ok=False)
+		
 		with config_path.open("w", encoding="utf-8") as file:
 			json.dump(
 				{
@@ -1047,17 +1047,6 @@ def main():
 		# TODO: vedi notebook.
 
 		#	------------------------------------------------------------	#
-		#	Stampa dei risultati.
-
-		if runtime_config.flags.debug:
-			print(f"\nTrain shape: {X_train.shape} ({len(X_train)/len(X_raw):.1%})")
-			print(metadata_train.head())
-			print(f"\nValidation shape: {X_val.shape} ({len(X_val)/len(X_raw):.1%})")
-			print(metadata_val.head())
-			print(f"\nTest shape: {X_test.shape} ({len(X_test)/len(X_raw):.1%})")
-			print(metadata_test.head())
-
-		#	------------------------------------------------------------	#
 		#	Applicazione della strategia di data preprocessing.
 
 		if not session_config.dataset.is_flowpic:
@@ -1067,9 +1056,16 @@ def main():
 			X_val = apply_data_preprocessing(X_val, scaler)
 			X_test = apply_data_preprocessing(X_test, scaler)
 
-			print("Train shape:", X_train.shape)
-			print("Val shape:", X_val.shape)
-			print("Test shape:", X_test.shape)
+		#	------------------------------------------------------------	#
+		#	Stampa dei risultati.
+
+		if runtime_config.flags.debug:
+			print(f"\nTrain shape: {X_train.shape} ({len(X_train)/len(X_raw):.1%})")
+			print("Head:\n", metadata_train.head())
+			print(f"\nValidation shape: {X_val.shape} ({len(X_val)/len(X_raw):.1%})")
+			print("Head:\n", metadata_val.head())
+			print(f"\nTest shape: {X_test.shape} ({len(X_test)/len(X_raw):.1%})")
+			print("Head:\n", metadata_test.head())
 
 		#	------------------------------------------------------------	#
 		#	Costruzione dell'oggetto Dataset per PyTorch.
@@ -1304,15 +1300,21 @@ if __name__ == "__main__":
 	session_config = SessionConfig.from_args(args)
 	runtime_config = RuntimeConfig.from_args(args)
 
-	# Verifica della corretta creazione degli oggetti di configurazione.
+	#	-----------------------------------------------------------------	#
+	#	Verifica della corretta creazione degli oggetti di configurazione.
+	
 	if session_config is None:
 		raise ValueError("Errore nel caricamento del file di configurazione (session)!")
 
 	if runtime_config is None:
 		raise ValueError("Errore nel caricamento del file di configurazione (runtime)!")
 
+	cli_overrides = set(vars(args)) - {"source_session_id"} is not None
+	if cli_overrides and not runtime_config.flags.save_output:
+		raise ValueError("Override dei parametri da CLI non consentito se 'save_output' è disabilitato.")
+	
 	# Stampa di debug dei parametri di configurazione.
-	print(
+	debug_print(
 		f"Parametri di sessione in 'session_config':" \
 		f"\n{session_config}" \
 		"\n\n" \
@@ -1323,7 +1325,7 @@ if __name__ == "__main__":
 	#	-----------------------------------------------------------------	#
 	#	Funzione principale per l'esecuzione del programma.
 
-	main()
+	main(cli_overrides)
 
 	exit(0)
 

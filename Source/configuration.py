@@ -23,7 +23,16 @@ def _overrides(
 		args: Namespace,
 		prefix: str = "",
 	) -> dict:
+	"""Restituisce un dizionario con i valori degli argomenti della CLI che sovrascrivono i campi della classe di configurazione.
 
+	Args:
+		config_class: La classe di configurazione da cui estrarre i campi.
+		args (Namespace): Gli argomenti della CLI passati al programma.
+		prefix (str, optional): Prefisso da aggiungere ai nomi degli argomenti. Defaults to "".
+
+	Returns:
+		dict
+	"""
 	values = vars(args)
 	overrides = {}
 
@@ -44,19 +53,19 @@ def _overrides(
 
 	# end
 
-def parse_args(argv=None) -> Namespace:
-	"""_summary_
+def parse_args(argv= None) -> Namespace:
+	"""Analizza gli argomenti della CLI. Utilizza la funzione add_fields() per aggiungere gli argomenti in base alle classi di configurazione definite.
 
 	Args:
-		argv (_type_, optional): _description_. Defaults to None.
+		argv (list, optional): Lista degli argomenti della CLI da analizzare. Defaults to None.
 
 	Raises:
-		TypeError: _description_
-		TypeError: _description_
-		TypeError: _description_
+		TypeError: Se il tipo del campo non è supportato dalla CLI.
+		TypeError: Se il tipo opzionale contiene più di un tipo non nullo.
+		TypeError: Se il tipo di tuple non è supportato.
 
 	Returns:
-		Namespace: _description_
+		Namespace: oggetto contenente i valori analizzati della CLI.
 	"""
 	parser = ArgumentParser(
 		description="Configurazione degli esperimenti QML.",
@@ -65,6 +74,17 @@ def parse_args(argv=None) -> Namespace:
 	)
 
 	def add_fields(config_class, prefix: str = "") -> None:
+		"""Aggiunge gli argomenti della CLI per i campi della classe di configurazione.
+
+		Args:
+			config_class: La classe di configurazione da cui estrarre i campi.
+			prefix (str, optional): Prefisso da aggiungere ai nomi degli argomenti. Defaults to "".
+
+		Raises:
+			TypeError: Se il tipo del campo non è supportato dalla CLI.
+			TypeError: Se il tipo opzionale contiene più di un tipo non nullo.
+			TypeError: Se il tipo di tuple non è supportato.
+		"""
 		type_hints = get_type_hints(config_class)
 
 		for field in fields(config_class):
@@ -269,7 +289,7 @@ class PreprocessingConfig:
 @dataclass(frozen=True)
 class TrafficFiltersConfig:
 	min_tps: float | None = None
-	""" Minimum duration of a session in seconds. Sessions shorter than this will be discarded. Default is 50. """
+	""" Minimum duration of a session in seconds. Sessions shorter than this will be discarded. Default is 50 if not specified. """
 	
 	min_packets: int | None = None
 	""" Minimum number of packets in a session. Sessions with fewer packets will be discarded. Default is 3 if not specified. """
@@ -280,7 +300,7 @@ class TrafficFiltersConfig:
 	@classmethod
 	def from_defaults(cls) -> "TrafficFiltersConfig":
 		return cls(
-			min_tps= 50,
+			min_tps= None,
 			min_packets= None,
 			min_dim= None,
 		)
@@ -376,36 +396,28 @@ class CrossValidationConfig:
 	""" Number of folds for cross-validation. """
 	
 	test_ratio: float | None
-	""" Proportion of the dataset to be used for testing. Default is 0.2. """
+	""" Proportion of the dataset to be used for testing. Default is 0.2 if not specified. """
 	
 	sub_sample_ratio: float
 	""" Ratio of the dataset to be used for sub-sampling. For example, 0.5 means using 50% of the dataset. Default should be 1.0, meaning the entire dataset is used. """
 
 	@classmethod
-	def from_defaults(cls, test_folds= 1) -> "CrossValidationConfig":
+	def from_defaults(cls, test_folds= 5) -> "CrossValidationConfig":
 		return cls(
 			train_ratio= 0.8,
 			val_ratio= 0.2,
-			test_folds= test_folds,
-			test_ratio= None if test_folds > 1 else 0.2,
-			sub_sample_ratio= 0.01,
+			test_folds= 5,
+			test_ratio= None,
+			sub_sample_ratio= 1.0,
 		)
 
 		# end
 
 	@classmethod
 	def from_args(cls, args: Namespace) -> "CrossValidationConfig":
-		changes = _overrides(cls, args, "kfold")
-
-		derived_inputs = {
-			name: changes[name]
-			for name in ("test_folds")
-			if name in changes
-		}
-
 		return replace(
-			cls.from_defaults(**derived_inputs),
-			**changes,
+			cls.from_defaults(),
+			**_overrides(cls, args, "kfold"),
 		)
 
 		# end
@@ -455,7 +467,7 @@ class TrainingConfig:
 	""" Number of training epochs. Default is 20. """
 	
 	batch_size: int
-	""" Size of the mini-batches used during training. """
+	""" Size of the mini-batches used during training. Default is 50. """
 	
 	early_stopping: bool
 	""" Whether to use early stopping during training. """
@@ -785,9 +797,6 @@ class FlagsConfig:
 	debug_cycle: bool
 	""" Whether to enable debug mode inside each cycle of the execution loop in mirage_pickle_converter(). """
 	
-	use_precomputed_dataset: bool
-	""" Whether to load the FlowPic dataset from a precomputed .npz file. """
-	
 	save_output: bool
 	""" Whether to save the output of the notebook. """
 
@@ -796,7 +805,6 @@ class FlagsConfig:
 		return cls(
 			debug= False,
 			debug_cycle= False,
-			use_precomputed_dataset= True,
 			save_output= True,
 		)
 
@@ -815,7 +823,7 @@ class FlagsConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nFlagsConfig(\n\tdebug={self.debug}, \n\tdebug_cycle={self.debug_cycle}, \n\tuse_precomputed_dataset={self.use_precomputed_dataset}, \n\tsave_output={self.save_output}\n)"
+		return f"\nFlagsConfig(\n\tdebug={self.debug}, \n\tdebug_cycle={self.debug_cycle}, \n\tsave_output={self.save_output}\n)"
 
 		# end
 
@@ -1008,7 +1016,7 @@ class SessionConfig:
 
 			if more_overrides:
 				raise ValueError(
-					"Non è consentito combinare source_session_id con altri parametri.\n"
+					"Non è consentito combinare source_session_id con altri parametri di sessione.\n"
 					f"Parametri trovati: {sorted(more_overrides)}"
 				)
 
@@ -1128,46 +1136,45 @@ class RuntimeConfig:
 
 	@classmethod
 	def from_args(cls, args: Namespace) -> "RuntimeConfig":
+
+		runtime_types = get_type_hints(cls)
 		source_session_id = getattr(args, "source_session_id", None)
-
-		#	-------------------------------------------------------------	#
-		#	Scenario 1 (caricamento da default)
-		#	Scenario 2 (caricamento da argomenti con override)
-
-		if source_session_id is None:
-
-			return cls(
-				flags= FlagsConfig.from_args(args),
-				launch= LaunchConfig.from_args(args),
-				environment= EnvironmentConfig.from_environment(),
-			)
 		
 		#	-------------------------------------------------------------	#
+		#	Scenario 1 (caricamento da default)
 		#	Scenario 3 (caricamento da sessione esistente)
 
+		if source_session_id is None:
+			base_config = cls.from_defaults()
 		elif source_session_id is not None:
-			section_names = {field.name for field in fields(cls)}
-			more_overrides = [name for name in vars(args) if name.split(".", 1)[0] in section_names]
+			base_config = cls.from_json(Path("Results") / source_session_id / "config.json")
+		
+		#	-------------------------------------------------------------	#
+		#	Scenario 2 (caricamento da argomenti con override)
+		
+		changes = {}
+		derived_inputs = {
+			field.name: runtime_types[field.name]
+			for field in fields(cls)
+			if field.init
+		}
 
-			print(section_names, more_overrides)
-
-			if more_overrides:
-				raise ValueError(
-					"Non è consentito combinare source_session_id con altri parametri.\n"
-					f"Parametri trovati: {sorted(more_overrides)}"
+		for section_name, section_class in derived_inputs.items():
+			section_overrides = _overrides(section_class, args)
+			if section_overrides:
+				changes[section_name] = replace(
+					getattr(base_config, section_name),
+					**section_overrides,
 				)
 
-			return cls.from_json(
-				Path("Results") / source_session_id / "config.json",
-				source_session_id
-			)
-			
+		return replace(base_config, **changes)
+
 		# end
 
 	@classmethod
-	def from_json(cls, runtime_path, source_session_id=None) -> "RuntimeConfig":
+	def from_json(cls, runtime_path) -> "RuntimeConfig":
 
-		def _from_dict(runtime_dict, source_session_id=None) -> "RuntimeConfig":
+		def _from_dict(runtime_dict) -> "RuntimeConfig":
 
 			if not isinstance(runtime_dict, dict):
 				raise ValueError("La configurazione deve essere rappresentata da un oggetto JSON.")
@@ -1183,11 +1190,8 @@ class RuntimeConfig:
 
 			launch_dict = dict(runtime_dict["launch"])
 			flows_to_inspect = launch_dict.get("flows_to_inspect")
-
 			if flows_to_inspect is not None:
 				launch_dict["flows_to_inspect"] = tuple(flows_to_inspect)
-			if source_session_id is not None:
-				launch_dict["source_session_id"] = source_session_id
 
 			try:
 				flags = FlagsConfig(**runtime_dict["flags"])
@@ -1221,7 +1225,7 @@ class RuntimeConfig:
 				f"riga {error.lineno}, colonna {error.colno}."
 			) from error
 
-		return _from_dict(runtime_dict, source_session_id)
+		return _from_dict(runtime_dict)
 
 		# end
 
@@ -1231,7 +1235,7 @@ class RuntimeConfig:
 		# end
 
 	def print_exec_mode(self) -> None:
-		print(f"Modalità di {'addestramento' if self.launch.exec_mode_train else 'valutazione'}.")
+		print(f"\nModalità di {'addestramento' if self.launch.exec_mode_train else 'valutazione'}.")
 
 	def __repr__(self) -> str:
 		return f"\nRuntimeConfig(\n{repr(self.flags)}, \n{repr(self.launch)}, \n{repr(self.environment)}\n)"
