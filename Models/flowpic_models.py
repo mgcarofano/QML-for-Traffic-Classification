@@ -368,8 +368,3 @@ class ResNetModel(_ResNet):
 
 # TODO: aggiungere LeNet5 dal paper originale.
 
-#   ####################################################################    #
-#   QUANTUM HYBRID MODEL
-
-# TODO: Implementare un modello ibrido quantistico per la classificazione
-# di istogrammi FlowPic.

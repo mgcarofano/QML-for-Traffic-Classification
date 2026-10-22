@@ -34,6 +34,7 @@ from sklearn.model_selection import StratifiedKFold
 # Machine Learning and Quantum ML
 import torch
 import torch.nn as nn
+import pennylane as qml
 from Source.model_selection import \
 	select_model, \
 	weight_init, \
@@ -883,6 +884,9 @@ def main(cli_overrides: bool):
 	if device.type == "cuda":
 		print(f"GPU: {torch.cuda.get_device_name(0)}")
 
+	# TODO: aggiugere gestione device da argomenti CLI.
+	device = torch.device("cpu")
+
 	# Tipo di dato utilizzato per il calcolo.
 	dtype = torch.float32 if device.type == "mps" else torch.float64
 
@@ -1019,6 +1023,7 @@ def main(cli_overrides: bool):
 		fold_model_path = fold_results_dir / "model.pth"
 		fold_plots_path = fold_results_dir / "train_val_plots.png"
 		fold_predictions_path = fold_results_dir / "predictions_test.csv"
+		fold_quantum_circuit = fold_results_dir / "quantum_circuit.png"
 		fold_report_path = fold_results_dir / "classification_report.txt"
 
 		#	-------------------------------------------------------------	#
@@ -1162,6 +1167,23 @@ def main(cli_overrides: bool):
 				print(f"\nStorico delle metriche salvato in {fold_history_path}")
 
 			# end exec_mode_train
+
+		#	------------------------------------------------------------	#
+		#	Visualizzazione del circuito quantistico.
+
+		if is_quantum and runtime_config.flags.save_output:
+			q_circuit = model.q_layer.qnode
+			q_weights = model.q_layer.weights
+
+			q_input = \
+				session_config.model.n_qubits \
+				if 'ange' in session_config.model.name \
+				else 2 ** session_config.model.n_qubits
+
+			dummy_x = torch.zeros(q_input)
+
+			q_circuit_draw, _ = qml.draw_mpl(q_circuit)(dummy_x, q_weights)
+			q_circuit_draw.savefig(fold_quantum_circuit)
 
 		#	------------------------------------------------------------	#
 		#	Disegno dei grafici di loss / accuracy su Train / Val.

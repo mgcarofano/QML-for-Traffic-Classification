@@ -48,7 +48,7 @@ LOCAL=(
 
 BASELINE=(
     --kfold.sub_sample_ratio 1.0 --kfold.test_folds 5
-    --training.epochs 20 --training.batch_size 50
+    --training.epochs 40 --training.batch_size 50
 )
 
 case "$PRESET" in

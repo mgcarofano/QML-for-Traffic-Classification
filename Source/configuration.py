@@ -476,11 +476,11 @@ class TrainingConfig:
 	""" Number of epochs to wait for improvement before stopping training. If None, it will be automatically calculated based on the total number of epochs. """
 
 	@classmethod
-	def from_defaults(cls, epochs = 20, patience = None) -> "TrainingConfig":
+	def from_defaults(cls, epochs = 40, patience = None) -> "TrainingConfig":
 
 		patience = \
 			patience if patience is not None \
-			else max(2, epochs // 10) if epochs <= 100 else 10
+			else max(5, epochs // 10) if epochs <= 100 else 10
 
 		return cls(
 			epochs= epochs,
@@ -708,7 +708,7 @@ class ModelConfig:
 	n_qubits: int
 	""" Number of qubits in the quantum circuit. """
 	
-	n_shots: int
+	n_shots: int | None
 	""" Number of shots for the quantum circuit execution. """
 	
 	n_layers: int
@@ -723,10 +723,12 @@ class ModelConfig:
 			available_models = {
 				"resnet" : 18,
 				"hybrid" : 3,
+				"ampe_fixed_probs" : 3,
+				"ange_probs" : 3
 			}
 
 			if name not in available_models:
-				raise ValueError(f"Modello {name} non supportato. Modelli disponibili: {available_models}")
+				raise NotImplementedError(f"Modello {name} non supportato. Modelli disponibili: {str(available_models.keys())}")
 
 			return available_models[name]
 
@@ -738,7 +740,7 @@ class ModelConfig:
 			name= name,
 			simulator= "default.qubit",
 			n_qubits= 5,
-			n_shots= 20,
+			n_shots= None,
 			n_layers= n_layers,
 		)
 
@@ -762,16 +764,13 @@ class ModelConfig:
 		# end
 
 	def __post_init__(self) -> None:
-		if self.name not in ["resnet", "hybrid"]:
-			raise NotImplementedError(f"Modello {self.name} non supportato. Modelli disponibili: ['resnet', 'hybrid']")
-
 		if self.simulator not in ["default.qubit"]:
 			raise NotImplementedError(f"Simulatore {self.simulator} non supportato. Simulatori disponibili: ['default.qubit']")
 		
 		if self.n_qubits <= 0:
 			raise ValueError("Il numero di qubit deve essere maggiore di zero.")
 
-		if self.n_shots <= 0:
+		if self.n_shots is not None and self.n_shots <= 0:
 			raise ValueError("Il numero di shots deve essere maggiore di zero.")
 
 		if self.n_layers <= 0:
