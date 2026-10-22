@@ -46,15 +46,18 @@ LOCAL=(
     --training.epochs 3 --training.batch_size 50 --no-training.early_stopping
 )
 
-BASELINE=(
-    --kfold.sub_sample_ratio 1.0 --kfold.test_folds 5
-    --training.epochs 40 --training.batch_size 50
+QML_PAPER=(
+    --kfold.test_folds 1 --kfold.test_ratio 0.2 --kfold.train_ratio 0.9
+    --kfold.val_ratio 0.1 --training.epochs 50 --training.batch_size 32
+    --optimizer.name "Adam" --optimizer.learning_rate 0.01
+    --optimizer.beta1 0.9 --optimizer.beta2 0.999 --optimizer.epsilon 1e-7
+    --training.early_stopping
 )
 
 case "$PRESET" in
     mirage-test) ARGS=("${LOCAL[@]}" --model.name hybrid) ;;
     flowpic-test) ARGS=("${LOCAL[@]}" --model.name resnet --dataset.is_flowpic) ;;
-    baseline) ARGS=("${BASELINE[@]}") ;;
+    qml-paper) ARGS=("${QML_PAPER[@]}") ;;
     -h|--help|help|--list) help; exit 0 ;;
     *) echo "Preset sconosciuto: $PRESET. Usare --help." >&2; exit 2 ;;
 esac

@@ -476,38 +476,56 @@ def build_optimizer(model):
 		L'ottimizzatore costruito in base alla selezione dell'utente.
 	"""
 
-	if session_config.optimizer.name == 'SGD':
-		optimizer = torch.optim.SGD(
-			model.parameters(),
-			lr=session_config.optimizer.learning_rate,
-			weight_decay=session_config.optimizer.weight_decay,
-			momentum=session_config.optimizer.momentum
-		)
+	def get_optimizer_params(names: list):
+		ret = {}
 
-	elif session_config.optimizer.name == 'Adam':
-		optimizer = torch.optim.Adam(model.parameters(), lr=session_config.optimizer.learning_rate)
+		if 'lr' in names:
+			ret['lr'] = session_config.optimizer.learning_rate
+		if 'weight_decay' in names:
+			ret['weight_decay'] = session_config.optimizer.weight_decay
+		if 'eps' in names:
+			ret['eps'] = session_config.optimizer.epsilon
+		if 'momentum' in names:
+			ret['momentum'] = session_config.optimizer.momentum
+		if 'betas' in names:
+			ret['betas'] = (
+				session_config.optimizer.beta1,
+				session_config.optimizer.beta2
+			)
+		if 'alpha' in names:
+			ret['alpha'] = session_config.optimizer.alpha
 
-	elif session_config.optimizer.name == 'RMSprop':
-		optimizer = torch.optim.RMSprop(
+		return ret
+
+		# end
+
+	if session_config.optimizer.name == 'Adam':
+		optimizer = torch.optim.Adam(
 			model.parameters(),
-			lr=session_config.optimizer.learning_rate,
-			weight_decay=session_config.optimizer.weight_decay,
-			momentum=session_config.optimizer.momentum
+			**get_optimizer_params(['lr', 'eps', 'betas']),
 		)
 
 	elif session_config.optimizer.name == 'AdamW':
 		optimizer = torch.optim.AdamW(
 			model.parameters(),
-			lr=session_config.optimizer.learning_rate,
-			weight_decay=session_config.optimizer.weight_decay,
-			eps=session_config.optimizer.epsilon
+			**get_optimizer_params(['lr', 'weight_decay', 'eps', 'betas']),
+		)
+
+	elif session_config.optimizer.name == 'SGD':
+		optimizer = torch.optim.SGD(
+			model.parameters(),
+			**get_optimizer_params(['lr', 'weight_decay', 'momentum'])
+		)
+
+	elif session_config.optimizer.name == 'RMSprop':
+		optimizer = torch.optim.RMSprop(
+			model.parameters(),
+			**get_optimizer_params(['lr', 'weight_decay', 'eps', 'momentum', 'alpha'])
 		)
 
 	else:
-		raise ValueError(
-			f"Tipo di optimizer non supportato: {session_config.optimizer.name}. "
-			"Usare: 'Adam', 'AdamW', 'SGD' oppure 'RMSprop'."
-		)
+		# Controllo già eseguito in configuration.py
+		pass
 
 	return optimizer
 
@@ -554,10 +572,8 @@ def build_scheduler(optimizer, train_loader):
 		lr_sched = None
 
 	else:
-		raise ValueError(
-			f"Tipo di scheduler non supportato: {session_config.scheduler.name}. "
-			"Usare: 'OneCycleSched', 'LinearSched', 'StepSched' oppure 'NoSched'."
-		)
+		# Controllo già eseguito in configuration.py
+		pass
 
 	return lr_sched
 
@@ -629,10 +645,8 @@ def build_loss_function(
 		)
 
 	else:
-		raise ValueError(
-			f"Tipo di loss non supportato: {session_config.loss.name}. "
-			"Usare: 'CrossEntropy', 'WeightedCrossEntropy' oppure 'Focal'."
-		)
+		# Controllo già eseguito in configuration.py
+		pass
 
 	# end
 

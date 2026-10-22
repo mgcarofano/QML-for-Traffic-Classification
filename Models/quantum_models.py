@@ -8,11 +8,8 @@
 #	####################################################################	#
 #	Librerie
 
-import torch
 import pennylane as qml
 import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
 from Source.model_selection import compute_model_name
 
 #	####################################################################	#
@@ -182,7 +179,7 @@ class AmpeDenseModel(nn.Module):
 
 		# end
 
-	# end
+	# end class
 
 #	####################################################################	#
 #	QNN with Angle Embedding
@@ -282,7 +279,7 @@ class AngeDenseModel(nn.Module):
 
 		# end
 
-	# end
+	# end class
 
 #	####################################################################	#
 #	Hybrid QNN with Amplitude Embedding and Convolutional LSTM Layers

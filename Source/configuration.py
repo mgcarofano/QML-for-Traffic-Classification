@@ -464,7 +464,7 @@ class CrossValidationConfig:
 @dataclass(frozen=True)
 class TrainingConfig:
 	epochs: int
-	""" Number of training epochs. Default is 20. """
+	""" Number of training epochs. Default is 40. """
 	
 	batch_size: int
 	""" Size of the mini-batches used during training. Default is 50. """
@@ -534,13 +534,22 @@ class OptimizerConfig:
 	""" Learning rate for the optimizer. """
 	
 	weight_decay: float
-	""" Weight decay (L2 penalty) for the optimizer. """
-	
+	""" Weight decay coefficient; AdamW applies decoupled weight decay. """
+
 	epsilon: float
-	""" Epsilon value for the optimizer AdamW. """
-	
+	""" Numerical stability term for Adam, AdamW and RMSprop. """
+
 	momentum: float
-	""" Momentum for the optimizer SGD. """
+	""" Momentum factor for SGD and RMSprop. """
+
+	beta1: float
+	""" Exponential decay rate for the first moment in Adam and AdamW. """
+
+	beta2: float
+	""" Exponential decay rate for the second moment in Adam and AdamW. """
+
+	alpha: float
+	""" Smoothing coefficient for the moving average of squared gradients in RMSprop. Default is 0.99. """
 
 	@classmethod
 	def from_defaults(cls) -> "OptimizerConfig":
@@ -548,8 +557,10 @@ class OptimizerConfig:
 			name= "AdamW",
 			learning_rate= 1e-3,
 			weight_decay= 1e-4,
-			epsilon= 1e-2,
+			epsilon= 1e-8,
 			momentum= 0.9,
+			beta1= 0.9, beta2= 0.999,
+			alpha= 0.99
 		)
 
 		# end
@@ -562,6 +573,12 @@ class OptimizerConfig:
 		)
 
 	def __post_init__(self) -> None:
+		if self.name not in ["Adam", "AdamW", "SGD", "RMSprop"]:
+			raise NotImplementedError(
+				f"Tipo di optimizer non supportato: {self.name}. "
+				"Usare: 'Adam', 'AdamW', 'SGD' oppure 'RMSprop'."
+			)
+
 		if self.learning_rate <= 0:
 			raise ValueError("Il learning rate deve essere maggiore di zero.")
 
@@ -572,12 +589,15 @@ class OptimizerConfig:
 			raise ValueError("Il valore di epsilon deve essere maggiore di zero.")
 
 		if self.momentum < 0 or self.momentum > 1:
-			raise ValueError("Il valore di momentum deve essere compreso tra 0 e 1.")
+			raise ValueError("Il valore di momentum deve essere compreso tra 0 e 1 esclusi.")
+
+		if (not 0.0 <= self.beta1 < 1.0) or (not 0.0 <= self.beta2 < 1.0):
+			raise ValueError("Il valore dei parametri Beta devono essere compresi tra 0 e 1 escluso.")
 
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nOptimizerConfig(\n\tname={self.name}, \n\tlearning_rate={self.learning_rate}, \n\tweight_decay={self.weight_decay}, \n\tepsilon={self.epsilon}, \n\tmomentum={self.momentum}\n)"
+		return f"\nOptimizerConfig(\n\tname={self.name}, \n\tlearning_rate={self.learning_rate}, \n\tweight_decay={self.weight_decay}, \n\tepsilon={self.epsilon}, \n\tmomentum={self.momentum}, \n\tbeta1={self.beta1}, \n\tbeta2={self.beta2}, \n\talpha={self.alpha}\n)"
 
 		# end
 
@@ -622,6 +642,12 @@ class SchedulerConfig:
 		# end
 
 	def __post_init__(self) -> None:
+		if self.name not in ["OneCycleSched", "LinearSched", "StepSched", "NoSched"]:
+			raise NotImplementedError(
+				f"Tipo di scheduler non supportato: {self.name}. "
+				"Usare: 'OneCycleSched', 'LinearSched', 'StepSched' oppure 'NoSched'."
+			)
+
 		if self.name == "OneCycleSched" and self.max_lr <= 0:
 			raise ValueError("Il valore di 'max_lr' deve essere positivo per OneCycleSched.")
 			
@@ -709,7 +735,7 @@ class ModelConfig:
 	""" Number of qubits in the quantum circuit. """
 	
 	n_shots: int | None
-	""" Number of shots for the quantum circuit execution. """
+	""" Number of shots for the quantum circuit execution. Default is 20 if not specified. """
 	
 	n_layers: int
 	""" Number of layers for the selected model. If None, it will be automatically calculated based on the selected model.
