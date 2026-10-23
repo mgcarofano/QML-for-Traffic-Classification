@@ -191,7 +191,47 @@ def parse_args(argv= None) -> Namespace:
 	return parser.parse_args(argv)
 
 	# end
+
+def find_session_config(
+		source_session_id: str,
+		results_dir = "Results",
+	) -> Path:
+	"""Trova config.json nella cartella della sessione, cercando anche nelle sottocartelle.
+
+	Args:
+		source_session_id (str): Identificatore della sessione da cercare.
+		results_dir (str, optional): Directory dei risultati in cui cercare. Defaults to "Results".
+
+	Raises:
+		FileNotFoundError: Se non viene trovata alcuna configurazione per la sessione specificata.
+		ValueError: Se vengono trovate più configurazioni per la stessa sessione.
+
+	Returns:
+		Path: Percorso al file config.json della sessione trovata.
+	"""
 	
+	results_dir = Path(results_dir)
+
+	matches = [
+		path
+		for path in results_dir.rglob("config.json")
+		if path.parent.name == source_session_id and path.is_file()
+	]
+
+	if not matches:
+		raise FileNotFoundError(f"Configurazione della sessione '{source_session_id}' non trovata in '{results_dir}'.")
+
+	if len(matches) > 1:
+		paths = "\n".join(f"  - {path}" for path in matches)
+		raise ValueError(
+			f"Sono state trovate più configurazioni per la sessione '{source_session_id}':\n"
+			f"{paths}"
+		)
+
+	return matches[0]
+
+	# end
+
 #	####################################################################	#
 #	Configurazione dei parametri di sessione.
 
@@ -215,7 +255,7 @@ class DatasetConfig:
 	@classmethod
 	def from_defaults(cls) -> "DatasetConfig":
 		return cls(
-			path= "Dataset/mirage/2019",
+			path= "mirage/2019",
 			name= "mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata",
 			is_flowpic= False,
 			n_packets= 100,
@@ -244,7 +284,9 @@ class DatasetConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nDatasetConfig(\n\tpath={self.path}, \n\tname={self.name}, \n\tis_flowpic={self.is_flowpic}, \n\tn_packets={self.n_packets}, \n\tn_features={self.n_features}\n)"
+		return \
+			f"[DATASET] Path: {self.path}/{self.name}\n" \
+			f"          FlowPic: {self.is_flowpic} | Dimension: {self.n_packets}x{self.n_features}"
 
 		# end
 
@@ -280,7 +322,7 @@ class PreprocessingConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nPreprocessingConfig(\n\tstrategy={self.strategy}\n)"
+		return f"[PREPROCESSING] Strategy: {self.strategy}"
 
 		# end
 
@@ -325,7 +367,7 @@ class TrafficFiltersConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"TrafficFiltersConfig(\n\tmin_tps={self.min_tps}, \n\tmin_packets={self.min_packets}, \n\tmin_dim={self.min_dim}\n\t)"
+		return f"min_tps={self.min_tps}, min_packets={self.min_packets}, min_dim={self.min_dim}"
 
 		# end
 
@@ -378,7 +420,7 @@ class TrafficConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nTrafficConfig(\n\tmtu={self.mtu}, \n\tbin_size={self.bin_size}, \n\tfilters={self.filters}\n)"
+		return f"[TRAFFIC] MTU: {self.mtu} | Bin size: {self.bin_size} | Filters: {self.filters}\n)"
 
 		# end
 
@@ -455,7 +497,12 @@ class CrossValidationConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nCrossValidationConfig(\n\ttrain_ratio={self.train_ratio}, \n\tval_ratio={self.val_ratio}, \n\ttest_folds={self.test_folds}, \n\ttest_ratio={self.test_ratio}, \n\tsub_sample_ratio={self.sub_sample_ratio}\n)"
+		if self.test_folds == 1:
+			test_str = f"Test ratio: {self.test_ratio}"
+		else:
+			test_str = f"Test folds: {self.test_folds}"
+
+		return f"[CROSS-VALIDATION] Sub-sample ratio: {self.sub_sample_ratio} | Train ratio: {self.train_ratio} | Val ratio: {self.val_ratio} | {test_str}"
 
 		# end
 
@@ -521,7 +568,11 @@ class TrainingConfig:
 		# end
 	
 	def __repr__(self) -> str:
-		return f"\nTrainingConfig(\n\tepochs={self.epochs}, \n\tbatch_size={self.batch_size}, \n\tearly_stopping={self.early_stopping}, \n\tpatience={self.patience}\n)"
+		patience_str = f" | Patience: {self.patience}" if self.early_stopping else ""
+
+		return f"[TRAINING] " \
+			f"Epochs: {self.epochs} | Batch size: {self.batch_size}\n" \
+			f"           Early stopping: {self.early_stopping}{patience_str}"
 
 	# end class
 
@@ -597,7 +648,7 @@ class OptimizerConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nOptimizerConfig(\n\tname={self.name}, \n\tlearning_rate={self.learning_rate}, \n\tweight_decay={self.weight_decay}, \n\tepsilon={self.epsilon}, \n\tmomentum={self.momentum}, \n\tbeta1={self.beta1}, \n\tbeta2={self.beta2}, \n\talpha={self.alpha}\n)"
+		return f"[OPTIMIZER] {self.name} | Learning rate: {self.learning_rate}"
 
 		# end
 
@@ -663,7 +714,7 @@ class SchedulerConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nSchedulerConfig(\n\tname={self.name}, \n\tmax_lr={self.max_lr}, \n\tstart_factor={self.start_factor}, \n\tstep_size={self.step_size}, \n\tgamma={self.gamma}\n)"
+		return f"[SCHEDULER] {self.name}"
 
 		# end
 
@@ -717,7 +768,7 @@ class LossConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nLossConfig(\n\tname={self.name}, \n\talpha={self.alpha}, \n\tfocal_gamma={self.focal_gamma}\n)"
+		return f"[LOSS] {self.name}"
 
 		# end
 
@@ -750,7 +801,8 @@ class ModelConfig:
 				"resnet" : 18,
 				"hybrid" : 3,
 				"ampe_fixed_probs" : 3,
-				"ange_probs" : 3
+				"ange_probs" : 3,
+				"hybrid_ampe_probs": 3
 			}
 
 			if name not in available_models:
@@ -805,7 +857,9 @@ class ModelConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nModelConfig(\n\tname={self.name}, \n\tsimulator={self.simulator}, \n\tn_qubits={self.n_qubits}, \n\tn_shots={self.n_shots}, \n\tn_layers={self.n_layers}\n)"
+		quantum_str = f" | Simulator: {self.simulator} | Qubits: {self.n_qubits} | Shots: {self.n_shots}"
+
+		return f"[MODEL] {self.name} | Layers: {self.n_layers}{quantum_str}"
 
 		# end
 
@@ -862,6 +916,9 @@ class LaunchConfig:
 	exec_mode_train: bool
 	""" Whether to execute the training loop (True) or only run validation on a pre-saved model (False). """
 
+	requested_device: str
+	""" Name of the requested device for computation. Can be 'auto', 'cpu', 'cuda', or 'mps'. Default is 'auto'. """
+
 	random_seed: int
 	""" Random seed for reproducibility. """
 	
@@ -875,6 +932,7 @@ class LaunchConfig:
 		return cls(
 			source_session_id= None,
 			exec_mode_train= True,
+			requested_device= "auto",
 			random_seed= int(time.time()),
 			flows_to_inspect= None,
 		)
@@ -908,10 +966,17 @@ class LaunchConfig:
 		if not self.exec_mode_train and self.source_session_id is None:
 			raise ValueError("La modalità di sola valutazione richiede una sessione sorgente specificata tramite 'source_session_id'.")
 
+		if "cuda" not in self.requested_device:
+			if self.requested_device not in ("auto", "cpu", "mps"):
+				raise ValueError(
+					f"Dispositivo {self.requested_device} non valido.\n"
+					f"Dispositivi validi: ['auto', 'cpu', 'cuda', 'mps']."
+				)
+
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nLaunchConfig(\n\tsource_session_id={self.source_session_id}, \n\texec_mode_train={self.exec_mode_train}, \n\trandom_seed={self.random_seed}, \n\tflows_to_inspect={self.flows_to_inspect}\n)"
+		return f"\nLaunchConfig(\n\tsource_session_id={self.source_session_id}, \n\texec_mode_train={self.exec_mode_train}, \n\trequested_device={self.requested_device}, \n\trandom_seed={self.random_seed}, \n\tflows_to_inspect={self.flows_to_inspect}\n)"
 
 		# end
 
@@ -1045,7 +1110,7 @@ class SessionConfig:
 					f"Parametri trovati: {sorted(more_overrides)}"
 				)
 
-			return cls.from_json(Path("Results") / source_session_id / "config.json")
+			return cls.from_json(find_session_config(source_session_id))
 			
 		# end
 
@@ -1131,8 +1196,17 @@ class SessionConfig:
 
 		# end
 	
+	# def __repr__(self) -> str:
+	# 	return f"\nSessionConfig(\n{repr(self.dataset)}, \n{repr(self.preprocessing)}, \n{repr(self.traffic)}, \n{repr(self.kfold)}, \n{repr(self.training)}, \n{repr(self.optimizer)}, \n{repr(self.scheduler)}, \n{repr(self.loss)}, \n{repr(self.model)}\n)"
+
 	def __repr__(self) -> str:
-		return f"\nSessionConfig(\n{repr(self.dataset)}, \n{repr(self.preprocessing)}, \n{repr(self.traffic)}, \n{repr(self.kfold)}, \n{repr(self.training)}, \n{repr(self.optimizer)}, \n{repr(self.scheduler)}, \n{repr(self.loss)}, \n{repr(self.model)}\n)"
+		return \
+			"[SESSION INFORMATION]\n" \
+			f"{self.dataset}\n" \
+			f"{self.kfold}\n" \
+			f"{self.training}\n" \
+			f"{self.optimizer} | {self.scheduler} | {self.loss}\n" \
+			f"{self.model}\n"
 
 		# end
 
@@ -1172,7 +1246,7 @@ class RuntimeConfig:
 		if source_session_id is None:
 			base_config = cls.from_defaults()
 		elif source_session_id is not None:
-			base_config = cls.from_json(Path("Results") / source_session_id / "config.json")
+			base_config = cls.from_json(find_session_config(source_session_id))
 		
 		#	-------------------------------------------------------------	#
 		#	Scenario 2 (caricamento da argomenti con override)
@@ -1274,7 +1348,7 @@ class ExecutionConfig:
 	session_id: str
 	""" Unique identifier for the session. """
 
-	device: str
+	current_device: str
 	""" Name of the device used for computation. """
 
 	dtype: str
@@ -1284,7 +1358,7 @@ class ExecutionConfig:
 	def from_args(cls, session_id, device, dtype) -> "ExecutionConfig":
 		return cls(
 			session_id=session_id,
-			device=device,
+			current_device=device,
 			dtype=dtype,
 		)
 
@@ -1298,7 +1372,7 @@ class ExecutionConfig:
 			if not isinstance(execution_dict, dict):
 				raise ValueError("La configurazione deve essere rappresentata da un oggetto JSON.")
 
-			required_keys = {"session_id", "device", "dtype"}
+			required_keys = {"session_id", "current_device", "dtype"}
 
 			missing_keys = required_keys - execution_dict.keys()
 			if missing_keys:
@@ -1309,7 +1383,7 @@ class ExecutionConfig:
 
 			try:
 				session_id = execution_dict["session_id"]
-				device = execution_dict["device"]
+				device = execution_dict["current_device"]
 				dtype = execution_dict["dtype"]
 
 			except KeyError as e:
@@ -1319,7 +1393,7 @@ class ExecutionConfig:
 
 			return cls(
 				session_id=session_id,
-				device=device,
+				current_device=device,
 				dtype=dtype,
 			)
 
@@ -1350,7 +1424,7 @@ class ExecutionConfig:
 	def __post_init__(self) -> None:
 		if self.session_id is None or (self.session_id.strip() == ""):
 			raise ValueError("Identificatore della sessione mancante.")
-		if self.device is None or (self.device.strip() == ""):
+		if self.current_device is None or (self.current_device.strip() == ""):
 			raise ValueError("Dispositivo mancante.")
 		if self.dtype is None or (self.dtype.strip() == ""):
 			raise ValueError("Tipo di dato mancante.")
@@ -1358,7 +1432,7 @@ class ExecutionConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nExecutionConfig(\n\tsession_id={self.session_id}, \n\tdevice={self.device}, \n\tdtype={self.dtype}\n)"
+		return f"\nExecutionConfig(\n\tsession_id={self.session_id}, \n\tcurrent_device={self.current_device}, \n\tdtype={self.dtype}\n)"
 
 		# end
 

@@ -95,7 +95,7 @@ class AmpeDenseModel(nn.Module):
 		super(AmpeDenseModel, self).__init__()
 
 		#	------------------------------------------------------------	#
-		#	Inizializzazione degli attributi di classe
+		#	Inizializzazione degli attributi di classe.
 
 		self.n_features = n_features
 		self.n_packets = n_packets
@@ -111,14 +111,14 @@ class AmpeDenseModel(nn.Module):
 		self.dev = select_quantum_device(dev_name, n_qubits, n_shots, random_seed)
 
 		#	------------------------------------------------------------	#
-		#	Inizializzazione di altri parametri
+		#	Inizializzazione di altri parametri.
 
 		q_output_size = meas_qoutputsize_mapping(n_qubits)["probs"]
 		weight_shapes = {"weights": (n_layers, n_qubits, 3)}
 		input_dim = n_packets * n_features
 
 		#	------------------------------------------------------------	#
-		#	Definizione del QNode
+		#	Definizione del QNode.
 
 		@qml.qnode(self.dev, interface="torch")
 		def qnode(inputs, weights):
@@ -135,7 +135,7 @@ class AmpeDenseModel(nn.Module):
 		if self.dev_name.startswith("fake"): self.qnode = qml.set_shots(self.qnode, self.n_shots)
 
 		#	------------------------------------------------------------	#
-		#	Definizione dei layer classici e del layer quantistico
+		#	Definizione dei layer classici e del layer quantistico.
 
 		self.flatten = nn.Flatten()
 
@@ -195,7 +195,7 @@ class AngeDenseModel(nn.Module):
 		super(AngeDenseModel, self).__init__()
 
 		#	------------------------------------------------------------	#
-		#	Inizializzazione degli attributi di classe
+		#	Inizializzazione degli attributi di classe.
 
 		self.n_features = n_features
 		self.n_packets = n_packets
@@ -211,14 +211,14 @@ class AngeDenseModel(nn.Module):
 		self.dev = select_quantum_device(dev_name, n_qubits, n_shots, random_seed)
 
 		#	------------------------------------------------------------	#
-		#	Inizializzazione di altri parametri
+		#	Inizializzazione di altri parametri.
 
 		q_output_size = meas_qoutputsize_mapping(n_qubits)["probs"]
 		weight_shapes = {"weights": (n_layers, n_qubits, 3)}
 		input_dim = n_packets * n_features
 
 		#	------------------------------------------------------------	#
-		#	Definizione del QNode
+		#	Definizione del QNode.
 
 		@qml.qnode(self.dev, interface="torch")
 		def qnode(inputs, weights):
@@ -235,7 +235,7 @@ class AngeDenseModel(nn.Module):
 		if self.dev_name.startswith("fake"): self.qnode = qml.set_shots(self.qnode, self.n_shots)
 
 		#	------------------------------------------------------------	#
-		#	Definizione dei layer classici e del layer quantistico
+		#	Definizione dei layer classici e del layer quantistico.
 
 		self.flatten = nn.Flatten()
 
@@ -284,5 +284,161 @@ class AngeDenseModel(nn.Module):
 #	####################################################################	#
 #	Hybrid QNN with Amplitude Embedding and Convolutional LSTM Layers
 
-# class AmpeCNNLSTMModel(nn.Module):
-# 	raise NotImplementedError("AmpeCNNLSTMModel is not yet implemented")
+class AmpeCNNLSTMModel(nn.Module):
+	def __init__(
+			self,
+			n_features, n_packets, num_classes,
+			n_layers, n_qubits, n_shots,
+			random_seed, dev_name
+		):
+
+		super(AmpeCNNLSTMModel, self).__init__()
+
+		#	------------------------------------------------------------	#
+		#	Inizializzazione degli attributi di classe.
+
+		self.n_features = n_features
+		self.n_packets = n_packets
+		self.num_classes = num_classes
+
+		self.n_layers = n_layers
+		self.n_qubits = n_qubits
+		self.n_shots = n_shots
+
+		self.random_seed = random_seed
+		self.dev_name = dev_name
+
+		self.dev = select_quantum_device(dev_name, n_qubits, n_shots, random_seed)
+
+		#	------------------------------------------------------------	#
+		#	Inizializzazione di altri parametri.
+
+		in_channels = 1
+		out_features_size = 2**n_qubits
+		filters = [32, 64]
+		kernel = (4, 2)
+		stride = (1, 1)
+
+		weight_shapes = {"weights": (n_layers, n_qubits, 3)}
+		q_output_size = meas_qoutputsize_mapping(n_qubits)["probs"]
+
+		features_size0, self.paddings0 = get_output_dim(
+			self.n_packets,
+			kernels=[kernel[0], kernel[0]],
+			strides=[stride[0], stride[0]],
+			padding='valid',
+			return_paddings=True
+		)
+
+		features_size1, self.paddings1 = get_output_dim(
+			self.n_features,
+			kernels=[kernel[1], kernel[1]],
+			strides=[stride[1], stride[1]],
+			padding='valid',
+			return_paddings=True
+		)
+
+		lstm_input_size = features_size1 * filters[1]
+		hidden_size = max([100, 50])
+
+		#	------------------------------------------------------------	#
+		#	Definizione del QNode.
+
+		@qml.qnode(self.dev, interface="torch")
+		def qnode(inputs, weights):
+			# Feature map
+			qml.AmplitudeEmbedding(inputs, wires=range(n_qubits), normalize=True, pad_with=0.0)
+
+			# Ansatz
+			qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
+
+			# Measurement process
+			return qml.probs(wires=range(n_qubits))
+
+		self.qnode = qnode
+		self.qnode = qml.set_shots(self.qnode, self.n_shots)
+
+		self.conv1 = nn.Conv2d(in_channels, filters[0], kernel, stride=stride, padding=0)
+		self.bn1 = nn.BatchNorm2d(filters[0])
+		self.conv2 = nn.Conv2d(filters[0], filters[1], kernel, stride=stride, padding=0)
+		self.bn2 = nn.BatchNorm2d(filters[1])
+		self.lstm = nn.LSTM(lstm_input_size, hidden_size, batch_first=True)
+
+		self.relu = nn.ReLU()
+		self.dropout1 = nn.Dropout(0.2)
+		self.dropout2 = nn.Dropout(0.4)
+		self.sigmoid = nn.Sigmoid()
+
+		self.q_layer = qml.qnn.TorchLayer(self.qnode, weight_shapes)
+
+		self.fc1 = nn.Linear(hidden_size, hidden_size)
+		self.fc2 = nn.Linear(hidden_size, out_features_size)
+		self.fc = nn.Linear(q_output_size, num_classes)
+
+		# end
+
+	def forward(self, x):
+		x = x.unsqueeze(1)
+
+		out = self.relu(self.conv1(x))
+		out = self.bn1(out)
+
+		out = self.relu(self.conv2(out))
+		out = self.bn2(out)
+
+		# size_interm = out.size()
+		# out = out.transpose(1, 2)
+		# out = out.reshape(
+		# 	size_interm[0],
+		# 	size_interm[3],
+		# 	size_interm[1] * size_interm[2]
+		# )
+
+		# RuntimeError: input.size(-1) must be equal to input_size. Expected 128, got 6016
+		# Stai quindi passando alla LSTM due step con 6016 (dato da 64*94) valori ciascuno, anziché 94 step con 128 valori ciascuno.
+
+		# Correzione sulla dimesione per l'input dell'LSTM.
+		out = out.permute(0, 2, 1, 3)
+		out = out.flatten(start_dim=2)
+
+		out, _ = self.lstm(out)
+		out = out[:, -1, :]
+		
+		out = self.dropout1(out)
+		out = self.fc1(out)
+		out = self.relu(out)
+
+		out = self.dropout2(out)
+		out = self.fc2(out)
+		out = self.sigmoid(out)
+
+		out = self.q_layer(out)
+
+		out = self.fc(out)
+
+		return out
+
+		# end
+
+	def get_model_name(self):
+		return compute_model_name(
+			"AmpeCNNLSTM",
+			self.n_qubits,
+			self.n_layers,
+			self.n_packets,
+			self.n_features,
+			self.num_classes
+		)
+
+		# end
+
+	def get_model_name_short(self):
+		return compute_model_name(
+			"AmpeCNNLSTM",
+			self.n_qubits,
+			self.n_layers
+		)
+
+		# end
+
+	# end class

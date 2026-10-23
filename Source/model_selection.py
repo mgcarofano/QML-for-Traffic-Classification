@@ -24,7 +24,7 @@ def compute_model_name(
     ) -> str:
     """
     Restituisce una stringa con il nome del modello che riassume i parametri principali,
-    se disponibili, nel formato "class_Qn_Ln_PxF_Cc"
+    se disponibili, nel formato 'class_Qn_Ln_Pn_Fn_Cn'.
 
     Args:
         model_class (str): Nome della classe del modello.

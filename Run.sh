@@ -21,9 +21,10 @@ Uso:
     ./Run.sh [--dry-run] PRESET [argomenti CLI aggiuntivi]
 
 Preset:
-    mirage-test    Esegue il preset locale con il modello hybrid.
-    flowpic-test   Esegue il preset locale con il modello resnet e il dataset FlowPic.
-    baseline       Esegue il preset baseline con il dataset completo e 5 fold.
+    mirage-test     Esegue il preset locale con il modello hybrid.
+    flowpic-test    Esegue il preset locale con il modello resnet e il dataset FlowPic.
+    qml-paper-ampe  Esegue il preset con iperparametri dal paper QML per il modello Ampe.
+    qml-paper-ange  Esegue il preset con iperparametri dal paper QML per il modello Ange.
 
 --dry-run stampa il comando senza eseguirlo.
 Gli argomenti CLI aggiuntivi sovrascrivono i valori del preset.
@@ -47,17 +48,20 @@ LOCAL=(
 )
 
 QML_PAPER=(
+    --requested_device cpu --model.n_shots None
     --kfold.test_folds 1 --kfold.test_ratio 0.2 --kfold.train_ratio 0.9
-    --kfold.val_ratio 0.1 --training.epochs 50 --training.batch_size 32
+    --kfold.val_ratio 0.1 --training.epochs 100 --training.batch_size 32
+    --training.early_stopping
     --optimizer.name "Adam" --optimizer.learning_rate 0.01
     --optimizer.beta1 0.9 --optimizer.beta2 0.999 --optimizer.epsilon 1e-7
-    --training.early_stopping
+    --scheduler.name "NoSched"
 )
 
 case "$PRESET" in
     mirage-test) ARGS=("${LOCAL[@]}" --model.name hybrid) ;;
     flowpic-test) ARGS=("${LOCAL[@]}" --model.name resnet --dataset.is_flowpic) ;;
-    qml-paper) ARGS=("${QML_PAPER[@]}") ;;
+    qml-paper-ampe) ARGS=("${QML_PAPER[@]}" --model.name ampe_fixed_probs) ;;
+    qml-paper-ange) ARGS=("${QML_PAPER[@]}" --model.name ange_probs) ;;
     -h|--help|help|--list) help; exit 0 ;;
     *) echo "Preset sconosciuto: $PRESET. Usare --help." >&2; exit 2 ;;
 esac

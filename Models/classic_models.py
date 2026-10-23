@@ -116,9 +116,9 @@ class CNNLSTMModel(nn.Module):
         # con le dimensioni reali di input, per ricavare la shape effettiva.
         with torch.no_grad():
             dummy = torch.zeros(1, in_channels, n_packets, n_features)
-            dummy_out = self.bn2(self.conv2(self.bn1(self.conv1(dummy))))
+            dummy_out = self.conv2(self.conv1(dummy))
             _, c, h, w = dummy_out.shape
-            lstm_input_size = c * h
+            lstm_input_size = c * w
 
         self.lstm = nn.LSTM(
             input_size=lstm_input_size,
@@ -138,6 +138,7 @@ class CNNLSTMModel(nn.Module):
         x = x.unsqueeze(1)
 
         out = F.relu(self.extract_features(x))
+
         out = self.dropout2(out)
         out = self.fc(out)
 
@@ -152,12 +153,15 @@ class CNNLSTMModel(nn.Module):
         out = F.relu(self.conv2(out))
         out = self.bn2(out)
 
-        size_interm = out.size()
-        out = out.transpose(1, 2)
-        out = out.reshape(
-            size_interm[0], size_interm[3],
-            size_interm[1] * size_interm[2]
-        )
+        # size_interm = out.size()
+        # out = out.transpose(1, 2)
+        # out = out.reshape(
+        #     size_interm[0], size_interm[3],
+        #     size_interm[1] * size_interm[2]
+        # )
+
+        out = out.permute(0, 2, 1, 3)
+        out = out.flatten(start_dim=2)
 
         out, _ = self.lstm(out)
         out = out[:, -1, :]

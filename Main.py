@@ -74,6 +74,70 @@ def debug_print(message: str) -> None:
 	# end
 
 #	####################################################################	#
+#	Dispositivo utilizzato per il calcolo.
+
+def resolve_device(requested: str = "auto") -> torch.device:
+	"""Calcola il dispositivo da utilizzare, risolvendo automaticamente in base alla configurazione della macchina corrente o validando un dispositivo esplicito.
+
+	Args:
+		requested (str): Nome del dispositivo richiesto. Se impostato su "auto", la funzione selezionerà automaticamente il dispositivo disponibile più appropriato sulla macchina corrente secondo l'ordine di preferenza: MPS, CUDA, CPU.
+
+	Raises:
+		RuntimeError: Se il dispositivo richiesto non è disponibile.
+		NotImplementedError: Se il tipo di dispositivo richiesto non è supportato.
+
+	Returns:
+		torch.device: Il dispositivo da utilizzare per il calcolo.
+	"""
+
+	#	################################################################	#
+	#	CASO SPECIALE: risoluzione automatica del dispositivo.
+
+	if requested == "auto":
+		if torch.backends.mps.is_available():
+			return torch.device("mps")
+		if torch.cuda.is_available():
+			return torch.device("cuda", torch.cuda.current_device())
+		
+		return torch.device("cpu")
+
+		# end if
+	
+	#	################################################################	#
+	#	Validazione del dispositivo richiesto.
+
+	device = torch.device(requested)
+
+	if device.type == "mps":
+		if not torch.backends.mps.is_available():
+			raise RuntimeError("Dispositivo MPS non è disponibile sulla macchina corrente.")
+
+	elif device.type == "cuda":
+		if not torch.cuda.is_available():
+			raise RuntimeError("CUDA non è disponibile sulla macchina corrente.")
+
+		index = \
+			device.index \
+			if device.index is not None \
+			else torch.cuda.current_device()
+
+		count = torch.cuda.device_count()
+		if not 0 <= index < count:
+			raise RuntimeError(f"Dispositivo CUDA {index} non disponibile: la macchina espone {count} GPU CUDA.")
+
+		device = torch.device("cuda", index)
+
+	elif device.type != "cpu":
+		raise NotImplementedError(
+			f"Dispositivo non supportato: {device.type!r}."
+			f"Dispositivi supportati: ['cpu', 'cuda', 'mps']."
+		)
+
+	return device
+
+	# end
+
+#	####################################################################	#
 #	Caricamento o generazione (opzionale) del dataset.
 
 def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
@@ -89,7 +153,7 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 	#	################################################################	#
 	#	Inizializzazione.
 
-	dataset_path = Path(f"{session_config.dataset.path}/{session_config.dataset.name}")
+	dataset_path = Path(f"Dataset/{session_config.dataset.path}/{session_config.dataset.name}")
 
 	#	################################################################	#
 
@@ -700,16 +764,12 @@ def train_model(
 	training_start_time = time.time()
 	print(
 		f"Addestramento iniziato.\n"
-		f"Orario corrente: {datetime.fromtimestamp(training_start_time).strftime('%Y-%m-%d_%H:%M:%S')}\n"
-		f"[MODEL] {model.get_model_name()} | "
-			f"{session_config.loss.name} | "
-			f"{session_config.optimizer.name} | "
-			f"{session_config.scheduler.name}\n"
+		f"Orario corrente: {datetime.fromtimestamp(training_start_time).strftime('%Y-%m-%d_%H:%M:%S')}\n\n"
+
+		f"{repr(session_config)}"
 		f"[PARAMETERS] {sum(p.numel() for p in model.parameters() if p.requires_grad):,}\n"
-		f"[DATASET] {session_config.dataset.name}\n"
-			f"Training samples: {len(train_loader.dataset)} | "
-			f"Validation samples: {len(val_loader.dataset)} | "
-			f"Batch size: {session_config.training.batch_size}"
+		f"[SAMPLES] Training: {len(train_loader.dataset)} in {len(train_loader)} batches | "
+		f"Validation: {len(val_loader.dataset)} in {len(val_loader)} batches"
 	)
 
 	#	################################################################	#
@@ -887,19 +947,10 @@ def main(cli_overrides: bool):
 	# 	Calcolo dei parametri di esecuzione.
 
 	# Dispositivo utilizzato per il calcolo.
-	if torch.backends.mps.is_available():
-		device = torch.device("mps")
-	elif torch.cuda.is_available():
-		device = torch.device("cuda")
-	else:
-		device = torch.device("cpu")
-
+	device = resolve_device(runtime_config.launch.requested_device)
 	print(f"\nDispositivo selezionato: {device.type}")
 	if device.type == "cuda":
 		print(f"GPU: {torch.cuda.get_device_name(0)}")
-
-	# TODO: aggiugere gestione device da argomenti CLI.
-	device = torch.device("cpu")
 
 	# Tipo di dato utilizzato per il calcolo.
 	dtype = torch.float32 if device.type == "mps" else torch.float64
@@ -912,7 +963,13 @@ def main(cli_overrides: bool):
 		else runtime_config.launch.source_session_id
 
 	# Directory per i risultati
-	output_dir = Path(f"Results/{session_id}/")
+	output_dir = Path(
+		"Results/"
+		f"{session_config.dataset.path.replace('/', '-')}/"
+		f"Sample{session_config.kfold.sub_sample_ratio * 100:g}%/"
+		f"{session_config.model.name}/"
+		f"{session_id}/"
+	)
 
 	# Percorso per il file di configurazione.
 	config_path = output_dir / "config.json"
@@ -927,12 +984,12 @@ def main(cli_overrides: bool):
 
 	# Verifica della compatibilità con l'ambiente corrente.
 	if runtime_config.launch.use_config_file():
-		if execution_config.device != device.type or execution_config.dtype != str(dtype):
+		if execution_config.current_device != device.type or execution_config.dtype != str(dtype):
 			raise RuntimeError(
 				"La configurazione attuale della macchina "
 				f"({(device.type, str(dtype))}) "
 				"non è compatibile con quella salvata nel file di configurazione "
-				f"({(execution_config.device, execution_config.dtype)})!"
+				f"({(execution_config.current_device, execution_config.dtype)})!"
 			)
 
 	# Se non si utilizza un file di configurazione, si salvano i parametri correnti.
@@ -1345,9 +1402,17 @@ if __name__ == "__main__":
 	if runtime_config is None:
 		raise ValueError("Errore nel caricamento del file di configurazione (runtime)!")
 
-	cli_overrides = set(vars(args)) - {"source_session_id"} is not None
+	cli_overrides = \
+		set(vars(args)) - {
+			"source_session_id",
+			"exec_mode_train", "no-exec_mode_train",
+			"save_output", "no-save_output"
+		}
 	if cli_overrides and not runtime_config.flags.save_output:
-		raise ValueError("Override dei parametri da CLI non consentito se 'save_output' è disabilitato.")
+		raise ValueError(
+			"Questi parametri non possono essere sostituiti da CLI se 'save_output' è disabilitato.\n"
+			f"Parametri da CLI: {cli_overrides}. "
+		)
 	
 	# Stampa di debug dei parametri di configurazione.
 	debug_print(
@@ -1361,7 +1426,7 @@ if __name__ == "__main__":
 	#	-----------------------------------------------------------------	#
 	#	Funzione principale per l'esecuzione del programma.
 
-	main(cli_overrides)
+	main(cli_overrides is not None)
 
 	exit(0)
 
