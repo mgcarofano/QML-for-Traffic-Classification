@@ -69,7 +69,7 @@ def debug_print(message: str) -> None:
 	"""
 
 	if runtime_config.flags.debug:
-		print(f"[DEBUG] {message}")
+		print(f"\n[DEBUG] {message}")
 
 	# end
 
@@ -521,7 +521,6 @@ def init_model(device, fold_index: int, num_classes: int):
 
 	# Stampa completa delle informazioni sul modello.
 	print(f"\nModello selezionato: {session_config.model.name} -> {model.get_model_name()}")
-	debug_print(model)
 
 	return model, is_quantum
 
@@ -1178,6 +1177,17 @@ def main(cli_overrides: bool):
 		#	Addestramento del modello.
 
 		model, is_quantum = init_model(device, fold_index, num_classes)
+
+		# Stampa delle informazioni sul modello e sui parametri.
+		debug_print(model)
+		debug_print(f"Model parameters:")
+		if runtime_config.flags.debug:
+			for name, parameter in model.named_parameters():
+				print(
+					f"{name:25s} "
+					f"shape={str(tuple(parameter.shape)):18s} "
+					f"params={parameter.numel():>8,}"
+				)
 
 		# Per motivi di compatibilità, si inizializza a None.
 		# Si aggiorna successivamente se la modalità di addestramento è abilitata.

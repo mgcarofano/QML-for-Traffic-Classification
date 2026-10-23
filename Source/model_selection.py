@@ -59,6 +59,36 @@ def compute_model_name(
 
     # end
 
+def get_output_dim(dimension, kernels, strides, dilatation=1, padding='same', return_paddings=False):
+
+    def get_padding(kernel):
+        pad = kernel - 1
+        if padding == 'same':
+            if kernel % 2:
+                return pad // 2, pad // 2
+            else:
+                return pad // 2, pad // 2 + 1
+        return 0, 0
+
+        # end
+
+    out_dim = dimension
+    paddings = []
+    if padding == 'same':
+        for kernel, stride in zip(kernels, strides):
+            paddings.append(get_padding(kernel))
+            out_dim = (out_dim + stride - 1) // stride
+    else:
+        for kernel, stride in zip(kernels, strides):
+            paddings.append(get_padding(kernel))
+            out_dim = (out_dim - kernel + stride) // stride
+
+    if return_paddings:
+        return out_dim, paddings
+    return out_dim
+
+    # end
+
 def weight_init(m: nn.Module) -> None:
     """Fills-in weights and biases for convolutional and linear layers. Uses Kaiming uniform initialization for weights (suitable for ReLU/non-linearities) and sets biases to zero. This function is meant to be used with model.apply(), which will call it on every sub-module.
 
@@ -201,8 +231,17 @@ def select_model(
             random_seed, dev_name,
         )
 
-    elif model_name == "hybrid_ampe_probs":
+    elif model_name == "hybrid_ampe_fixed_probs":
         from Models.quantum_models import AmpeCNNLSTMModel as QModel
+        is_quantum = True
+        model = QModel(
+            n_features, n_packets, num_classes,
+            n_layers, n_qubits, n_shots,
+            random_seed, dev_name,
+        )
+
+    elif model_name == "hybrid_ange_probs":
+        from Models.quantum_models import AngeCNNLSTMModel as QModel
         is_quantum = True
         model = QModel(
             n_features, n_packets, num_classes,
@@ -218,10 +257,11 @@ def select_model(
         is_quantum = False
         model = CModel(n_features, n_packets, num_classes)
 
-    elif model_name == "hybrid":
+    elif model_name == "baseline":
         from Models.classic_models import CNNLSTMModel as CModel
         is_quantum = False
-        model = CModel(n_features, n_packets, num_classes)
+        # model = CModel(n_features, n_packets, num_classes)
+        model = CModel(n_features, n_packets, num_classes, n_layers)
 
     #   -----------------------------------------------------------------   #
     #   Modello non riconosciuto.

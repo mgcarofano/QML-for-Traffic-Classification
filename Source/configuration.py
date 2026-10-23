@@ -794,19 +794,23 @@ class ModelConfig:
 	- For Quantum models, this represents the depth of the StronglyEntanglingLayers ansatz. Default is 3. """
 
 	@classmethod
-	def from_defaults(cls, name= "hybrid", n_layers = None) -> "ModelConfig":
+	def from_defaults(cls, name= "baseline", n_layers = None) -> "ModelConfig":
 		
 		def _get_num_layers() -> int:
 			available_models = {
 				"resnet" : 18,
-				"hybrid" : 3,
+				"baseline" : 3,
 				"ampe_fixed_probs" : 3,
 				"ange_probs" : 3,
-				"hybrid_ampe_probs": 3
+				"hybrid_ampe_fixed_probs": 3,
+				"hybrid_ange_probs": 3
 			}
 
 			if name not in available_models:
-				raise NotImplementedError(f"Modello {name} non supportato. Modelli disponibili: {str(available_models.keys())}")
+				raise NotImplementedError(
+					f"Modello '{name}' non supportato. "
+					f"Modelli disponibili: {str(available_models.keys())}"
+				)
 
 			return available_models[name]
 

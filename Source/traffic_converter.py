@@ -121,7 +121,7 @@ def mirage_pickle_converter(
 	#   ####################################################################    #
 	#   LETTURA DEL FILE PICKLE
 
-	with open(file_path, 'rb') as file:
+	with open(f"Dataset/{file_path}", 'rb') as file:
 
 		# Il file pickle di un dataset Mirage contiene due oggetti serializzati:
 		# 1. Una lista di array NumPy, dove ogni array rappresenta un flusso di traffico.

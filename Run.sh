@@ -21,10 +21,11 @@ Uso:
     ./Run.sh [--dry-run] PRESET [argomenti CLI aggiuntivi]
 
 Preset:
-    mirage-test     Esegue il preset locale con il modello hybrid.
-    flowpic-test    Esegue il preset locale con il modello resnet e il dataset FlowPic.
-    qml-paper-ampe  Esegue il preset con iperparametri dal paper QML per il modello Ampe.
-    qml-paper-ange  Esegue il preset con iperparametri dal paper QML per il modello Ange.
+    mirage-test         Esegue il preset locale con il modello hybrid.
+    flowpic-test        Esegue il preset locale con il modello resnet e il dataset FlowPic.
+    paper2025           Esegue il preset con iperparametri dal paper QML2025 (quantum).
+    baseline-paper2026 
+    quantum-paper2026   Esegue il preset con iperparametri dal paper QML2026.
 
 --dry-run stampa il comando senza eseguirlo.
 Gli argomenti CLI aggiuntivi sovrascrivono i valori del preset.
@@ -47,32 +48,37 @@ LOCAL=(
     --training.epochs 3 --training.batch_size 50 --no-training.early_stopping
 )
 
-QML_PAPER=(
+PAPER_2025=(
     --requested_device cpu --model.n_shots None
+    --model.name ampe_fixed_probs
     --kfold.test_folds 1 --kfold.test_ratio 0.2 --kfold.train_ratio 0.9
     --kfold.val_ratio 0.1 --training.epochs 100 --training.batch_size 32
     --training.early_stopping
     --optimizer.name "Adam" --optimizer.learning_rate 0.01
-    --optimizer.beta1 0.9 --optimizer.beta2 0.999 --optimizer.epsilon 1e-7
+    --optimizer.beta1 0.9 --optimizer.beta2 0.999 --optimizer.epsilon 0.0000001
     --scheduler.name "NoSched"
 )
 
+PAPER_2026=(
+    --kfold.test_folds 5 --kfold.train_ratio 0.8 --kfold.val_ratio 0.2
+    --training.epochs 100 --training.batch_size 50
+    --training.early_stopping --training.patience 10
+    --optimizer.name "Adam" --optimizer.learning_rate 0.01
+    --optimizer.beta1 0.9 --optimizer.beta2 0.999 --optimizer.epsilon 0.0000001
+    --loss.name "CrossEntropy"
+)
+
 case "$PRESET" in
-    mirage-test) ARGS=("${LOCAL[@]}" --model.name hybrid) ;;
+    mirage-test) ARGS=("${LOCAL[@]}" --model.name baseline) ;;
     flowpic-test) ARGS=("${LOCAL[@]}" --model.name resnet --dataset.is_flowpic) ;;
-    qml-paper-ampe) ARGS=("${QML_PAPER[@]}" --model.name ampe_fixed_probs) ;;
-    qml-paper-ange) ARGS=("${QML_PAPER[@]}" --model.name ange_probs) ;;
+    paper2025) ARGS=("${QML_PAPER_2025[@]}") ;;
+    baseline-paper2026) ARGS=("${PAPER_2026[@]}" --model.name baseline) ;;
+    quantum-paper2026) ARGS=("${PAPER_2026[@]}" --requested_device cpu --model.name ampe_fixed_probs --model.n_shots None --model.n_qubits 5) ;;
     -h|--help|help|--list) help; exit 0 ;;
     *) echo "Preset sconosciuto: $PRESET. Usare --help." >&2; exit 2 ;;
 esac
 
 if [[ "${1:-}" == "--" ]]; then shift; fi
-# for ARG in "$@"; do
-#     case "$ARG" in
-#         --source_session_id|--source_session_id=*|--exec_mode_train|--exec_mode_train=*|--no-exec_mode_train)
-#             printf 'Modalità e sessione sorgente sono definite dal preset.\n' >&2; exit 2 ;;
-#     esac
-# done
 
 #   ####################################################################    #
 #   Impostazione delle variabili ed esecuzione del comando.
