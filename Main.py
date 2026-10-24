@@ -35,7 +35,9 @@ from sklearn.model_selection import StratifiedKFold
 import torch
 import torch.nn as nn
 import pennylane as qml
-from Source.model_selection import \
+# from Source.model_selection import \
+from Source.models import _BaseModel
+from Source.models import \
 	select_model, \
 	weight_init, \
 	check_model_compatibility
@@ -466,7 +468,7 @@ def get_fold_directory(output_dir: Path, fold_index: int) -> Path:
 #	####################################################################	#
 #	Configurazione dei componenti di addestramento.
 
-def init_model(device, fold_index: int, num_classes: int):
+def init_model(device, fold_index: int, num_classes: int) -> _BaseModel:
 	"""Inizializza e restituisce il modello selezionato.
 
 	Args:
@@ -475,7 +477,7 @@ def init_model(device, fold_index: int, num_classes: int):
 		num_classes (int): Numero di classi per la classificazione.
 
 	Returns:
-		tuple: Una tupla contenente il modello inizializzato e un booleano che indica se il modello è quantistico.
+		_BaseModel: Il modello inizializzato.
 	"""
 
 	#	################################################################	#
@@ -499,11 +501,19 @@ def init_model(device, fold_index: int, num_classes: int):
 	#	################################################################	#
 	#	Scelta e istanziazione del modello.
 
-	model, is_quantum = select_model(
-		session_config.model.name,
-		session_config.dataset.n_features, session_config.dataset.n_packets, num_classes,
-		session_config.model.n_layers, session_config.model.n_qubits, session_config.model.n_shots, session_config.model.simulator,
-		fold_seed
+	model : _BaseModel = select_model(
+		session_config.model.name, **{
+			"n_features": session_config.dataset.n_features,
+			"n_packets": session_config.dataset.n_packets,
+			"num_classes": num_classes,
+			"lstm_layers": session_config.model.lstm_layers,
+			"q_layers": session_config.model.q_layers,
+			"n_qubits": session_config.model.n_qubits,
+			"n_shots": session_config.model.n_shots,
+			"random_seed": fold_seed,
+			"dev_name": session_config.model.simulator,
+			"diff_method": session_config.model.diff_method,
+		},
 	)
 
 	# Si sposta il modello sul dispositivo corretto (CPU, GPU o MPS)
@@ -516,13 +526,7 @@ def init_model(device, fold_index: int, num_classes: int):
 	# Inizializzazione dei pesi del modello.
 	model.apply(weight_init)
 
-	#	################################################################	#
-	#	Ritorno dei risultati.
-
-	# Stampa completa delle informazioni sul modello.
-	print(f"\nModello selezionato: {session_config.model.name} -> {model.get_model_name()}")
-
-	return model, is_quantum
+	return model
 
 	# end
 
@@ -766,7 +770,6 @@ def train_model(
 		f"Orario corrente: {datetime.fromtimestamp(training_start_time).strftime('%Y-%m-%d_%H:%M:%S')}\n\n"
 
 		f"{repr(session_config)}"
-		f"[PARAMETERS] {sum(p.numel() for p in model.parameters() if p.requires_grad):,}\n"
 		f"[SAMPLES] Training: {len(train_loader.dataset)} in {len(train_loader)} batches | "
 		f"Validation: {len(val_loader.dataset)} in {len(val_loader)} batches"
 	)
@@ -992,7 +995,6 @@ def main(cli_overrides: bool):
 			)
 
 	# Se non si utilizza un file di configurazione, si salvano i parametri correnti.
-	# elif not runtime_config.launch.use_config_file():
 	if not runtime_config.launch.use_config_file() or cli_overrides:
 
 		# Per una nuova sessione la directory non deve già esistere.
@@ -1034,8 +1036,11 @@ def main(cli_overrides: bool):
 	y_encoded, labels_map = encode_labels(X_raw, y_raw, labels_map_path)
 	num_classes = len(labels_map)
 
+	if num_classes <= 0:
+		raise EnvironmentError("Errore nel caricamento delle etichette delle classi.")
+
 	print(f"\nNumero di classi: {num_classes}")
-	print(f"Etichette delle classi generate: {labels_map.values()}\n")
+	print(f"Etichette delle classi generate: {sorted(labels_map.values())}\n")
 
 	#	-----------------------------------------------------------------	#
 	#	Selezione della strategia di data preprocessing.
@@ -1176,9 +1181,12 @@ def main(cli_overrides: bool):
 		#	------------------------------------------------------------	#
 		#	Addestramento del modello.
 
-		model, is_quantum = init_model(device, fold_index, num_classes)
+		model = init_model(device, fold_index, num_classes)
 
 		# Stampa delle informazioni sul modello e sui parametri.
+		print(f"\nModello selezionato: {session_config.model.name} -> {model.get_model_name()}")
+		print(f"Total trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+		
 		debug_print(model)
 		debug_print(f"Model parameters:")
 		if runtime_config.flags.debug:
@@ -1252,9 +1260,9 @@ def main(cli_overrides: bool):
 		#	------------------------------------------------------------	#
 		#	Visualizzazione del circuito quantistico.
 
-		if is_quantum and runtime_config.flags.save_output:
-			q_circuit = model.q_layer.qnode
-			q_weights = model.q_layer.weights
+		if model.is_quantum and runtime_config.flags.save_output:
+			q_circuit = model.processing_block.qnode
+			q_weights = model.processing_block.torch_layer.weights
 
 			q_input = \
 				session_config.model.n_qubits \
@@ -1415,14 +1423,23 @@ if __name__ == "__main__":
 	cli_overrides = \
 		set(vars(args)) - {
 			"source_session_id",
-			"exec_mode_train", "no-exec_mode_train",
-			"save_output", "no-save_output"
+			"exec_mode_train",
+			"save_output"
 		}
-	if cli_overrides and not runtime_config.flags.save_output:
-		raise ValueError(
-			"Questi parametri non possono essere sostituiti da CLI se 'save_output' è disabilitato.\n"
-			f"Parametri da CLI: {cli_overrides}. "
-		)
+
+	print(
+		vars(args).get('source_session_id'),
+		vars(args).get('save_output'),
+		cli_overrides is not None
+	)
+
+	if vars(args).get('source_session_id') is not None:
+		if cli_overrides and vars(args).get('save_output'):
+			raise ValueError(
+				"Modalità di valutazione attivata.\n"
+				"Non è possibile sovrascrivere parametri da CLI se 'save_output' è attivo.\n"
+				f"Parametri da CLI: {cli_overrides}. "
+			)
 	
 	# Stampa di debug dei parametri di configurazione.
 	debug_print(

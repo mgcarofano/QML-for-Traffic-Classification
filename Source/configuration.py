@@ -12,6 +12,8 @@ from dataclasses import dataclass, fields, is_dataclass, replace
 from argparse import ArgumentParser, Namespace, SUPPRESS, BooleanOptionalAction
 from typing import get_args, get_origin, get_type_hints
 
+from Source.models import MODEL_REGISTRY
+
 from pathlib import Path
 import json
 
@@ -232,6 +234,31 @@ def find_session_config(
 
 	# end
 
+def check_positive_int(name: str, value):
+	"""Verifica che il valore sia un intero positivo.
+
+	Args:
+		name (str): Il nome del parametro.
+		value: Il valore da verificare.
+
+	Raises:
+		TypeError: Se il valore può essere convertito in un intero.
+		ValueError: Se il valore non è un intero positivo.
+
+	Returns:
+		int: Il valore convertito in intero.
+	"""
+	
+	from numbers import Integral
+
+	if isinstance(value, bool) or not isinstance(value, Integral):
+		raise TypeError(f"Il valore '{name}' non può essere convertito in un intero.")
+	
+	if value <= 0:
+		raise ValueError(f"Il valore '{name}' deve essere positivo.")
+
+	# end
+
 #	####################################################################	#
 #	Configurazione dei parametri di sessione.
 
@@ -272,10 +299,9 @@ class DatasetConfig:
 		)
 
 	def __post_init__(self) -> None:
-		if self.n_packets <= 0:
-			raise ValueError("Il numero di pacchetti deve essere maggiore di zero.")
-		if self.n_features <= 0:
-			raise ValueError("Il numero di caratteristiche deve essere maggiore di zero.")
+		check_positive_int('n_packets', self.n_packets)
+		check_positive_int('n_features', self.n_features)
+
 		if not self.path:
 			raise ValueError("Percorso del dataset non definito.")
 		if not self.name:
@@ -330,13 +356,13 @@ class PreprocessingConfig:
 
 @dataclass(frozen=True)
 class TrafficFiltersConfig:
-	min_tps: float | None = None
+	min_tps: int | None
 	""" Minimum duration of a session in seconds. Sessions shorter than this will be discarded. Default is 50 if not specified. """
 	
-	min_packets: int | None = None
+	min_packets: int | None
 	""" Minimum number of packets in a session. Sessions with fewer packets will be discarded. Default is 3 if not specified. """
 	
-	min_dim: int | None = None
+	min_dim: int | None
 	""" Minimum flow dimension (payload) in bytes. Flows smaller than this will be discarded. Default is 10000 if not specified. """
 
 	@classmethod
@@ -357,12 +383,12 @@ class TrafficFiltersConfig:
 		)
 
 	def __post_init__(self) -> None:
-		if self.min_tps is not None and self.min_tps <= 0:
-			raise ValueError("La durata minima della sessione deve essere maggiore di zero.")
-		if self.min_packets is not None and self.min_packets <= 0:
-			raise ValueError("Il numero minimo di pacchetti deve essere maggiore di zero.")
-		if self.min_dim is not None and self.min_dim <= 0:
-			raise ValueError("La dimensione minima del flusso deve essere maggiore di zero.")
+		if self.min_tps is not None:
+			check_positive_int('min_tps', self.min_tps)
+		if self.min_packets is not None:
+			check_positive_int('min_packets', self.min_packets)
+		if self.min_dim is not None:
+			check_positive_int('min_dim', self.min_dim)
 
 		# end
 
@@ -405,11 +431,8 @@ class TrafficConfig:
 		)
 
 	def __post_init__(self) -> None:
-		if self.mtu <= 0:
-			raise ValueError("MTU deve essere maggiore di zero.")
-
-		if self.bin_size <= 0:
-			raise ValueError("La dimensione dei bin deve essere maggiore di zero.")
+		check_positive_int('mtu', self.mtu)
+		check_positive_int('bin_size', self.bin_size)
 
 		if self.bin_size > self.mtu:
 			raise ValueError("La dimensione dei bin non può essere maggiore di MTU.")
@@ -484,8 +507,7 @@ class CrossValidationConfig:
 				f"Total: {(self.train_ratio + self.val_ratio):.4f}"
 			)
 
-		if self.test_folds <= 0:
-			raise ValueError("Il numero di folds per il test deve essere maggiore di zero.")
+		check_positive_int('test_folds', self.test_folds)
 
 		if self.test_folds == 1:
 			if self.test_ratio is None or not 0 < self.test_ratio < 1:
@@ -556,14 +578,9 @@ class TrainingConfig:
 		# end
 
 	def __post_init__(self) -> None:
-		if self.epochs <= 0:
-			raise ValueError("Il numero di epoche deve essere maggiore di zero.")
-
-		if self.batch_size <= 0:
-			raise ValueError("La dimensione del batch deve essere maggiore di zero.")
-
-		if self.patience <= 0:
-			raise ValueError("Il valore di 'patience' deve essere maggiore di zero.")
+		check_positive_int('epochs', self.epochs)
+		check_positive_int('batch_size', self.batch_size)
+		check_positive_int('patience', self.patience)
 
 		# end
 	
@@ -705,8 +722,7 @@ class SchedulerConfig:
 		if self.start_factor <= 0 or self.start_factor > 1:
 			raise ValueError("Il valore di start_factor deve essere compreso tra 0 e 1.")
 
-		if self.step_size <= 0:
-			raise ValueError("Il valore di step_size deve essere maggiore di zero.")
+		check_positive_int('step_size', self.step_size)
 
 		if self.gamma <= 0 or self.gamma > 1:
 			raise ValueError("Il valore di gamma deve essere compreso tra 0 e 1.")
@@ -725,7 +741,7 @@ class LossConfig:
 	name: str
 	""" Selected loss function for training. Default is "WeightedCrossEntropy". """
 	
-	alpha: str | None
+	focal_alpha: str | None
 	""" Alpha parameter for the Focal Loss. Default is "class_weights". """
 	
 	focal_gamma: float | None
@@ -735,7 +751,7 @@ class LossConfig:
 	def from_defaults(cls) -> "LossConfig":
 		return cls(
 			name= "WeightedCrossEntropy",
-			alpha= "class_weights",
+			focal_alpha= "class_weights",
 			focal_gamma= 2.0,
 		)
 
@@ -753,11 +769,11 @@ class LossConfig:
 			raise NotImplementedError(f"Loss {self.name} non supportata. Loss disponibili: ['CrossEntropy', 'WeightedCrossEntropy', 'Focal']")
 
 		if self.name == "Focal":
-			if self.alpha is None:
-				raise ValueError("Il parametro 'alpha' deve essere specificato per la Focal Loss.")
+			if self.focal_alpha is None:
+				raise ValueError("Il parametro 'focal_alpha' deve essere specificato per la Focal Loss.")
 			
-			if self.alpha not in ["class_weights", "uniform"]:
-				raise NotImplementedError(f"Parametro alpha '{self.alpha}' non supportato. Opzioni disponibili: ['class_weights', 'uniform']")
+			if self.focal_alpha not in ["class_weights", "uniform"]:
+				raise NotImplementedError(f"Parametro focal_alpha '{self.focal_alpha}' non supportato. Opzioni disponibili: ['class_weights', 'uniform']")
 		
 			if self.focal_gamma is None:
 				raise ValueError("Il parametro 'focal_gamma' deve essere specificato per la Focal Loss.")
@@ -778,6 +794,9 @@ class LossConfig:
 class ModelConfig:
 	name: str
 	""" Selected model for the network. Default is "hybrid". """
+
+	lstm_layers: int
+	""" Number of LSTM layers for the selected model. Default is 1. """
 	
 	simulator: str
 	""" Name of the quantum simulator to use with PennyLane. """
@@ -787,43 +806,24 @@ class ModelConfig:
 	
 	n_shots: int | None
 	""" Number of shots for the quantum circuit execution. Default is 20 if not specified. """
-	
-	n_layers: int
-	""" Number of layers for the selected model. If None, it will be automatically calculated based on the selected model.
-	- For ResNet, possible values are 16, 18, 34. Default is 18.
-	- For Quantum models, this represents the depth of the StronglyEntanglingLayers ansatz. Default is 3. """
+
+	q_layers: int
+	""" Represents the depth of the StronglyEntanglingLayers ansatz. Default is 3. """
+
+	diff_method: str
+	""" Differentiation method for the quantum circuit. """
 
 	@classmethod
-	def from_defaults(cls, name= "baseline", n_layers = None) -> "ModelConfig":
-		
-		def _get_num_layers() -> int:
-			available_models = {
-				"resnet" : 18,
-				"baseline" : 3,
-				"ampe_fixed_probs" : 3,
-				"ange_probs" : 3,
-				"hybrid_ampe_fixed_probs": 3,
-				"hybrid_ange_probs": 3
-			}
-
-			if name not in available_models:
-				raise NotImplementedError(
-					f"Modello '{name}' non supportato. "
-					f"Modelli disponibili: {str(available_models.keys())}"
-				)
-
-			return available_models[name]
-
-			# end
-
-		n_layers = n_layers if n_layers is not None else _get_num_layers()
+	def from_defaults(cls) -> "ModelConfig":
 
 		return cls(
-			name= name,
+			name= "baseline",
+			lstm_layers= 1,
 			simulator= "default.qubit",
+			q_layers= 3,
 			n_qubits= 5,
 			n_shots= None,
-			n_layers= n_layers,
+			diff_method= "backprop",
 		)
 
 		# end
@@ -832,14 +832,8 @@ class ModelConfig:
 	def from_args(cls, args: Namespace) -> "ModelConfig":
 		changes = _overrides(cls, args, "model")
 
-		derived_inputs = {
-			key: changes[key]
-			for key in ("name", "n_layers")
-			if key in changes
-		}
-
 		return replace(
-			cls.from_defaults(**derived_inputs),
+			cls.from_defaults(),
 			**changes,
 		)
 
@@ -847,23 +841,32 @@ class ModelConfig:
 
 	def __post_init__(self) -> None:
 		if self.simulator not in ["default.qubit"]:
-			raise NotImplementedError(f"Simulatore {self.simulator} non supportato. Simulatori disponibili: ['default.qubit']")
+			raise NotImplementedError(
+				f"Simulatore {self.simulator} non supportato. "
+				f"Simulatori disponibili: ['default.qubit']"
+			)
+
+		if self.name not in MODEL_REGISTRY:
+			raise NotImplementedError(
+				f"Modello '{self.name}' non supportato. "
+				f"Modelli disponibili: {str(MODEL_REGISTRY.keys())}"
+			)
 		
-		if self.n_qubits <= 0:
-			raise ValueError("Il numero di qubit deve essere maggiore di zero.")
-
-		if self.n_shots is not None and self.n_shots <= 0:
-			raise ValueError("Il numero di shots deve essere maggiore di zero.")
-
-		if self.n_layers <= 0:
-			raise ValueError("Il numero di layers deve essere maggiore di zero.")
+		check_positive_int('n_qubits', self.n_qubits)
+		check_positive_int('n_shots', self.n_shots) if self.n_shots is not None else None
+		check_positive_int('lstm_layers', self.lstm_layers)
+		check_positive_int('q_layers', self.q_layers)
 
 		# end
 
 	def __repr__(self) -> str:
-		quantum_str = f" | Simulator: {self.simulator} | Qubits: {self.n_qubits} | Shots: {self.n_shots}"
+		quantum_str = \
+			f" | Quantum Layers: {self.q_layers}" \
+			f" | Simulator: {self.simulator}" \
+			f" | Qubits: {self.n_qubits}" \
+			f" | Shots: {self.n_shots}"
 
-		return f"[MODEL] {self.name} | Layers: {self.n_layers}{quantum_str}"
+		return f"[MODEL] {self.name} | LSTM Layers: {self.lstm_layers}{quantum_str}"
 
 		# end
 
@@ -976,6 +979,9 @@ class LaunchConfig:
 					f"Dispositivo {self.requested_device} non valido.\n"
 					f"Dispositivi validi: ['auto', 'cpu', 'cuda', 'mps']."
 				)
+
+		if self.random_seed < 0:
+			raise ValueError("Il 'random_seed' non può essere negativo.")
 
 		# end
 
