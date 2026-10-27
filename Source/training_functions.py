@@ -52,7 +52,9 @@ def train_epoch(
     #   ################################################################    #
     #   Ciclo di addestramento sui batch del DataLoader.
 
-    for inputs, labels in tqdm(loader, desc="Addestramento ", leave=False):
+    for batch in tqdm(loader, desc="Addestramento ", leave=False):
+
+        inputs, labels, lengths = batch
 
         # Sposta inputs e labels sul device di calcolo solo se necessario:
         # - Se il device è la CPU : il trasferimento è superfluo e viene evitato.
@@ -63,10 +65,10 @@ def train_epoch(
         labels = labels.to(device, dtype=torch.long, non_blocking=(device.type != "cpu"))
 
         # Azzeramento dei gradienti dell'ottimizzatore.
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
         # FORWARD PASS: calcolo delle predizioni del modello sul batch corrente.
-        outputs = model(inputs)
+        outputs = model(inputs, lengths)
 
         # BACKWARD PASS: calcolo dei gradienti e aggiornamento dei pesi.
         loss = criterion(outputs, labels)
@@ -87,7 +89,7 @@ def train_epoch(
         total += labels.size(0)
         correct += predicted.eq(labels).sum().item()
 
-        # end for inputs, labels
+        # end for batch
     
     # Se viene fornito uno scheduler "per epoca", esegue un passo di aggiornamento del learning rate una sola volta alla fine dell'epoca.
     if scheduler is not None and not is_scheduler_per_batch:
@@ -140,13 +142,15 @@ def evaluate(
 
     # Si utilizza "torch.no_grad()" per disabilitare il calcolo del gradiente durante la fase di valutazione, migliorando le prestazioni e riducendo l'uso della memoria.
     with torch.no_grad():
-        for inputs, labels in tqdm(loader, desc="Valutazione ", leave=False):
+        for batch in tqdm(loader, desc="Valutazione ", leave=False):
+
+            inputs, labels, lengths = batch
 
             inputs = inputs.to(device, non_blocking=True) if device.type != 'cpu' else inputs
             labels = labels.to(device, dtype=torch.long, non_blocking=(device.type != "cpu"))
 
             # Forward pass.
-            outputs = model(inputs)
+            outputs = model(inputs, lengths)
 
             # La loss viene calcolata solo se è stato fornito un criterion:
             # in fase di sola valutazione (es. modello caricato da
@@ -182,7 +186,7 @@ def evaluate(
             
             all_probs.append(probabilities.cpu())
 
-        # end for inputs, labels
+        # end for batch
 
     #   ################################################################    #
     #   Ritorno dei risultati.

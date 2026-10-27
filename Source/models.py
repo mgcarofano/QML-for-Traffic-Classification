@@ -22,7 +22,6 @@ import pennylane as qml
 def compute_model_name(
 		model_class : str,
 		n_qubits : int = None,
-		lstm_layers : int = None,
 		q_layers : int = None,
 		n_packets : int = None,
 		n_features : int = None,
@@ -34,7 +33,6 @@ def compute_model_name(
 	Args:
 		model_class (str): Nome della classe del modello.
 		n_qubits (int, optional): Numero di qubit nel circuito quantistico. Default è None.
-		lstm_layers (int, optional): Numero di layer LSTM. Default è None.
 		q_layers (int, optional): Numero di layer nel circuito quantistico. Default è None.
 		n_packets (int, optional): Numero di pacchetti nell'input. Default è None.
 		n_features (int, optional): Numero di feature per pacchetto. Default è None.
@@ -46,7 +44,6 @@ def compute_model_name(
 
 	fields = (
 		('Q', n_qubits),
-		('LSTM', lstm_layers),
 		('QL', q_layers),
 		('P', n_packets),
 		('F', n_features),
@@ -195,8 +192,8 @@ class _FeatureClassifier(_BaseModel):
 	"""Un solo forward per feature -> adapter -> processing -> logits. I componenti vengono assegnati una sola volta, senza alias registrati.
 	"""
 
-	def forward(self, x):
-		x = self.feature_extractor(x)
+	def forward(self, x, lengths):
+		x = self.feature_extractor(x, lengths)
 		x = self.input_adapter(x)
 		x = self.processing_block(x)
 
@@ -214,13 +211,16 @@ class _CNNLSTMFeatureExtractor(nn.Module):
 
 	output_dim = 100
 
-	def __init__(self, n_features: int, n_packets: int, lstm_layers: int):
+	def __init__(self, n_features: int, n_packets: int, n_dim: int = 2):
 
 		super().__init__()
 
+		self.n_dim = n_dim
 		self.n_features = n_features
 		self.n_packets = n_packets
-		self.lstm_layers = lstm_layers
+
+		if self.n_dim not in [1, 2]:
+			raise ValueError("Il valore di n_dim può essere solo 1 o 2.")
 
 		if self.n_packets < 7 or self.n_features < 3:
 			raise ValueError(
@@ -228,53 +228,77 @@ class _CNNLSTMFeatureExtractor(nn.Module):
 				"per due Conv2d valid con kernel (4, 2)."
 			)
 
-		self.conv1 = nn.Conv2d(1, 32, (4, 2), stride=(1, 1), padding=0)
-		self.bn1 = nn.BatchNorm2d(32)
-		self.conv2 = nn.Conv2d(32, 64, (4, 2), stride=(1, 1), padding=0)
-		self.bn2 = nn.BatchNorm2d(64)
+		self.conv1 = \
+			nn.Conv2d(1, 32, (4, 2), stride=(1, 1), padding='same') \
+			if self.n_dim == 2 \
+			else nn.Conv1d(self.n_features, 32, kernel_size=5, padding=2)
+		
+		self.bn1 = nn.BatchNorm2d(32) if self.n_dim == 2 else nn.BatchNorm1d(32)
+
+		self.conv2 = \
+			nn.Conv2d(32, 64, (4, 2), stride=(1, 1), padding='same', bias=False) \
+			if self.n_dim == 2 \
+			else nn.Conv1d(32, 64, kernel_size=3, padding=1, bias=False)
+		
+		self.bn2 = nn.BatchNorm2d(64) if self.n_dim == 2 else nn.BatchNorm1d(64)
+
 		self.relu = nn.ReLU()
 
-		with torch.no_grad():
-			dummy = self.conv1.weight.new_zeros(1, 1, self.n_packets, self.n_features)
-			shape = self.conv2(self.conv1(dummy)).shape
+		if self.n_dim == 1:
+			lstm_input_size = 64
+		elif self.n_dim == 2:
+			with torch.no_grad():
+				dummy = self.conv1.weight.new_zeros(1, 1, self.n_packets, self.n_features)
+				shape = self.conv2(self.conv1(dummy)).shape
+				batches, channels, packets, features = shape
+				lstm_input_size = channels * features
 
-		_, channels, packets, features = shape
-		lstm_input_size = channels * features
+		print("LSTM input size:", lstm_input_size)
 
-		# self.lstm = nn.LSTM(lstm_input_size, 100, batch_first=True)
-		# self.dropout1 = nn.Dropout(0.2)
-		# self.dropout2 = nn.Dropout(0.4)
-
-		self.lstm = nn.LSTM(
-			lstm_input_size, 100,
-			num_layers= lstm_layers,
-			batch_first=True,
-			dropout=0.2 if lstm_layers > 1 else 0.0,
-		)
-
-		self.fc1 = nn.Linear(100, 100)
+		self.lstm = nn.LSTM(lstm_input_size, 100, batch_first=True)
+		self.fc1 = nn.Linear(100, self.output_dim)
 
 		# end
 
-	def forward(self, x):
+	def forward(self, x, lengths):
 		if x.ndim != 3 or tuple(x.shape[1:]) != (self.n_packets, self.n_features):
 			raise ValueError(
 				"Errore in _CNNLSTMFeatureExtractor:\n"
 				f"Atteso: (B,{self.n_packets},{self.n_features})\n"
 				f"Ricevuto: {tuple(x.shape)}."
 			)
-		
-		out = self.bn1(self.relu(self.conv1(x.unsqueeze(1))))
-		out = self.bn2(self.relu(self.conv2(out)))
-		out = out.permute(0, 2, 1, 3).flatten(start_dim=2)
 
-		# out, _ = self.lstm(out)
-		# out = self.dropout1(out[:, -1, :])
+		lengths = torch.as_tensor(
+			lengths,
+			dtype=torch.long,
+			device="cpu",
+		)
 
-		# return self.dropout2(self.relu(self.fc1(out)))
+		if self.n_dim == 1:
+			out = x.transpose(1, 2)
+		elif self.n_dim == 2:
+			out = x.unsqueeze(1)
 
-		_, (h_n, _) = self.lstm(out)
-		return self.fc1(h_n[-1])
+		out = self.conv1(out)
+		out = self.relu(self.bn1(out))
+		out = self.conv2(out)
+		out = self.relu(self.bn2(out))
+
+		if self.n_dim == 1:
+			out = out.transpose(1, 2)
+		elif self.n_dim == 2:
+			out = out.permute(0, 2, 1, 3).flatten(start_dim=2)
+
+		out, _ = self.lstm(out)
+
+		last_indices = lengths.to(device=out.device, dtype=torch.long) - 1
+		batch_indices = torch.arange(out.size(0), device=out.device)
+		out = out[batch_indices, last_indices]
+
+		out = self.fc1(out)
+		out = self.relu(out)
+
+		return out
 	
 	# end class
 
@@ -372,7 +396,7 @@ class _QuantumModel(_FeatureClassifier):
 	"""Modello quantistico di base."""
 
 	name_fields = [
-		"n_qubits", "lstm_layers", "q_layers",
+		"n_qubits", "q_layers",
 		"n_packets", "n_features", "num_classes"
 	]
 	embedding: str
@@ -382,7 +406,7 @@ class _QuantumModel(_FeatureClassifier):
 	def __init__(
 			self,
 			n_features: int, n_packets: int, num_classes: int,
-			lstm_layers: int, q_layers: int, n_qubits: int, n_shots: int,
+			q_layers: int, n_qubits: int, n_shots: int,
 			random_seed: int, dev_name: str,
 			diff_method: str
 		):
@@ -394,7 +418,6 @@ class _QuantumModel(_FeatureClassifier):
 		self.num_classes = num_classes
 
 		self.n_qubits = n_qubits
-		self.lstm_layers = lstm_layers
 		self.q_layers = q_layers
 		self.n_shots = n_shots
 
@@ -411,7 +434,7 @@ class _QuantumModel(_FeatureClassifier):
 			projection = nn.Linear(feature_dim, input_dim)
 		else:
 			self.feature_extractor = _CNNLSTMFeatureExtractor(
-				self.n_features, self.n_packets, self.lstm_layers
+				self.n_features, self.n_packets, n_dim=2
 			)
 			feature_dim = self.feature_extractor.output_dim
 
@@ -440,28 +463,23 @@ class TrafficCNN(_FeatureClassifier):
 
 	model_label = "TrafficCNN"
 	name_fields = ["n_features", "n_packets", "num_classes"]
-	output_dim = 256
+	output_dim = 100
 	is_quantum : bool = False
 
 	def __init__(self, n_features: int, n_packets: int, num_classes: int):
 
 		super().__init__(n_features, n_packets, num_classes)
 
-		self.feature_extractor = nn.Sequential(
-            nn.Conv1d(self.n_features, 64, kernel_size=3, padding=1),
-            nn.BatchNorm1d(64), nn.ReLU(), nn.Dropout(0.2),
-            nn.Conv1d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm1d(128), nn.ReLU(), nn.Dropout(0.2),
-            nn.Conv1d(128, 256, kernel_size=3, padding=1),
-            nn.BatchNorm1d(256), nn.ReLU(), nn.AdaptiveAvgPool1d(1),
+		self.feature_extractor = _CNNLSTMFeatureExtractor(
+			self.n_features, self.n_packets, n_dim=1
 		)
 
 		self.input_adapter = nn.Identity()
 		self.processing_block = nn.Identity()
 
-		self.classifier = nn.Sequential(
-			nn.Flatten(), nn.Linear(256, 128), nn.ReLU(),
-			nn.Dropout(0.5), nn.Linear(128, self.num_classes),
+		self.classifier = nn.Linear(
+			self.feature_extractor.output_dim,
+			self.num_classes
 		)
 
 		# end
@@ -472,20 +490,15 @@ class CNNLSTMModel(_FeatureClassifier):
 	"""Baseline originale."""
 
 	model_label = "CNNLSTM"
-	name_fields = ["n_features", "n_packets", "num_classes", "lstm_layers"]
+	name_fields = ["n_features", "n_packets", "num_classes"]
 	is_quantum : bool = False
 
-	def __init__(
-		self,
-		n_features: int, n_packets: int, num_classes: int,
-		lstm_layers: int
-	):
+	def __init__(self, n_features: int, n_packets: int, num_classes: int):
 
 		super().__init__(n_features, n_packets, num_classes)
-		self.lstm_layers = lstm_layers
 
 		self.feature_extractor = _CNNLSTMFeatureExtractor(
-			self.n_features, self.n_packets, self.lstm_layers
+			self.n_features, self.n_packets, n_dim=2
 		)
 
 		self.input_adapter = nn.Identity()
@@ -556,7 +569,7 @@ MODEL_REGISTRY = {
 def select_model(
 		model_name: str,
 		n_features: int, n_packets: int, num_classes: int,
-		lstm_layers: int, q_layers: int, n_qubits: int, n_shots: int,
+		q_layers: int, n_qubits: int, n_shots: int,
 		random_seed: int, dev_name: str, diff_method: str = None
 	) -> nn.Module:
 	"""Seleziona e restituisce il modello specificato.
@@ -566,7 +579,6 @@ def select_model(
 		n_features (int): Numero di feature per pacchetto.
 		n_packets (int): Numero di pacchetti nell'input.
 		num_classes (int): Numero di classi per la classificazione.
-		lstm_layers (int): Numero di layer LSTM (se applicabile).
 		q_layers (int): Numero di layer nel circuito quantistico (se applicabile).
 		n_qubits (int): Numero di qubit nel circuito quantistico (se applicabile).
 		n_shots (int): Numero di ripetizioni per il circuito quantistico (se applicabile).
@@ -594,15 +606,9 @@ def select_model(
 			f'Modello {model_name!r} non supportato.\n'
 			f'Modelli disponibili: {", ".join(tuple(MODEL_REGISTRY))}.') from exc
 
-	if model_name == "baseline":
-		params.update({
-			"lstm_layers": lstm_layers,
-		})
-
 	if model.is_quantum:
 		params.update({
 			"n_qubits": n_qubits,
-			"lstm_layers": lstm_layers,
 			"q_layers": q_layers,
 			"n_shots": n_shots,
 			"random_seed": random_seed,

@@ -19,6 +19,7 @@ class TrafficDataset(Dataset):
 	def __init__(
 			self,
 			X_raw: np.ndarray, y_raw: np.ndarray,
+			lengths: np.ndarray,
 			num_classes: int,
 			dtype: torch.dtype,
 			transform=None,
@@ -29,11 +30,14 @@ class TrafficDataset(Dataset):
 
 		assert isinstance(X_raw, np.ndarray), "X_raw deve essere un array NumPy"
 		assert isinstance(y_raw, np.ndarray), "y_raw deve essere un array NumPy"
+		assert isinstance(lengths, np.ndarray), "lengths deve essere un array NumPy"
 
 		assert X_raw.ndim >= 2, "X_raw deve includere campioni e feature."
 		assert y_raw.ndim == 1, "y_raw deve avere shape (N,)."
+		assert lengths.ndim == 1, "lengths deve avere shape (N,)."
 
 		assert X_raw.shape[0] == y_raw.shape[0], "X_raw e y_raw devono avere lo stesso numero di campioni."
+		assert X_raw.shape[0] == lengths.shape[0], "X_raw e lengths devono avere lo stesso numero di campioni."
 
 		assert isinstance(num_classes, int) and num_classes > 0, "num_classes deve essere un intero positivo."
 
@@ -52,6 +56,12 @@ class TrafficDataset(Dataset):
 		
 		self.y = torch.as_tensor(
 			np.ascontiguousarray(y_raw),
+			dtype=torch.long,
+			device="cpu",
+		)
+
+		self.lengths = torch.as_tensor(
+			np.ascontiguousarray(lengths),
 			dtype=torch.long,
 			device="cpu",
 		)
@@ -77,7 +87,10 @@ class TrafficDataset(Dataset):
 		if self.transform is not None:
 			x = self.transform(x)
 
-		return x, self.y[idx]
+		if self.lengths is None:
+			return x, self.y[idx]
+
+		return x, self.y[idx], self.lengths[idx]
 
 		# end
 

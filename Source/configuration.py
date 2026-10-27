@@ -794,9 +794,6 @@ class LossConfig:
 class ModelConfig:
 	name: str
 	""" Selected model for the network. Default is "hybrid". """
-
-	lstm_layers: int
-	""" Number of LSTM layers for the selected model. Default is 1. """
 	
 	simulator: str
 	""" Name of the quantum simulator to use with PennyLane. """
@@ -818,7 +815,6 @@ class ModelConfig:
 
 		return cls(
 			name= "baseline",
-			lstm_layers= 1,
 			simulator= "default.qubit",
 			q_layers= 3,
 			n_qubits= 5,
@@ -854,19 +850,20 @@ class ModelConfig:
 		
 		check_positive_int('n_qubits', self.n_qubits)
 		check_positive_int('n_shots', self.n_shots) if self.n_shots is not None else None
-		check_positive_int('lstm_layers', self.lstm_layers)
 		check_positive_int('q_layers', self.q_layers)
 
 		# end
 
 	def __repr__(self) -> str:
 		quantum_str = \
-			f" | Quantum Layers: {self.q_layers}" \
+			f" | Layers: {self.q_layers}" \
 			f" | Simulator: {self.simulator}" \
 			f" | Qubits: {self.n_qubits}" \
 			f" | Shots: {self.n_shots}"
 
-		return f"[MODEL] {self.name} | LSTM Layers: {self.lstm_layers}{quantum_str}"
+		# TODO: aggiungere "classic" o "quantum" in base al tipo di modello.
+
+		return f"[MODEL] {self.name}{quantum_str}"
 
 		# end
 

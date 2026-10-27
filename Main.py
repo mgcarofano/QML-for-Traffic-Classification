@@ -22,7 +22,8 @@ from pathlib import Path
 import pickle
 from Source.traffic_converter import \
 	get_flowpic_dir, \
-	mirage_pickle_converter
+	mirage_pickle_converter, \
+	remove_padding
 from Source.classes import TrafficDataset
 from torch.utils.data import DataLoader
 
@@ -51,6 +52,7 @@ from Source.visualization_functions import \
 	draw_train_val_plot, \
 	draw_confusion_matrix
 from sklearn.metrics import \
+	f1_score, \
 	confusion_matrix, \
 	classification_report
 
@@ -175,7 +177,22 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 			"FlowID": np.arange(len(X_raw)),
 			"DatasetID": np.arange(len(X_raw)),
 			"Label": y_raw,
+			"RealPackets": np.array([len(remove_padding(flow)[0]) for flow in X_raw]),
 		})
+
+		# # Caricamento dei metadati in formato CSV.
+		# metadata_flowpic = pd.read_csv("/Users/mgcarofano/Documents/Magistrale UNINA/QML-for-Traffic-Classification/Dataset/flowpic/2019/mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata.csv")
+
+		# assert metadata.shape == metadata_flowpic.shape, \
+		# 	"I metadati non hanno la stessa forma." \
+		# 	f"Mirage: {metadata.shape}, Flowpic: {metadata_flowpic.shape}"
+		# diff = metadata.compare(
+		# 	metadata_flowpic,
+		# 	result_names=("metadata", "metadata_flowpic"),
+		# )
+
+		# print(f"Numero di righe diverse: {len(diff)}")
+		# print(diff)
 
 	elif session_config.dataset.is_flowpic:
 
@@ -185,7 +202,7 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 		npz_path = flowpics_dir / f"{session_config.dataset.name}.npz"
 		meta_path = flowpics_dir / f"{session_config.dataset.name}.csv"
 
-		if not npz_path.exists() or not meta_path.exists():
+		if not npz_path.is_file() or not meta_path.is_file():
 			# Se i file precomputati non esistono, vengono generati utilizzando mirage_pickle_converter().
 			histograms, metadata = mirage_pickle_converter(session_config, runtime_config)
 
@@ -506,7 +523,6 @@ def init_model(device, fold_index: int, num_classes: int) -> _BaseModel:
 			"n_features": session_config.dataset.n_features,
 			"n_packets": session_config.dataset.n_packets,
 			"num_classes": num_classes,
-			"lstm_layers": session_config.model.lstm_layers,
 			"q_layers": session_config.model.q_layers,
 			"n_qubits": session_config.model.n_qubits,
 			"n_shots": session_config.model.n_shots,
@@ -718,6 +734,38 @@ def build_loss_function(
 	# end
 
 #	####################################################################	#
+#	# Stampa delle informazioni sul modello e sui parametri.
+
+def get_model_info(model) -> str:
+	"""Restituisce le informazioni sul modello, tra cui il nome della classe del modello, il numero di parametri addestrabili e la struttura interna dei suoi livelli.
+
+	Args:
+		model: Il modello di cui ottenere le informazioni.
+
+	Returns:
+		str: Le informazioni sul modello come stringa.
+	"""
+
+	params_df = pd.DataFrame([
+		(name, tuple(p.shape), p.numel())
+		for name, p in model.named_parameters()
+	], columns=["Name", "Shape", "Params"])
+
+	return (
+		"Modello selezionato: \n"
+		f"{session_config.model.name} -> {model.get_model_name()} \n\n"
+
+		"Struttura interna: \n"
+		f"{str(model)} \n\n"
+
+		f"Numero totale di parametri addestrabili: {params_df['Params'].sum():,} \n"
+		"Parametri dei livelli: \n"
+		f"{params_df.to_string(index=False)} \n"
+	)
+
+	# end
+
+#	####################################################################	#
 #	Addestramento del modello.
 
 def train_model(
@@ -725,6 +773,7 @@ def train_model(
 		train_loader, val_loader,
 		optimizer, lr_sched, criterion,
 		fold_model_path: str,
+		early_stopping: str = "val_loss",
 	) -> tuple[torch.nn.Module, pd.DataFrame]:
 	"""Addestra il modello per un numero specificato di epoche.
 
@@ -742,6 +791,7 @@ def train_model(
 		lr_sched: Il scheduler del learning rate.
 		criterion: La funzione di loss.
 		fold_model_path (str): Il percorso dove viene salvato il modello aggiornato.
+		early_stopping (str): La metrica da monitorare per l'early stopping. Default è "val_loss".
 	
 	Returns:
 		tuple: il modello addestrato e il DataFrame contenente la cronologia dell'addestramento.
@@ -750,15 +800,23 @@ def train_model(
 	#	################################################################	#
 	#	Inizializzazione delle metriche da monitorare.
 
+	if early_stopping not in {"val_loss", "val_macrof1"}:
+		raise ValueError(
+			"early_stopping deve essere 'val_loss' "
+			f"oppure 'val_macrof1'; ricevuto: {early_stopping!r}."
+		)
+
 	# Questo dizionario terrà traccia delle metriche di addestramento e validazione per ogni epoca.
 	train_history_df = pd.DataFrame(columns=[
 		"epoch", "time",
-		"accuracy", "val_accuracy",
-		"loss", "val_loss",
+		"train_loss", "train_accuracy",
+		"val_loss", "val_accuracy", "val_macrof1",
 	])
 
 	# Inizializza le variabili per il monitoraggio della miglior loss di validazione.
-	best_val_loss = float('inf')
+	minimize = early_stopping == "val_loss"
+	best_score = float('inf') if minimize else -float('inf')
+	best_epoch = None
 	patience_counter = 0
 
 	#	################################################################	#
@@ -767,7 +825,8 @@ def train_model(
 	training_start_time = time.time()
 	print(
 		f"Addestramento iniziato.\n"
-		f"Orario corrente: {datetime.fromtimestamp(training_start_time).strftime('%Y-%m-%d_%H:%M:%S')}\n\n"
+		"Orario corrente: "
+		f"{datetime.fromtimestamp(training_start_time).strftime('%Y-%m-%d_%H:%M:%S')}\n\n"
 
 		f"{repr(session_config)}"
 		f"[SAMPLES] Training: {len(train_loader.dataset)} in {len(train_loader)} batches | "
@@ -791,10 +850,18 @@ def train_model(
 		)
 
 		# In fase di addestramento, non serve restituire le predizioni e le etichette predette. Si inserisce '_' per ignorarle.
-		val_loss, val_acc, _, _, _ = evaluate(
+		val_loss, val_acc, val_preds, val_true, _ = evaluate(
 			model, device,
 			val_loader,
 			criterion
+		)
+
+		val_macrof1 = f1_score(
+			val_true.detach().cpu().numpy(),
+			val_preds.detach().cpu().numpy(),
+			labels=np.arange(model.num_classes),
+			average="macro",
+			zero_division=0,
 		)
 
 		# Calcola la durata dell'epoca corrente e il tempo totale trascorso dall'inizio dell'addestramento.
@@ -806,27 +873,44 @@ def train_model(
 		train_history_df.loc[len(train_history_df)] = {
 			"epoch": epoch + 1,
 			"time": epoch_duration,
-			"accuracy": train_acc,
-			"val_accuracy": val_acc,
-			"loss": train_loss,
+			"train_loss": train_loss,
+			"train_accuracy": train_acc,
 			"val_loss": val_loss,
+			"val_accuracy": val_acc,
+			"val_macrof1": val_macrof1,
 		}
 
 		# Stampa in console le metriche dell'epoca corrente.
 		print(
-			f"\nLoss: {train_loss:.4f} | Acc: {train_acc:.2f}%\n"
-			f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%\n"
-			f"Epoch time: {epoch_duration:.2f}s | Elapsed time: {elapsed_time:.2f}s"
+			f"\nTrain Loss: {train_loss:.4f} "
+			f"| Train Accuracy: {train_acc:.2f}%\n"
+
+			f"Val Loss: {val_loss:.4f} "
+			f"| Val Accuracy: {val_acc:.2f}% "
+			f"| Val Macro F1: {val_macrof1:.2f}%\n"
+
+			f"Epoch time: {epoch_duration:.2f}s "
+			f"| Elapsed time: {elapsed_time:.2f}s"
 		)
 
-		# CHECK : se la loss di validazione migliora,
+		# CHECK : se il punteggio calcolato migliora,
 		# salva il modello e resetta il contatore per la patience.
-		if val_loss < best_val_loss:
-			best_val_loss = val_loss
+		current_score = val_loss if minimize else val_macrof1
+		if not np.isfinite(current_score):
+			raise RuntimeError("Errore nel calcolo della metrica di miglioramento: valore non finito.")
+
+		improved = \
+			current_score < best_score \
+			if minimize \
+			else current_score > best_score
+
+		if improved:
+			best_score = current_score
+			best_epoch = epoch + 1
 			torch.save(model.state_dict(), fold_model_path)
 			patience_counter = 0
 			print(
-				f"  -> Validation loss improved.\n"
+				f"  -> {'Validation loss' if minimize else 'Validation Macro F1'} improved.\n"
 				f"     Model saved in {fold_model_path}."
 			)
 		else:
@@ -848,9 +932,16 @@ def train_model(
 	#	Fine del loop di addestramento.
 
 	training_end_time = time.time()
-	print("\nAddestramento completato.")
-	print(f"Orario corrente: {datetime.fromtimestamp(training_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
-	print(f"Tempo di elaborazione: {training_end_time - training_start_time:.2f} secondi")
+
+	print(
+		"\nAddestramento completato. \n"
+		f"Orario corrente: "
+		f"{datetime.fromtimestamp(training_end_time).strftime('%Y-%m-%d_%H:%M:%S')} \n"
+		f"Tempo di elaborazione: "
+		f"{training_end_time - training_start_time:.2f} secondi. \n"
+		f"Migliore epoca: {best_epoch} | "
+		f"{early_stopping}: {best_score:.6f}"
+	)
 
 	#	################################################################	#
 	#	Salvataggio dei risultati.
@@ -975,6 +1066,8 @@ def main(cli_overrides: bool):
 
 	# Percorso per il file di configurazione.
 	config_path = output_dir / "config.json"
+
+	model_info_path = output_dir / "model_info.txt"
 
 	#	-----------------------------------------------------------------	#
 	#	Salvataggio di tutti i parametri di configurazione.
@@ -1127,6 +1220,21 @@ def main(cli_overrides: bool):
 		# TODO: vedi notebook.
 
 		#	------------------------------------------------------------	#
+		#	Estrazione delle lunghezze reali dei flussi.
+
+		lengths = np.array(metadata["RealPackets"])
+
+		if np.any((lengths < 1) | (lengths > session_config.dataset.n_packets)):
+			raise ValueError(
+				"Ogni lunghezza deve essere compresa "
+				f"tra 1 e {session_config.dataset.n_packets}."
+			)
+
+		lengths_train = lengths[train_indices]
+		lengths_val = lengths[val_indices]
+		lengths_test = lengths[test_indices]
+
+		#	------------------------------------------------------------	#
 		#	Applicazione della strategia di data preprocessing.
 
 		if not session_config.dataset.is_flowpic:
@@ -1150,9 +1258,20 @@ def main(cli_overrides: bool):
 		#	------------------------------------------------------------	#
 		#	Costruzione dell'oggetto Dataset per PyTorch.
 
-		train_dataset = TrafficDataset(X_train, y_train, num_classes, dtype)
-		val_dataset = TrafficDataset(X_val, y_val, num_classes, dtype)
-		test_dataset = TrafficDataset(X_test, y_test, num_classes, dtype)
+		train_dataset = TrafficDataset(
+			X_train, y_train, lengths_train,
+			num_classes, dtype
+		)
+		
+		val_dataset = TrafficDataset(
+			X_val, y_val, lengths_val,
+			num_classes, dtype
+		)
+		
+		test_dataset = TrafficDataset(
+			X_test, y_test, lengths_test,
+			num_classes, dtype
+		)
 
 		#	------------------------------------------------------------	#
 		#	Costruzione dei DataLoader per PyTorch.
@@ -1183,19 +1302,11 @@ def main(cli_overrides: bool):
 
 		model = init_model(device, fold_index, num_classes)
 
-		# Stampa delle informazioni sul modello e sui parametri.
-		print(f"\nModello selezionato: {session_config.model.name} -> {model.get_model_name()}")
-		print(f"Total trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
-		
-		debug_print(model)
-		debug_print(f"Model parameters:")
-		if runtime_config.flags.debug:
-			for name, parameter in model.named_parameters():
-				print(
-					f"{name:25s} "
-					f"shape={str(tuple(parameter.shape)):18s} "
-					f"params={parameter.numel():>8,}"
-				)
+		if fold_index == 0:
+			model_info = get_model_info(model)
+			debug_print(model_info)
+			with open(model_info_path, "w") as f:
+				f.write(model_info)
 
 		# Per motivi di compatibilità, si inizializza a None.
 		# Si aggiorna successivamente se la modalità di addestramento è abilitata.
@@ -1238,11 +1349,13 @@ def main(cli_overrides: bool):
 			#	--------------------------------------------------------	#
 			#	Esecuzione del loop di addestramento.
 
+			early_stopping = "val_macrof1"
 			model, train_history_df = train_model(
 				model, device,
 				train_loader, val_loader,
 				optimizer, lr_sched, criterion,
 				fold_model_path,
+				early_stopping
 			)
 
 			# Salva lo storico delle metriche di addestramento e validazione in un file CSV.
@@ -1279,22 +1392,34 @@ def main(cli_overrides: bool):
 
 		if runtime_config.launch.exec_mode_train and runtime_config.flags.save_output:
 			# Calcolo dell'epoca con validation loss minima per evidenziarla nel grafico.
-			best_epoch = int(np.argmin(train_history_df['val_loss'].to_list())) +1
+			# best_epoch = int(np.argmin(train_history_df['val_loss'].to_list())) +1
+			best_epoch = \
+				train_history_df['val_loss'].idxmin() + 1 \
+				if early_stopping == "val_loss" \
+				else train_history_df['val_macrof1'].idxmax() + 1
+			
+			best_score = train_history_df[early_stopping].iloc[best_epoch-1]
+
+			# TODO: aggiustare plot training e validation per includere anche macrof1
 
 			plt.figure(figsize=(12, 5))
 			plt.tight_layout()
+			# plt.title(
+			# 	"Metriche di addestramento | "
+			# 	f"Miglior punteggio ({early_stopping}): {best_score:.2f}% | Miglior epoca: {best_epoch} )"
+			# )
 			loss_plot = plt.subplot(1, 2, 1)
 			acc_plot = plt.subplot(1, 2, 2)
 
 			draw_train_val_plot(
 				loss_plot, 'Loss',
-				train_history_df['loss'].to_list(), train_history_df['val_loss'].to_list(),
+				train_history_df['train_loss'].to_list(), train_history_df['val_loss'].to_list(),
 				best_epoch
 			)
 
 			draw_train_val_plot(
 				acc_plot, 'Accuracy',
-				train_history_df['accuracy'].to_list(), train_history_df['val_accuracy'].to_list(),
+				train_history_df['train_accuracy'].to_list(), train_history_df['val_accuracy'].to_list(),
 				best_epoch
 			)
 
@@ -1426,12 +1551,6 @@ if __name__ == "__main__":
 			"exec_mode_train",
 			"save_output"
 		}
-
-	print(
-		vars(args).get('source_session_id'),
-		vars(args).get('save_output'),
-		cli_overrides is not None
-	)
 
 	if vars(args).get('source_session_id') is not None:
 		if cli_overrides and vars(args).get('save_output'):

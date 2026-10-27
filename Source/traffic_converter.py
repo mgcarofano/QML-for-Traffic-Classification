@@ -20,6 +20,7 @@ import pandas as pd
 import pickle
 from pathlib import Path
 
+from dataclasses import asdict
 from Source.configuration import SessionConfig, RuntimeConfig
 
 #   ########################################################################    #
@@ -80,6 +81,7 @@ def mirage_pickle_converter(
 	flow_ids = []
 	dataset_ids = []
 	labels = []
+	real_packets = []
 
 	counter = {
 		# Contatore delle finestre temporali valide.
@@ -176,19 +178,7 @@ def mirage_pickle_converter(
 			#   ############################################################    #
 			#   Cancellazione dei pacchetti di padding
 
-			# Crea una maschera che salva i metadati dei pacchetti che
-			# compaiono prima della prima riga di padding nel flusso.
-			# Usando ".all(axis=1)" si identifica solo le righe interamente a -1,
-			# che sono inequivocabilmente padding.
-			padding_mask = (flow == -1).all(axis=1)
-
-			# Si tronca l'array al primo indice di padding trovato.
-			padding_indices = np.where(padding_mask)[0]
-
-			# Se esistono righe di padding, il taglio avviene al primo indice di padding;
-			# altrimenti il flusso è completo (nessun padding) e si conservano tutte le T righe.
-			cutoff = padding_indices[0] if len(padding_indices) > 0 else len(flow)
-			real_rows = flow[:cutoff]
+			real_rows, padding_rows = remove_padding(flow)
 
 			# Si salta il flusso se non contiene pacchetti reali.
 			if len(real_rows) == 0:
@@ -215,7 +205,7 @@ def mirage_pickle_converter(
 			#   ############################################################    #
 			#   Applicazione di filtri di qualità.
 
-			if ts.max() - ts.min() <= 0:
+			if ts.max() - ts.min() < 0:
 				counter["invalid_duration"] += 1
 				if debug_cycle:
 					print(f"[DEBUG] Flusso n.{i} scartato per durata non valida.")
@@ -248,13 +238,13 @@ def mirage_pickle_converter(
 			#   ############################################################    #
 			#   Costruzione dell'istogramma 2D.
 
-			# Aggiungi 'padding_indices' zeri all'inizio di ts e sizes.
-			if len(real_rows) != len(flow):
-				ts = np.pad(ts, (len(padding_indices), 0), mode='constant', constant_values=0.0)
-				sizes = np.pad(sizes, (len(padding_indices), 0), mode='constant', constant_values=0)
+			# Aggiungi 'padding_rows' zeri all'inizio di ts e sizes.
+			if len(real_rows) + len(padding_rows) != len(flow):
+				ts = np.pad(ts, (len(padding_rows), 0), mode='constant', constant_values=0.0)
+				sizes = np.pad(sizes, (len(padding_rows), 0), mode='constant', constant_values=0.0)
 
 				if debug_cycle:
-					print(f"[DEBUG] Flusso n.{i} contiene {len(real_rows)} pacchetti reali e {len(padding_indices)} pacchetti di padding.")
+					print(f"[DEBUG] Flusso n.{i} contiene {len(real_rows)} pacchetti reali e {len(padding_rows)} pacchetti di padding.")
 					print(f"[DEBUG] sizes.shape = {sizes.shape}, ts.shape = {ts.shape}")
 				
 				# end if
@@ -276,6 +266,7 @@ def mirage_pickle_converter(
 			flow_ids.append(i)
 			dataset_ids.append(counter["valid"])
 			labels.append(label)
+			real_packets.append(len(real_rows))
 
 			dataset.append([hist])
 			counter["valid"] += 1
@@ -297,6 +288,7 @@ def mirage_pickle_converter(
 		"FlowID": flow_ids,
 		"DatasetID": dataset_ids,
 		"Label": labels,
+		"RealPackets": real_packets,
 	})
 
 	# Se il flag di debug è attivo, si stampano informazioni dettagliate sui flussi specificati.
@@ -369,7 +361,10 @@ def session_2d_histogram(
 	ts_norm = ts - ts[0]
 
 	# 2. Scala nell'intervallo [0.0, 1.0].
-	ts_norm = ts_norm / (ts.max() - ts.min())
+	try:
+		ts_norm = ts_norm / (ts.max() - ts.min())
+	except ZeroDivisionError:
+		ts_norm = ts_norm / 1.0
 
 	# 3. Scala nell'intervallo [0, 1500].
 	ts_norm = ts_norm * mtu
@@ -454,6 +449,33 @@ def session_2d_histogram(
 #   ########################################################################    #
 #   Altre funzioni
 
+def remove_padding(flow: np.ndarray) -> np.ndarray:
+	"""Rimuove le righe di padding da un flusso.
+
+	Args:
+		flow (np.ndarray): Array 2D contenente le righe dei pacchetti del flusso.
+
+	Returns:
+		np.ndarray: Flusso senza righe di padding.
+		np.ndarray: Array contenente le righe di padding identificate.
+	"""
+
+	# Crea una maschera che salva i metadati dei pacchetti che compaiono prima della prima riga di padding nel flusso.
+	# Usando ".all(axis=1)" si identifica solo le righe interamente a -1, che sono inequivocabilmente padding.
+	padding_mask = (flow == -1).all(axis=1)
+
+	# Si tronca l'array al primo indice di padding trovato.
+	padding_rows = np.where(padding_mask)[0]
+
+	# Se esistono righe di padding, il taglio avviene al primo indice di padding;
+	# altrimenti il flusso è completo (nessun padding) e si conservano tutte le T righe.
+	cutoff = padding_rows[0] if len(padding_rows) > 0 else len(flow)
+	real_rows = flow[:cutoff]
+
+	return real_rows, padding_rows
+
+	# end
+
 def flow_debug(
 		histograms: np.ndarray,
 		metadata: pd.DataFrame,
@@ -533,6 +555,13 @@ def get_flowpic_dir(session_config: SessionConfig) -> Path:
 	new_parts = list(parts)
 	new_parts[idx] = "flowpic"
 
-	return Path(*new_parts)
+	filters_parts = "-".join(
+		f"{k}{v}"
+		for k, v
+		in asdict(session_config.traffic.filters).items()
+		if v is not None
+	)
+
+	return Path("Dataset", *new_parts, filters_parts)
 
 	# end
