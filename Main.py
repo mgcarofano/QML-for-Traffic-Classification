@@ -519,17 +519,8 @@ def init_model(device, fold_index: int, num_classes: int) -> _BaseModel:
 	#	Scelta e istanziazione del modello.
 
 	model : _BaseModel = select_model(
-		session_config.model.name, **{
-			"n_features": session_config.dataset.n_features,
-			"n_packets": session_config.dataset.n_packets,
-			"num_classes": num_classes,
-			"q_layers": session_config.model.q_layers,
-			"n_qubits": session_config.model.n_qubits,
-			"n_shots": session_config.model.n_shots,
-			"random_seed": fold_seed,
-			"dev_name": session_config.model.simulator,
-			"diff_method": session_config.model.diff_method,
-		},
+		num_classes, fold_seed,
+		session_config, runtime_config
 	)
 
 	# Si sposta il modello sul dispositivo corretto (CPU, GPU o MPS)
@@ -773,14 +764,12 @@ def train_model(
 		train_loader, val_loader,
 		optimizer, lr_sched, criterion,
 		fold_model_path: str,
-		early_stopping: str = "val_loss",
-	) -> tuple[torch.nn.Module, pd.DataFrame]:
+	) -> tuple[torch.nn.Module, pd.DataFrame, int, float]:
 	"""Addestra il modello per un numero specificato di epoche.
 
 	## Funzionalità
 		- Monitora le metriche di addestramento e validazione.
-		- Aggiorna i pesi del modello in base alla loss di validazione calcolata.
-		- Implementa early stopping basato sulla loss di validazione.
+		- Implementa early stopping e aggiorna i pesi del modello in base alla metrica di valutazione selezionata.
 
 	Args:
 		model: Il modello da addestrare.
@@ -791,20 +780,13 @@ def train_model(
 		lr_sched: Il scheduler del learning rate.
 		criterion: La funzione di loss.
 		fold_model_path (str): Il percorso dove viene salvato il modello aggiornato.
-		early_stopping (str): La metrica da monitorare per l'early stopping. Default è "val_loss".
 	
 	Returns:
-		tuple: il modello addestrato e il DataFrame contenente la cronologia dell'addestramento.
+		tuple: il modello addestrato, il DataFrame contenente lo storico dell'addestramento, l'epoca migliore e il punteggio migliore.
 	"""
 
 	#	################################################################	#
 	#	Inizializzazione delle metriche da monitorare.
-
-	if early_stopping not in {"val_loss", "val_macrof1"}:
-		raise ValueError(
-			"early_stopping deve essere 'val_loss' "
-			f"oppure 'val_macrof1'; ricevuto: {early_stopping!r}."
-		)
 
 	# Questo dizionario terrà traccia delle metriche di addestramento e validazione per ogni epoca.
 	train_history_df = pd.DataFrame(columns=[
@@ -813,8 +795,8 @@ def train_model(
 		"val_loss", "val_accuracy", "val_macrof1",
 	])
 
-	# Inizializza le variabili per il monitoraggio della miglior loss di validazione.
-	minimize = early_stopping == "val_loss"
+	# Inizializza le variabili per il monitoraggio della metrica di valutazione selezionata.
+	minimize = session_config.training.monitored_metric == "val_loss"
 	best_score = float('inf') if minimize else -float('inf')
 	best_epoch = None
 	patience_counter = 0
@@ -836,11 +818,11 @@ def train_model(
 	#	################################################################	#
 	#	Esecuzione del loop di addestramento.
 
-	for epoch in range(session_config.training.epochs):
+	for epoch in range(1, session_config.training.epochs +1):
 
 		# Salva il timestamp di inizio epoca per calcolare la durata dell'epoca corrente.
 		epoch_start_time = time.time()
-		print(f"\nEpoch {epoch+1}/{session_config.training.epochs}\n")
+		print(f"\nEpoch {epoch}/{session_config.training.epochs}\n")
 
 		# Calcola la loss e l'accuratezza per il training set e il validation set.
 		train_loss, train_acc = train_epoch(
@@ -859,66 +841,78 @@ def train_model(
 		val_macrof1 = f1_score(
 			val_true.detach().cpu().numpy(),
 			val_preds.detach().cpu().numpy(),
-			labels=np.arange(model.num_classes),
-			average="macro",
-			zero_division=0,
-		)
+			labels= np.arange(model.num_classes),
+			average= "macro",
+			zero_division= 0,
+		) * 100
+
+		metrics = {
+			"train_loss": float(train_loss),
+			"train_accuracy": float(train_acc),
+			"val_loss": float(val_loss),
+			"val_accuracy": float(val_acc),
+			"val_macrof1": float(val_macrof1),
+		}
+
+		invalid_metrics = [name for name, value in metrics.items() if not np.isfinite(value)]
+		if invalid_metrics:
+			raise RuntimeError("Errore nel calcolo delle metriche di addestramento: valori non finiti per [" + ", ".join(invalid_metrics) + "]")
 
 		# Calcola la durata dell'epoca corrente e il tempo totale trascorso dall'inizio dell'addestramento.
 		epoch_end_time = time.time()
 		epoch_duration = epoch_end_time - epoch_start_time
 		elapsed_time = epoch_end_time - training_start_time
 
+		
 		# Aggiorna lo storico delle metriche per l'epoca corrente.
 		train_history_df.loc[len(train_history_df)] = {
-			"epoch": epoch + 1,
+			"epoch": epoch,
 			"time": epoch_duration,
-			"train_loss": train_loss,
-			"train_accuracy": train_acc,
-			"val_loss": val_loss,
-			"val_accuracy": val_acc,
-			"val_macrof1": val_macrof1,
+			**metrics
 		}
 
 		# Stampa in console le metriche dell'epoca corrente.
 		print(
 			f"\nTrain Loss: {train_loss:.4f} "
-			f"| Train Accuracy: {train_acc:.2f}%\n"
+			f"| Train Accuracy: {train_acc:.4f}%\n"
 
 			f"Val Loss: {val_loss:.4f} "
-			f"| Val Accuracy: {val_acc:.2f}% "
-			f"| Val Macro F1: {val_macrof1:.2f}%\n"
+			f"| Val Accuracy: {val_acc:.4f}% "
+			f"| Val Macro F1: {(val_macrof1):.4f}%\n"
 
 			f"Epoch time: {epoch_duration:.2f}s "
 			f"| Elapsed time: {elapsed_time:.2f}s"
 		)
 
-		# CHECK : se il punteggio calcolato migliora,
-		# salva il modello e resetta il contatore per la patience.
-		current_score = val_loss if minimize else val_macrof1
-		if not np.isfinite(current_score):
-			raise RuntimeError("Errore nel calcolo della metrica di miglioramento: valore non finito.")
+		# CHECK : se il punteggio calcolato migliora, salva il modello e resetta il contatore per la patience.
+		current_score = metrics[session_config.training.monitored_metric]
 
-		improved = \
-			current_score < best_score \
-			if minimize \
-			else current_score > best_score
+		if best_epoch is None:
+			improved = True
+		elif minimize:
+			improved = current_score < (best_score - session_config.training.min_delta)
+		else:
+			improved = current_score > (best_score + session_config.training.min_delta)
 
 		if improved:
-			best_score = current_score
-			best_epoch = epoch + 1
-			torch.save(model.state_dict(), fold_model_path)
-			patience_counter = 0
 			print(
-				f"  -> {'Validation loss' if minimize else 'Validation Macro F1'} improved.\n"
+				f"  -> '{session_config.training.monitored_metric}' improved.\n"
 				f"     Model saved in {fold_model_path}."
 			)
-		else:
+			torch.save(model.state_dict(), fold_model_path)
+
+			best_score = current_score
+			best_epoch = epoch
+			patience_counter = 0
+
+		elif session_config.training.early_stopping:
 			print(f"  -> No improvement.")
 
-			if session_config.training.early_stopping:
-				patience_counter += 1
-				print(f"     Patience: {patience_counter} of {session_config.training.patience}" if True else "")
+			patience_counter += 1
+			print(f"     Patience: {patience_counter} of {session_config.training.patience}" if True else "")
+
+		else:
+			print(f"  -> No improvement. Early stopping is disabled.")
 
 		# Se il contatore di patience raggiunge il limite
 		# e l'early stopping è abilitato, si interrompe il training.
@@ -940,7 +934,7 @@ def train_model(
 		f"Tempo di elaborazione: "
 		f"{training_end_time - training_start_time:.2f} secondi. \n"
 		f"Migliore epoca: {best_epoch} | "
-		f"{early_stopping}: {best_score:.6f}"
+		f"{session_config.training.monitored_metric}: {best_score:.6f}"
 	)
 
 	#	################################################################	#
@@ -955,7 +949,7 @@ def train_model(
 	model.load_state_dict(best_model)
 	del best_model
 
-	return model, train_history_df
+	return model, train_history_df, best_epoch, best_score
 
 	# end
 
@@ -1298,6 +1292,17 @@ def main(cli_overrides: bool):
 		)
 
 		#	------------------------------------------------------------	#
+		#	Verifica della lunghezza dei Loader.
+
+		def check_loader_length(loader, name):
+			if len(loader) == 0:
+				raise ValueError(f"Il DataLoader per {name} è vuoto. Controllare la configurazione del dataset.")
+
+		check_loader_length(train_loader, "il training")
+		check_loader_length(val_loader, "la validazione")
+		check_loader_length(test_loader, "il test")
+
+		#	------------------------------------------------------------	#
 		#	Addestramento del modello.
 
 		model = init_model(device, fold_index, num_classes)
@@ -1338,26 +1343,45 @@ def main(cli_overrides: bool):
 			#	Configurazione dei componenti di addestramento.
 
 			optimizer = build_optimizer(model)
+			if optimizer is None:
+				raise ValueError("L'ottimizzatore non è stato creato correttamente.")
 
 			lr_sched = build_scheduler(optimizer, train_loader)
+			if lr_sched is None:
+				raise ValueError("Lo scheduler non è stato creato correttamente.")
 
 			criterion = build_loss_function(
 				y_train, num_classes, device,
 				next(model.parameters()).dtype,
 			)
+			if criterion is None:
+				raise ValueError("La funzione di loss non è stata creata correttamente.")
 
 			#	--------------------------------------------------------	#
 			#	Esecuzione del loop di addestramento.
 
-			early_stopping = "val_macrof1"
-			model, train_history_df = train_model(
+			model, train_history_df, best_epoch, best_score = train_model(
 				model, device,
 				train_loader, val_loader,
 				optimizer, lr_sched, criterion,
 				fold_model_path,
-				early_stopping
 			)
 
+			# Verifica la correttezza della miglior epoca e del miglior punteggio.
+			selected_row = train_history_df.loc[train_history_df["epoch"] == best_epoch]
+			if len(selected_row) != 1:
+				raise RuntimeError(
+					f"L'epoca del checkpoint ({best_epoch}) "
+					"non è identificata univocamente nello storico."
+				)
+
+			history_score = float(selected_row.iloc[0][session_config.training.monitored_metric])
+			if not np.isclose(history_score, best_score):
+				raise RuntimeError(
+					f"Il punteggio nello storico ({history_score:.2f}) "
+					f"non corrisponde al miglior punteggio ({best_score:.2f})."
+				)
+			
 			# Salva lo storico delle metriche di addestramento e validazione in un file CSV.
 			if runtime_config.flags.save_output:
 				train_history_df.to_csv(
@@ -1381,6 +1405,7 @@ def main(cli_overrides: bool):
 				session_config.model.n_qubits \
 				if 'ange' in session_config.model.name \
 				else 2 ** session_config.model.n_qubits
+			# q_input = model.processing_block.input_dim
 
 			dummy_x = torch.zeros(q_input)
 
@@ -1391,36 +1416,38 @@ def main(cli_overrides: bool):
 		#	Disegno dei grafici di loss / accuracy su Train / Val.
 
 		if runtime_config.launch.exec_mode_train and runtime_config.flags.save_output:
-			# Calcolo dell'epoca con validation loss minima per evidenziarla nel grafico.
-			# best_epoch = int(np.argmin(train_history_df['val_loss'].to_list())) +1
-			best_epoch = \
-				train_history_df['val_loss'].idxmin() + 1 \
-				if early_stopping == "val_loss" \
-				else train_history_df['val_macrof1'].idxmax() + 1
+
+			score_text = \
+				f"{best_score:.2f}%" \
+				if session_config.training.monitored_metric == "val_accuracy" \
+				else f"{best_score:.4f}"
+
+			fig, axes = plt.subplots(1, 3, figsize=(18, 5), layout='constrained')
 			
-			best_score = train_history_df[early_stopping].iloc[best_epoch-1]
-
-			# TODO: aggiustare plot training e validation per includere anche macrof1
-
-			plt.figure(figsize=(12, 5))
-			plt.tight_layout()
-			# plt.title(
-			# 	"Metriche di addestramento | "
-			# 	f"Miglior punteggio ({early_stopping}): {best_score:.2f}% | Miglior epoca: {best_epoch} )"
-			# )
-			loss_plot = plt.subplot(1, 2, 1)
-			acc_plot = plt.subplot(1, 2, 2)
-
-			draw_train_val_plot(
-				loss_plot, 'Loss',
-				train_history_df['train_loss'].to_list(), train_history_df['val_loss'].to_list(),
-				best_epoch
+			fig.suptitle(
+				"Metriche di addestramento | "
+				f"Checkpoint: epoch {best_epoch} | "
+				f"{session_config.training.monitored_metric}: {score_text}"
 			)
 
 			draw_train_val_plot(
-				acc_plot, 'Accuracy',
-				train_history_df['train_accuracy'].to_list(), train_history_df['val_accuracy'].to_list(),
-				best_epoch
+				axes[0], "Loss",
+				train_history_df["train_loss"].to_list(),
+				train_history_df["val_loss"].to_list(),
+				best_epoch,
+			)
+
+			draw_train_val_plot(
+				axes[1], "Accuracy (%)",
+				train_history_df["train_accuracy"].to_list(),
+				train_history_df["val_accuracy"].to_list(),
+				best_epoch,
+			)
+
+			draw_train_val_plot(
+				axes[2], "Macro-F1 (%)",
+				None, train_history_df["val_macrof1"].to_list(),
+				best_epoch,
 			)
 
 			plt.savefig(fold_plots_path, bbox_inches='tight')

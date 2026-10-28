@@ -16,6 +16,10 @@ import torch
 import torch.nn as nn
 import pennylane as qml
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+	from Source.configuration import SessionConfig
+
 #	####################################################################	#
 #	Funzioni di utilità
 
@@ -253,8 +257,6 @@ class _CNNLSTMFeatureExtractor(nn.Module):
 				batches, channels, packets, features = shape
 				lstm_input_size = channels * features
 
-		print("LSTM input size:", lstm_input_size)
-
 		self.lstm = nn.LSTM(lstm_input_size, 100, batch_first=True)
 		self.fc1 = nn.Linear(100, self.output_dim)
 
@@ -323,10 +325,7 @@ class QuantumBlock(nn.Module):
 			raise ValueError("Il tipo di embedding deve essere 'amplitude' o 'angle'.")
 		self.embedding = embedding
 
-		if diff_method not in ['backprop', 'parameter-shift']:
-			raise ValueError("Il metodo di differenziazione deve essere 'backprop' o 'parameter-shift'.")
-		if diff_method == 'backprop' and n_shots is not None:
-			raise ValueError("Per il metodo di differenziazione 'backprop', il valore di 'n_shots' deve essere None. Utilizzare 'parameter-shift'.")
+		# Controllo già eseguito in configuration.py
 		self.diff_method = diff_method
 
 		self.q_layers = q_layers
@@ -567,24 +566,15 @@ MODEL_REGISTRY = {
 }
 
 def select_model(
-		model_name: str,
-		n_features: int, n_packets: int, num_classes: int,
-		q_layers: int, n_qubits: int, n_shots: int,
-		random_seed: int, dev_name: str, diff_method: str = None
+		num_classes: int,
+		random_seed: int,
+		sc: "SessionConfig"
 	) -> nn.Module:
 	"""Seleziona e restituisce il modello specificato.
 
 	Args:
-		model_name (str): Nome del modello da selezionare.
-		n_features (int): Numero di feature per pacchetto.
-		n_packets (int): Numero di pacchetti nell'input.
 		num_classes (int): Numero di classi per la classificazione.
-		q_layers (int): Numero di layer nel circuito quantistico (se applicabile).
-		n_qubits (int): Numero di qubit nel circuito quantistico (se applicabile).
-		n_shots (int): Numero di ripetizioni per il circuito quantistico (se applicabile).
-		random_seed (int): Seed per la generazione casuale (se applicabile).
-		dev_name (str): Nome del dispositivo quantistico (se applicabile).
-		diff_method (str): Metodo di differenziazione per il circuito quantistico (se applicabile). Default è None.
+		sc (SessionConfig): Configurazione dei parametri di sessione per l'esperimento corrente.
 
 	Raises:
 		NotImplementedError: Se il modello specificato non è supportato.
@@ -594,26 +584,26 @@ def select_model(
 	"""
 
 	params = {
-		"n_features": n_features,
-		"n_packets": n_packets,
+		"n_features": sc.dataset.n_features,
+		"n_packets": sc.dataset.n_packets,
 		"num_classes": num_classes,
 	}
 
 	try:
-		model : _BaseModel = MODEL_REGISTRY[model_name]
+		model : _BaseModel = MODEL_REGISTRY[sc.model.name]
 	except KeyError as exc:
 		raise NotImplementedError(
-			f'Modello {model_name!r} non supportato.\n'
+			f'Modello {sc.model.name} non supportato.\n'
 			f'Modelli disponibili: {", ".join(tuple(MODEL_REGISTRY))}.') from exc
 
 	if model.is_quantum:
 		params.update({
-			"n_qubits": n_qubits,
-			"q_layers": q_layers,
-			"n_shots": n_shots,
 			"random_seed": random_seed,
-			"dev_name": dev_name,
-			"diff_method": diff_method,
+			"n_qubits": sc.model.quantum.n_qubits,
+			"q_layers": sc.model.quantum.q_layers,
+			"n_shots": sc.model.quantum.n_shots,
+			"dev_name": sc.model.quantum.simulator,
+			"diff_method": sc.model.quantum.diff_method,
 		})
 	
 	return model(**params)

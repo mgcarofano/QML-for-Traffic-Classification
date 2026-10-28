@@ -65,7 +65,8 @@ def train_epoch(
         labels = labels.to(device, dtype=torch.long, non_blocking=(device.type != "cpu"))
 
         # Azzeramento dei gradienti dell'ottimizzatore.
-        optimizer.zero_grad(set_to_none=True)
+        if optimizer is not None:
+            optimizer.zero_grad(set_to_none=True)
 
         # FORWARD PASS: calcolo delle predizioni del modello sul batch corrente.
         outputs = model(inputs, lengths)

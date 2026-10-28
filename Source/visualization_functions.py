@@ -9,154 +9,145 @@
 """
 
 #   ####################################################################    #
-#   LIBRERIE
+#   Librerie
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import seaborn as sns
 
 #   ####################################################################    #
 #   Funzioni di utilità
 
-def get_plot_epoch_ticks(
-		num_epochs : int,
-		best_epoch_num: int
-	) -> tuple[np.ndarray, list[str]]:
-	"""Genera i tick per per l'asse X di un grafico
-	che mostra l'andamento di loss/accuracy in funzione delle epoche.
+def configure_metric_y_ticks(
+		p: plt.Axes,
+		minimum: float,
+		maximum: float,
+		selected_value: float,
+		max_ticks: int = 8,
+		min_gap_fraction: float = 0.10,
+	) -> None:
+	"""Configura i tick Y preservando minimo, massimo e checkpoint.
 
-	I tick includono sempre:
-    - la prima epoca;
-    - la miglior epoca;
-    - L'ultima epoca;
-    - ulteriori valori intermedi uniformemente distribuiti.
+	I tick intermedi troppo vicini a quelli già selezionati
+	vengono esclusi.
 
-	Args:
-		num_epochs (int): Numero totale di epoche.
-		best_epoch_num (int): Numero dell'epoca con la migliore performance.
+	Se due tick obbligatori sono vicini, le loro etichette
+	vengono allineate in direzioni opposte per ridurre
+	la sovrapposizione.
 
-	Returns:
-		tuple: Una tupla contenente gli indici dei tick e le etichette corrispondenti.
+	I valori coincidenti sono rappresentati da un solo tick.
 	"""
 
-	# Il totale numero di tick da visualizzare è limitato a 10.
-	num_ticks = min(10, num_epochs)
-
-	# Si distribuiscono uniformemente i tick,
-	# includendo sempre la prima e l'ultima epoca.
-	tick_indices = np.linspace(
-		start=1, stop=num_epochs,
-		num=num_ticks,
-		dtype=int
+	values = np.asarray(
+		[minimum, maximum, selected_value],
+		dtype=float,
 	)
 
-	# Si inserisce manualmente l'epoca con la migliore performance.
-	tick_indices = np.unique(
-		np.append(tick_indices, best_epoch_num)
-	)
+	if not np.all(np.isfinite(values)):
+		raise ValueError("I valori dei tick devono essere finiti.")
 
-	# Se l'inserimento della best epoch porta a più di 10 tick,
-	# si rimuove il tick intermedio più vicino alla best epoch,
-	# mantenendo sempre la prima, la best e l'ultima epoca.
-	while len(tick_indices) > num_ticks:
-		removable = [
-			tick for tick in tick_indices
-			if tick not in {1, best_epoch_num, num_epochs}
-		]
-
-		if not removable:
-			break
-
-		tick_to_remove = min(
-			removable,
-			key=lambda tick: abs(tick - best_epoch_num)
+	if not minimum <= selected_value <= maximum:
+		raise ValueError(
+			"selected_value deve essere compreso "
+			"tra minimum e maximum."
 		)
 
-		tick_indices = tick_indices[tick_indices != tick_to_remove]
+	if max_ticks < 3:
+		raise ValueError("max_ticks deve essere almeno 3.")
 
-		# end while
-
-	tick_indices = np.sort(tick_indices)
-	tick_labels = [str(epoch) for epoch in tick_indices]
-
-	return tick_indices, tick_labels
-
-	# end
-
-def get_plot_metric_ticks(
-    min_value : float,
-	max_value : float,
-	best_value : float,
-) -> tuple[np.ndarray, list[str]]:
-	"""Genera i tick per per l'asse Y di un grafico
-	che mostra l'andamento di loss/accuracy in funzione delle epoche.
-
-	I tick includono sempre:
-    - il valore minimo della metrica;
-    - il valore della metrica nella best epoch;
-    - il valore massimo della metrica;
-    - ulteriori valori intermedi uniformemente distribuiti.
-
-    Args:
-        metric_history (list[float]): Valori storici della metrica, uno per epoca.
-        best_epoch_num (int): Numero dell'epoca migliore, in formato 1-based.
-
-    Returns:
-        tuple[np.ndarray, list[str]]: Array dei valori dei tick e relative
-        etichette formattate.
-    """
-
-	# Caso limite: tutti i valori della metrica sono vicinissimi.
-	if np.isclose(min_value, max_value):
-		tick_values = np.array([min_value])
-		tick_labels = [f"{min_value:.4f}"]
-
-		return tick_values, tick_labels
-
-	# Il totale numero di tick da visualizzare è limitato a 10,
-	# uniformemente distribuiti tra minimo e massimo.
-	max_num_ticks = 10
-	tick_values = np.linspace(
-		start=min_value,
-		stop=max_value,
-		num=max_num_ticks
-	)
-
-	# Si inserisce il valore della metrica relativo alla best epoch.
-	tick_values = np.unique(
-		np.append(tick_values, best_value)
-	)
-
-	# Se sono presenti più di 10 tick, rimuove quello intermedio
-	# più vicino al valore della best epoch, preservando minimo,
-	# valore best epoch e massimo.
-	while len(tick_values) > max_num_ticks:
-		removable = [
-			tick for tick in tick_values
-			if not np.isclose(tick, min_value)
-			and not np.isclose(tick, best_value)
-			and not np.isclose(tick, max_value)
-		]
-
-		if not removable:
-			break
-
-		tick_to_remove = min(
-			removable,
-			key=lambda tick: abs(tick - best_value)
+	if not 0 < min_gap_fraction < 0.5:
+		raise ValueError(
+			"min_gap_fraction deve essere compreso tra 0 e 0.5."
 		)
 
-		tick_values = tick_values[~np.isclose(tick_values, tick_to_remove)]
+	# Conserva i limiti impostati dal grafico.
+	y_min, y_max = p.get_ylim()
 
-		# end while
+	# np.unique elimina soltanto i valori esattamente coincidenti.
+	# Non usiamo np.isclose(): potrebbe eliminare un estremo
+	# distinto ma molto vicino al valore del checkpoint.
+	mandatory_ticks = np.unique(values)
 
-	# Si ordinano i tick in ordine crescente.
-	tick_values = np.sort(tick_values)
+	data_span = maximum - minimum
 
-	# Per loss e accuracy, 4 decimali costituiscono un buon default.
-	tick_labels = [f"{tick:.4f}" for tick in tick_values]
+	if data_span == 0:
+		ticks = mandatory_ticks
 
-	return tick_values, tick_labels
+	else:
+		min_gap = min_gap_fraction * data_span
+
+		# Candidati intermedi con valori "regolari".
+		locator = MaxNLocator(nbins=max_ticks - 1)
+
+		candidates = locator.tick_values(minimum, maximum)
+		candidates = candidates[
+			(candidates > minimum)
+			& (candidates < maximum)
+		]
+
+		selected_ticks = mandatory_ticks.tolist()
+
+		for candidate in candidates:
+			if len(selected_ticks) >= max_ticks:
+				break
+
+			distances = np.abs(
+				np.asarray(selected_ticks) - candidate
+			)
+
+			if np.all(distances >= min_gap):
+				selected_ticks.append(float(candidate))
+
+		ticks = np.sort(np.asarray(selected_ticks))
+
+	# Aumenta la precisione, se necessario, affinché valori
+	# distinti non ricevano la stessa etichetta arrotondata.
+	labels = None
+
+	for precision in range(6, 18):
+		candidate_labels = [
+			f"{value:.{precision}g}"
+			for value in ticks
+		]
+
+		if len(set(candidate_labels)) == len(candidate_labels):
+			labels = candidate_labels
+			break
+
+	if labels is None:
+		labels = [repr(float(value)) for value in ticks]
+
+	# Fissa insieme posizioni ed etichette.
+	p.set_yticks(ticks, labels=labels)
+
+	# set_yticks() può espandere i limiti: ripristinali.
+	p.set_ylim(y_min, y_max)
+
+	tick_labels = p.get_yticklabels()
+
+	for value, label in zip(ticks, tick_labels):
+		label.set_verticalalignment("center")
+		label.set_color("black")
+		label.set_fontweight("normal")
+
+		if value == selected_value:
+			label.set_color("red")
+			label.set_fontweight("bold")
+
+	# Gestione delle coppie di tick obbligatori vicini.
+	# I tick intermedi sono già stati filtrati.
+	if data_span > 0:
+		min_gap = min_gap_fraction * data_span
+
+		for index in range(len(ticks) - 1):
+			distance = ticks[index + 1] - ticks[index]
+
+			if distance < min_gap:
+				# Il testo del valore inferiore si sviluppa
+				# sotto il suo tick; quello superiore sopra.
+				tick_labels[index].set_verticalalignment("top")
+				tick_labels[index + 1].set_verticalalignment("bottom")
 
 	# end
 
@@ -170,46 +161,98 @@ def draw_train_val_plot(
 		val_values: list[float],
 		best_epoch: int
 	) -> None:
+	"""Disegna le metriche di loss e accuracy per la fase di addestramento e validazione del modello ed evidenzia la migliore epoca del checkpoint in base al valore della metrica di valutazione selezionata.
 
-	num_epochs = len(train_values)
-	epochs_range = range(1, num_epochs + 1)
-	best_value = float(val_values[best_epoch -1])
+	Il checkpoint viene evidenziato con:
+	- Una linea verticale all'epoca migliore;
+	- Una linea orizzontale al valore corrispondente alla metrica all'epoca migliore;
+	- Un punto rosso sul valore della metrica all'epoca migliore;
 
-	p.plot(epochs_range, train_values, label=f'Train {metric_name}')
-	p.plot(epochs_range, val_values, label=f'Val {metric_name}')
-	p.set_title(f'{metric_name} over Epochs')
-	p.set_xlabel('Epoch')
-	p.set_ylabel(metric_name)
-	p.legend()
+
+	Args:
+		p (plt.Axes): L'oggetto Axes su cui disegnare il grafico.
+		metric_name (str): Nome della metrica da visualizzare (es. 'Loss' o 'Accuracy').
+		train_values (list[float]): Valori della metrica sul set di addestramento per ogni epoca.
+		val_values (list[float]): Valori della metrica sul set di validazione per ogni epoca.
+		best_epoch (int): Numero dell'epoca migliore, in formato 1-based.
+	"""
+
+	#   ################################################################    #
+	#	Inizializzazione e validazione dei dati di input.
+
+	def check_input(values, name="values"):
+		values = np.asarray(values, dtype=float)
+
+		if values.ndim != 1 or values.size == 0:
+			raise ValueError(f"{name} deve essere una sequenza 1D non vuota.")
+
+		if not np.all(np.isfinite(values)):
+			raise ValueError(f"{name} contiene valori non finiti.")
+
+		return values
+
+		# end
+
+	val = check_input(val_values, name="val_values")
+	train = check_input(train_values, name="train_values") if train_values is not None else None
+
+	if train is not None and train.size != val.size:
+		raise ValueError("train_values e val_values devono essere sequenze 1D della stessa lunghezza.")
+	
+	if not 1 <= int(best_epoch) <= val.size:
+		raise ValueError(f"Il numero della migliore epoca deve essere compreso tra 1 e {val.size}.")
+
+	epochs = np.arange(1, val.size + 1)
+	selected_value = float(val[best_epoch - 1])
+
+	all_values = val if train is None else np.concatenate((train, val))
+	lower = float(all_values.min())
+	upper = float(all_values.max())
+
+	margin = (
+		(upper - lower) * 0.05
+		if upper > lower
+		else max(abs(lower) * 0.05, 1e-6)
+	)
+
+	#   ################################################################    #
+	#	Disegno delle curve e del checkpoint selezionato.
+
+	if train is not None:
+		p.plot(epochs, train, label=f"Train {metric_name}")
+	p.plot(epochs, val, label=f"Val {metric_name}")
 
 	p.axvline(
 		best_epoch,
-		color='red', linestyle='--', dashes=(10, 15), linewidth=0.7,
-		# label=f'Best epoch ({best_epoch})'
+		color="red", linestyle="--", linewidth=0.8,
+		label=f"Checkpoint: epoch {best_epoch}",
 	)
 
 	p.axhline(
-		best_value,
-		color='red', linestyle='--', dashes=(10, 15), linewidth=0.7,
-		# label=f'Best epoch ({best_epoch})'
+		selected_value,
+		color="red", linestyle="--", linewidth=0.8,
 	)
 
-	epoch_indices, epoch_labels = get_plot_epoch_ticks(num_epochs, best_epoch)
-
-	p.set_xticks(epoch_indices)
-	p.set_xticklabels(epoch_labels)
-	p.set_xlim(0.5, num_epochs + 0.5)
-
-	metric_indices, metric_labels = get_plot_metric_ticks(
-		float(np.min(train_values + val_values)),
-		float(np.max(train_values + val_values)),
-		best_value
+	p.scatter(
+		[best_epoch], [selected_value],
+		color="red", zorder=5,
 	)
 
-	margin = (metric_indices[-1] - metric_indices[0]) * 0.05
-	p.set_yticks(metric_indices)
-	p.set_yticklabels(metric_labels)
-	p.set_ylim(metric_indices[0] - margin, metric_indices[-1] + margin)
+	#   ################################################################    #
+	#   Aggiunta dei metadati ai grafici.
+
+	p.set_title(f"{metric_name} over Epochs")
+	p.set_xlabel("Epoch")
+	p.set_ylabel(metric_name)
+	
+	p.set_xlim(0.5, val.size + 0.5)
+	p.xaxis.set_major_locator(MaxNLocator(nbins=10, integer=True))
+	
+	p.set_ylim(lower - margin, upper + margin)
+	configure_metric_y_ticks(p, lower, upper, selected_value, 10, 0.10)
+
+	p.grid(alpha=0.2)
+	p.legend()
 
 	# end
 

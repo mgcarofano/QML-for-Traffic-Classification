@@ -343,7 +343,10 @@ class PreprocessingConfig:
 			raise ValueError("Strategia di preprocessing non definita.")
 
 		if self.strategy not in ["MinMax"]:
-			raise NotImplementedError(f"Strategia di preprocessing non supportata: {self.strategy}")
+			raise NotImplementedError(
+				f"Strategia di preprocessing non supportata: {self.strategy}\n"
+				"Strategie disponibili: ['MinMax']."
+			)
 
 		# end
 
@@ -539,10 +542,16 @@ class TrainingConfig:
 	""" Size of the mini-batches used during training. Default is 50. """
 	
 	early_stopping: bool
-	""" Whether to use early stopping during training. """
+	""" Whether to use early stopping during training. Default is True. """
+
+	monitored_metric: str
+	""" Name of the metric to monitor for early stopping. """
 	
 	patience: int
-	""" Number of epochs to wait for improvement before stopping training. If None, it will be automatically calculated based on the total number of epochs. """
+	""" Number of epochs to wait for improvement before stopping training. Default is None, meaning it will be automatically calculated based on the total number of epochs. """
+
+	min_delta: float
+	""" Minimum change in the monitored metric to qualify as an improvement. Default is 0.001. """
 
 	@classmethod
 	def from_defaults(cls, epochs = 40, patience = None) -> "TrainingConfig":
@@ -555,7 +564,9 @@ class TrainingConfig:
 			epochs= epochs,
 			batch_size= 50,
 			early_stopping= True,
+			monitored_metric= "val_macrof1",
 			patience= patience,
+			min_delta= 0.001,
 		)
 
 		# end
@@ -578,18 +589,35 @@ class TrainingConfig:
 		# end
 
 	def __post_init__(self) -> None:
+		import numpy as np
+
 		check_positive_int('epochs', self.epochs)
 		check_positive_int('batch_size', self.batch_size)
 		check_positive_int('patience', self.patience)
 
+		if self.monitored_metric not in ["val_loss", "val_accuracy", "val_macrof1"]:
+			raise ValueError(
+				f"Metrica di valutazione non valida: {self.monitored_metric}. "
+				"Opzioni disponibili: ['val_loss', 'val_accuracy', 'val_macrof1']."
+			)
+
+		if not np.isfinite(self.min_delta) or self.min_delta < 0:
+			raise ValueError("La soglia di miglioramento deve essere finita e non negativa.")
+
 		# end
 	
 	def __repr__(self) -> str:
-		patience_str = f" | Patience: {self.patience}" if self.early_stopping else ""
+		es_str = \
+			f"{self.early_stopping}" \
+			f" | Monitored metric: {self.monitored_metric}" \
+			f" | Patience: {self.patience}" \
+			f" | Min delta: {self.min_delta}" \
+			if self.early_stopping else "disabled"
 
-		return f"[TRAINING] " \
+		return \
+			f"[TRAINING] " \
 			f"Epochs: {self.epochs} | Batch size: {self.batch_size}\n" \
-			f"           Early stopping: {self.early_stopping}{patience_str}"
+			f"           Early stopping: {es_str}"
 
 	# end class
 
@@ -641,10 +669,10 @@ class OptimizerConfig:
 		)
 
 	def __post_init__(self) -> None:
-		if self.name not in ["Adam", "AdamW", "SGD", "RMSprop"]:
+		if self.name not in ['Adam', 'AdamW', 'SGD', 'RMSprop']:
 			raise NotImplementedError(
 				f"Tipo di optimizer non supportato: {self.name}. "
-				"Usare: 'Adam', 'AdamW', 'SGD' oppure 'RMSprop'."
+				"Optimizer disponibili: ['Adam', 'AdamW', 'SGD', 'RMSprop']."
 			)
 
 		if self.learning_rate <= 0:
@@ -710,10 +738,10 @@ class SchedulerConfig:
 		# end
 
 	def __post_init__(self) -> None:
-		if self.name not in ["OneCycleSched", "LinearSched", "StepSched", "NoSched"]:
+		if self.name not in ['OneCycleSched', 'LinearSched', 'StepSched', 'NoSched']:
 			raise NotImplementedError(
 				f"Tipo di scheduler non supportato: {self.name}. "
-				"Usare: 'OneCycleSched', 'LinearSched', 'StepSched' oppure 'NoSched'."
+				"Scheduler disponibili: ['OneCycleSched', 'LinearSched', 'StepSched', 'NoSched']."
 			)
 
 		if self.name == "OneCycleSched" and self.max_lr <= 0:
@@ -765,15 +793,21 @@ class LossConfig:
 		)
 
 	def __post_init__(self) -> None:
-		if self.name not in ["CrossEntropy", "WeightedCrossEntropy", "Focal"]:
-			raise NotImplementedError(f"Loss {self.name} non supportata. Loss disponibili: ['CrossEntropy', 'WeightedCrossEntropy', 'Focal']")
+		if self.name not in ['CrossEntropy', 'WeightedCrossEntropy', 'Focal']:
+			raise NotImplementedError(
+				f"Loss {self.name} non supportata. "
+				"Loss disponibili: ['CrossEntropy', 'WeightedCrossEntropy', 'Focal']."
+			)
 
 		if self.name == "Focal":
 			if self.focal_alpha is None:
 				raise ValueError("Il parametro 'focal_alpha' deve essere specificato per la Focal Loss.")
 			
 			if self.focal_alpha not in ["class_weights", "uniform"]:
-				raise NotImplementedError(f"Parametro focal_alpha '{self.focal_alpha}' non supportato. Opzioni disponibili: ['class_weights', 'uniform']")
+				raise NotImplementedError(
+					f"Parametro focal_alpha '{self.focal_alpha}' non supportato. \n"
+					"Opzioni disponibili: ['class_weights', 'uniform']."
+				)
 		
 			if self.focal_gamma is None:
 				raise ValueError("Il parametro 'focal_gamma' deve essere specificato per la Focal Loss.")
@@ -791,12 +825,9 @@ class LossConfig:
 	# end class
 
 @dataclass(frozen=True)
-class ModelConfig:
-	name: str
-	""" Selected model for the network. Default is "hybrid". """
-	
+class QuantumConfig:
 	simulator: str
-	""" Name of the quantum simulator to use with PennyLane. """
+	""" Name of the quantum simulator used by PennyLane. """
 	
 	n_qubits: int
 	""" Number of qubits in the quantum circuit. """
@@ -808,29 +839,25 @@ class ModelConfig:
 	""" Represents the depth of the StronglyEntanglingLayers ansatz. Default is 3. """
 
 	diff_method: str
-	""" Differentiation method for the quantum circuit. """
+	""" Differentiation method supported by QuantumBlock. """
 
 	@classmethod
-	def from_defaults(cls) -> "ModelConfig":
-
+	def from_defaults(cls) -> "QuantumConfig":
 		return cls(
-			name= "baseline",
 			simulator= "default.qubit",
-			q_layers= 3,
 			n_qubits= 5,
 			n_shots= None,
+			q_layers= 3,
 			diff_method= "backprop",
 		)
 
 		# end
 
 	@classmethod
-	def from_args(cls, args: Namespace) -> "ModelConfig":
-		changes = _overrides(cls, args, "model")
-
+	def from_args(cls, args: Namespace) -> "QuantumConfig":
 		return replace(
 			cls.from_defaults(),
-			**changes,
+			**_overrides(cls, args, "model.quantum"),
 		)
 
 		# end
@@ -839,31 +866,86 @@ class ModelConfig:
 		if self.simulator not in ["default.qubit"]:
 			raise NotImplementedError(
 				f"Simulatore {self.simulator} non supportato. "
-				f"Simulatori disponibili: ['default.qubit']"
+				"Simulatori disponibili: ['default.qubit']."
 			)
 
-		if self.name not in MODEL_REGISTRY:
-			raise NotImplementedError(
-				f"Modello '{self.name}' non supportato. "
-				f"Modelli disponibili: {str(MODEL_REGISTRY.keys())}"
-			)
-		
 		check_positive_int('n_qubits', self.n_qubits)
-		check_positive_int('n_shots', self.n_shots) if self.n_shots is not None else None
 		check_positive_int('q_layers', self.q_layers)
+
+		if self.n_shots is not None:
+			check_positive_int('n_shots', self.n_shots)
+
+		if self.diff_method not in ("backprop", "parameter-shift"):
+			raise NotImplementedError(
+				f"Metodo di differenziazione '{self.diff_method}' non supportato. \n"
+				"Opzioni disponibili: ['backprop', 'parameter-shift']."
+			)
+
+		if self.diff_method == "backprop" and self.n_shots is not None:
+			raise ValueError(
+				"Per il metodo di differenziazione 'backprop', "
+				"il valore di 'n_shots' deve essere None. "
+				"Utilizzare 'parameter-shift'."
+			)
 
 		# end
 
 	def __repr__(self) -> str:
-		quantum_str = \
-			f" | Layers: {self.q_layers}" \
+		return \
+			f"[QUANTUM] Layers: {self.q_layers}" \
 			f" | Simulator: {self.simulator}" \
 			f" | Qubits: {self.n_qubits}" \
 			f" | Shots: {self.n_shots}"
 
-		# TODO: aggiungere "classic" o "quantum" in base al tipo di modello.
+		# end
 
-		return f"[MODEL] {self.name}{quantum_str}"
+@dataclass(frozen=True)
+class ModelConfig:
+	name: str
+	""" Selected model. Default is 'baseline'. """
+
+	quantum: QuantumConfig
+	""" A custom object containing the quantum configuration for the model. Whether the model uses a quantum configuration or not is determined by "is_quantum" property. """
+
+	@classmethod
+	def from_defaults(cls) -> "ModelConfig":
+		return cls(
+			name= "baseline",
+			quantum= None
+		)
+
+		# end
+
+	@classmethod
+	def from_args(cls, args: Namespace) -> "ModelConfig":
+		changes = _overrides(cls, args, "model")
+		changes["quantum"] = QuantumConfig.from_args(args)
+
+		return replace(
+			cls.from_defaults(),
+			**changes,
+		)
+
+		# end
+
+	@property
+	def is_quantum(self) -> bool:
+		return MODEL_REGISTRY[self.name].is_quantum
+
+	def __post_init__(self) -> None:
+		if self.name not in MODEL_REGISTRY:
+			raise NotImplementedError(
+				f"Modello '{self.name}' non supportato. "
+				f"Modelli disponibili: {sorted(MODEL_REGISTRY)}"
+			)
+
+		# end
+
+	def __repr__(self) -> str:
+		model_type = "quantum" if self.is_quantum else "classic"
+		model_params = f" | {repr(self.quantum)}" if self.is_quantum else ""
+
+		return f"[MODEL] {self.name} ({model_type}){model_params}"
 
 		# end
 
@@ -1152,6 +1234,9 @@ class SessionConfig:
 					filters=traffic_filters,
 				)
 
+				model_dict = dict(session_dict["model"])
+				model_dict["quantum"] = QuantumConfig(**model_dict["quantum"])
+
 				dataset = DatasetConfig(**session_dict["dataset"])
 				preprocessing = PreprocessingConfig(**session_dict["preprocessing"])
 				kfold = CrossValidationConfig(**session_dict["kfold"])
@@ -1159,7 +1244,7 @@ class SessionConfig:
 				optimizer = OptimizerConfig(**session_dict["optimizer"])
 				scheduler = SchedulerConfig(**session_dict["scheduler"])
 				loss = LossConfig(**session_dict["loss"])
-				model = ModelConfig(**session_dict["model"])
+				model = ModelConfig(**model_dict)
 
 			except KeyError as e:
 				raise ValueError(f"Chiave mancante nel file di configurazione: {e}") from e

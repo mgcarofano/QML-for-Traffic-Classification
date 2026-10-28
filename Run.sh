@@ -45,7 +45,8 @@ shift
 
 LOCAL=(
     --kfold.sub_sample_ratio 0.01 --kfold.test_folds 1 --kfold.test_ratio 0.2
-    --training.epochs 3 --training.batch_size 50 --no-training.early_stopping
+    --training.epochs 3 --training.batch_size 50
+    --no-training.early_stopping --training.monitored_metric val_macrof1
 )
 
 PAPER_2025=(
@@ -53,7 +54,7 @@ PAPER_2025=(
     --model.name ampe_fixed_probs
     --kfold.test_folds 1 --kfold.test_ratio 0.2 --kfold.train_ratio 0.9
     --kfold.val_ratio 0.1 --training.epochs 100 --training.batch_size 32
-    --training.early_stopping
+    --training.early_stopping --training.monitored_metric val_accuracy
     --optimizer.name "Adam" --optimizer.learning_rate 0.01
     --optimizer.beta1 0.9 --optimizer.beta2 0.999 --optimizer.epsilon 0.0000001
     --scheduler.name "NoSched"
@@ -62,7 +63,8 @@ PAPER_2025=(
 PAPER_2026=(
     --kfold.test_folds 5 --kfold.train_ratio 0.8 --kfold.val_ratio 0.2
     --training.epochs 100 --training.batch_size 50
-    --training.early_stopping --training.patience 10
+    --training.early_stopping --training.monitored_metric val_accuracy
+    --training.patience 10 --training.min_delta 0
     --optimizer.name "Adam" --optimizer.learning_rate 0.01
     --optimizer.beta1 0.9 --optimizer.beta2 0.999 --optimizer.epsilon 0.0000001
     --loss.name "CrossEntropy"
