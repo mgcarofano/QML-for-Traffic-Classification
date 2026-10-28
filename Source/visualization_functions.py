@@ -12,9 +12,14 @@
 #   Librerie
 
 import numpy as np
+import torch
+import pennylane as qml
+
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import seaborn as sns
+
+from Source.configuration import SessionConfig
 
 #   ####################################################################    #
 #   Funzioni di utilità
@@ -154,6 +159,32 @@ def configure_metric_y_ticks(
 #   ####################################################################    #
 #   Funzioni principali
 
+def draw_quantum_circuit(model, sc: SessionConfig):
+	"""Visualizza il circuito quantistico del modello fornito.
+
+	Args:
+		model: Modello quantistico da visualizzare.
+		sc (SessionConfig): Configurazione dei parametri di sessione per l'esperimento corrente.
+
+	Returns:
+		La figura contenente il circuito quantistico disegnato.
+	"""
+
+	if model is None or not model.is_quantum:
+		raise ValueError("Il modello fornito non è quantistico.")
+
+	q_circuit = model.processing_block.qnode
+	q_weights = model.processing_block.torch_layer.weights
+	q_input = model.processing_block.input_dim
+
+	dummy_x = torch.zeros(q_input)
+
+	ret, _ = qml.draw_mpl(q_circuit)(dummy_x, q_weights)
+
+	return ret
+
+	# end
+
 def draw_train_val_plot(
 		p : plt.Axes,
 		metric_name : str,
@@ -167,7 +198,6 @@ def draw_train_val_plot(
 	- Una linea verticale all'epoca migliore;
 	- Una linea orizzontale al valore corrispondente alla metrica all'epoca migliore;
 	- Un punto rosso sul valore della metrica all'epoca migliore;
-
 
 	Args:
 		p (plt.Axes): L'oggetto Axes su cui disegnare il grafico.

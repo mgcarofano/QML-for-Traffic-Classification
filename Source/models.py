@@ -23,65 +23,63 @@ if TYPE_CHECKING:
 #	####################################################################	#
 #	Funzioni di utilità
 
-def compute_model_name(
-		model_class : str,
-		n_qubits : int = None,
-		q_layers : int = None,
-		n_packets : int = None,
-		n_features : int = None,
-		num_classes : int = None
-	) -> str:
-	"""Restituisce una stringa con il nome del modello che riassume i parametri principali,
-	se disponibili, nel formato 'class_Qn_LSTMn_QLn_Pn_Fn_Cn'.
-
-	Args:
-		model_class (str): Nome della classe del modello.
-		n_qubits (int, optional): Numero di qubit nel circuito quantistico. Default è None.
-		q_layers (int, optional): Numero di layer nel circuito quantistico. Default è None.
-		n_packets (int, optional): Numero di pacchetti nell'input. Default è None.
-		n_features (int, optional): Numero di feature per pacchetto. Default è None.
-		num_classes (int, optional): Numero di classi per la classificazione. Default è None.
-
-	Returns:
-		str: Nome del modello.
-	"""
-
-	fields = (
-		('Q', n_qubits),
-		('QL', q_layers),
-		('P', n_packets),
-		('F', n_features),
-		('C', num_classes)
-	)
-
-	return model_class + ''.join(
-		f'_{key}{value}'
-		for key, value in fields
-		if value is not None
-	)
-
-	# end
-
+@torch.no_grad()
 def weight_init(m: nn.Module) -> None:
-	"""Fills-in weights and biases for convolutional and linear layers. Uses Kaiming uniform initialization for weights (suitable for ReLU/non-linearities) and sets biases to zero. This function is meant to be used with model.apply(), which will call it on every sub-module.
+	"""Inizializzazione esplicita dei layer classici. Applica schemi di inizializzazione specifici per convoluzioni, lineari, batch norm e LSTM. La funzione non intercetta qml.qnn.TorchLayer, quindi non sovrascrive i pesi del circuito quantistico."""
 
-	Args:
-		m (nn.Module): a module of the model.
-	"""	
+	# Inizializzazione per layer convoluzionali.
+	if isinstance(m, (nn.Conv1d, nn.Conv2d)):
+		nn.init.kaiming_uniform_(m.weight, mode="fan_in", nonlinearity="relu")
 
-	if isinstance(m, (nn.Conv2d, nn.Linear)):
-
-		# Good idea would be to use kaiming initialization of scaled orthonormal initialization.
-		nn.init.kaiming_uniform_(
-			m.weight,
-			a=0,
-			mode='fan_in',
-			nonlinearity='relu'
-		)
-
-		# Check if m.bias is enabled.
 		if m.bias is not None:
 			nn.init.zeros_(m.bias)
+
+	# Inizializzazione per layer lineari.
+	elif isinstance(m, nn.Linear):
+		nonlinearity = getattr(m, "_init_nonlinearity", "linear",)
+
+		if nonlinearity == "relu":
+			nn.init.kaiming_uniform_(m.weight, mode="fan_in", nonlinearity="relu")
+		else:
+			nn.init.xavier_uniform_(m.weight, gain=1.0)
+
+		if m.bias is not None:
+			nn.init.zeros_(m.bias)
+
+	# Inizializzazione per layer di normalizzazione batch.
+	elif isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
+		if m.affine:
+			nn.init.ones_(m.weight)
+			nn.init.zeros_(m.bias)
+
+		if m.track_running_stats:
+			m.reset_running_stats()
+
+	# Inizializzazione per layer LSTM.
+	elif isinstance(m, nn.LSTM):
+		for name, parameter in m.named_parameters(recurse=False):
+
+			# La presenza di due bias separati (bias_ih, bias_hh) richiede un'inizializzazione specifica per ciascun gate: Xavier sui pesi di input, ortogonale per gate sui pesi ricorrenti.
+			if name.startswith("weight_ih"):
+				for gate in parameter.chunk(4, dim=0):
+					nn.init.xavier_uniform_(gate)
+
+			elif name.startswith("weight_hh"):
+				for gate in parameter.chunk(4, dim=0):
+					nn.init.orthogonal_(gate)
+
+			elif name.startswith("bias"):
+				nn.init.zeros_(parameter)
+
+				# Gate order: input, forget, cell, output.
+				# Only bias_ih gets +1: total forget bias is 1, not 2.
+				if name.startswith("bias_ih"):
+					hidden_size = m.hidden_size
+					parameter[hidden_size : 2 * hidden_size].fill_(1.0)
+
+	else:
+		# Per altri tipi di layer, non viene applicata alcuna inizializzazione specifica.
+		pass
 
 	return
 
@@ -148,19 +146,19 @@ def select_quantum_device(dev_name, n_qubits, random_seed):
 
 	elif dev_name.startswith("fake"):
 		raise NotImplementedError(
-			"Fake quantum devices are not yet supported."
+			"Fake quantum devices are not yet supported. \n"
 			f"Available devices are: ['default.qubit']"
 		)
 
 	elif dev_name.startswith("ibm"):
 		raise NotImplementedError(
-			"IBM quantum devices are not yet supported."
+			"IBM quantum devices are not yet supported. \n"
 			f"Available devices are: ['default.qubit']"
 		)
 
 	else:
 		raise NotImplementedError(
-			f"Quantum device '{dev_name}' is not supported."
+			f"Quantum device '{dev_name}' is not supported. \n"
 			f"Available devices are: ['default.qubit']"
 		)
 
@@ -184,20 +182,21 @@ class _BaseModel(nn.Module):
 
 		# end
 
-	def get_model_name(self) -> str:
-		return compute_model_name(
-			self.model_label,
-			**{field: getattr(self, field) for field in self.name_fields}
-		)
-
 	# end class
 
 class _FeatureClassifier(_BaseModel):
 	"""Un solo forward per feature -> adapter -> processing -> logits. I componenti vengono assegnati una sola volta, senza alias registrati.
 	"""
 
+	uses_lengths: bool = False
+
 	def forward(self, x, lengths):
-		x = self.feature_extractor(x, lengths)
+
+		if self.uses_lengths:
+			x = self.feature_extractor(x, lengths)
+		else:
+			x = self.feature_extractor(x)
+
 		x = self.input_adapter(x)
 		x = self.processing_block(x)
 
@@ -226,21 +225,18 @@ class _CNNLSTMFeatureExtractor(nn.Module):
 		if self.n_dim not in [1, 2]:
 			raise ValueError("Il valore di n_dim può essere solo 1 o 2.")
 
-		if self.n_packets < 7 or self.n_features < 3:
-			raise ValueError(
-				"CNNLSTM richiede n_packets >= 7 e n_features >= 3 "
-				"per due Conv2d valid con kernel (4, 2)."
-			)
+		# Using padding='same' with even kernel lengths and odd dilation may require a zero-padded copy of the input be created.
+		self.pad2d = nn.ZeroPad2d((0, 1, 1, 2))
 
 		self.conv1 = \
-			nn.Conv2d(1, 32, (4, 2), stride=(1, 1), padding='same') \
+			nn.Conv2d(1, 32, (4, 2), stride=1, padding=0) \
 			if self.n_dim == 2 \
-			else nn.Conv1d(self.n_features, 32, kernel_size=5, padding=2)
+			else nn.Conv1d(self.n_features, 32, kernel_size=5, padding=2, bias=False)
 		
 		self.bn1 = nn.BatchNorm2d(32) if self.n_dim == 2 else nn.BatchNorm1d(32)
 
 		self.conv2 = \
-			nn.Conv2d(32, 64, (4, 2), stride=(1, 1), padding='same', bias=False) \
+			nn.Conv2d(32, 64, (4, 2), stride=1, padding=0, bias=False) \
 			if self.n_dim == 2 \
 			else nn.Conv1d(32, 64, kernel_size=3, padding=1, bias=False)
 		
@@ -248,21 +244,32 @@ class _CNNLSTMFeatureExtractor(nn.Module):
 
 		self.relu = nn.ReLU()
 
-		if self.n_dim == 1:
-			lstm_input_size = 64
-		elif self.n_dim == 2:
+		if self.n_dim == 2:
 			with torch.no_grad():
 				dummy = self.conv1.weight.new_zeros(1, 1, self.n_packets, self.n_features)
-				shape = self.conv2(self.conv1(dummy)).shape
-				batches, channels, packets, features = shape
+				dummy = self.conv1(self.pad2d(dummy))
+				dummy = self.conv2(self.pad2d(dummy))
+
+				batches, channels, packets, features = dummy.shape
 				lstm_input_size = channels * features
 
-		self.lstm = nn.LSTM(lstm_input_size, 100, batch_first=True)
-		self.fc1 = nn.Linear(100, self.output_dim)
+			self.lstm = nn.LSTM(lstm_input_size, 100, batch_first=True)
+			self.fc1 = nn.Linear(100, self.output_dim)
+
+		# Per la TrafficCNN con n_dim == 1, non si utilizza la rete LSTM.
+		else:
+			self.fc1 = nn.Linear(64, self.output_dim)
+
+		# Evita di applicare Kaiming anche al classificatore finale e alle proiezioni verso gli embedding.
+		self.fc1._init_nonlinearity = "relu"
 
 		# end
 
 	def forward(self, x, lengths):
+
+		#	############################################################	#
+		#	Inizializzazione e validazione dell'input.
+
 		if x.ndim != 3 or tuple(x.shape[1:]) != (self.n_packets, self.n_features):
 			raise ValueError(
 				"Errore in _CNNLSTMFeatureExtractor:\n"
@@ -270,35 +277,44 @@ class _CNNLSTMFeatureExtractor(nn.Module):
 				f"Ricevuto: {tuple(x.shape)}."
 			)
 
-		lengths = torch.as_tensor(
-			lengths,
-			dtype=torch.long,
-			device="cpu",
-		)
+		lengths = torch.as_tensor(lengths, dtype=torch.long, device=x.device)
+		valid = torch.arange(x.size(1), device=x.device)[None, :] < lengths[:, None]
 
-		if self.n_dim == 1:
-			out = x.transpose(1, 2)
-		elif self.n_dim == 2:
-			out = x.unsqueeze(1)
+		# Azzera anche eventuali valori di padding modificati dal preprocessing.
+		x = x.masked_fill(~valid.unsqueeze(-1), 0.0)
 
+		#	############################################################	#
+		#	Esecuzione del forward pass.
+
+		out = x.unsqueeze(1) \
+			if self.n_dim == 2 \
+			else x.transpose(1, 2)
+
+		conv_mask = valid[:, None, :, None] \
+			if self.n_dim == 2 \
+			else valid[:, None, :]
+
+		# Dopo l'esecuzione di ogni blocco convoluzionale, applica la maschera per azzerare i valori di padding.
+		out = self.pad2d(out) if self.n_dim == 2 else out
 		out = self.conv1(out)
 		out = self.relu(self.bn1(out))
+		out = out.masked_fill(~conv_mask, 0.0)
+
+		out = self.pad2d(out) if self.n_dim == 2 else out
 		out = self.conv2(out)
 		out = self.relu(self.bn2(out))
+		out = out.masked_fill(~conv_mask, 0.0)
 
-		if self.n_dim == 1:
-			out = out.transpose(1, 2)
-		elif self.n_dim == 2:
+		if self.n_dim == 2:
 			out = out.permute(0, 2, 1, 3).flatten(start_dim=2)
+			out, _ = self.lstm(out)
+			batch_indices = torch.arange(out.size(0), device=out.device)
+			out = out[batch_indices, lengths - 1]
+		else:
+			# out = out.transpose(1, 2)
+			out = out.sum(dim=-1) / lengths.to(out.dtype).unsqueeze(1)
 
-		out, _ = self.lstm(out)
-
-		last_indices = lengths.to(device=out.device, dtype=torch.long) - 1
-		batch_indices = torch.arange(out.size(0), device=out.device)
-		out = out[batch_indices, last_indices]
-
-		out = self.fc1(out)
-		out = self.relu(out)
+		out = self.relu(self.fc1(out))
 
 		return out
 	
@@ -308,7 +324,11 @@ class _CNNLSTMFeatureExtractor(nn.Module):
 #	Definizione del blocco di elaborazione quantistico
 
 class QuantumBlock(nn.Module):
-	"""Blocco di elaborazione Embedding + StronglyEntanglingLayers."""
+	"""Il blocco codifica un vettore classico in uno stato quantistico, applica un ansatz parametrico e restituisce le probabilità di misura sulla base computazionale, riscalate da un fattore apprendibile.
+
+	## Struttura:
+	x -> Embedding(x) -> StronglyEntanglingLayers(weights) -> probs -> probs * logit_scale
+	"""
 
 	def __init__(
 			self, embedding: str, diff_method: str,
@@ -334,11 +354,14 @@ class QuantumBlock(nn.Module):
 
 		self.input_dim = 2 ** self.n_qubits if embedding == 'amplitude' else self.n_qubits
 		self.output_dim = 2 ** self.n_qubits
-		self.dev = select_quantum_device(dev_name, self.n_qubits, random_seed)
+
+		# Fattore di scala apprendibile applicato alle probabilità in uscita dal circuito.
+		self.logit_scale = nn.Parameter(torch.tensor(float(self.output_dim)))
 
 		#	############################################################	#
 		#	Definizione del QNode.
 
+		self.dev = select_quantum_device(dev_name, self.n_qubits, random_seed)
 		wires = tuple(range(self.n_qubits))
 
 		@qml.qnode(self.dev, interface='torch', diff_method=self.diff_method)
@@ -373,6 +396,80 @@ class QuantumBlock(nn.Module):
 
 		# end
 
+	def extra_repr(self) -> str:
+
+		def _format_op(op):
+			args = []
+			for p in getattr(op, "parameters", []):
+				if hasattr(p, "shape"):
+					args.append(f"shape={tuple(p.shape)}")
+				else:
+					args.append(repr(p))
+
+			wires = list(op.wires)
+			args.append(f"wires={wires}")
+
+			# Aggiunge eventuali iperparametri (es. rotation='X' in AngleEmbedding)
+			for k, v in getattr(op, "hyperparameters", {}).items():
+				if k != "wires":
+					args.append(f"{k}='{v}'" if isinstance(v, str) else f"{k}={v}")
+
+			join_str = ', \n    '
+			return f"{op.name}(" \
+				"\n    " \
+				f"{join_str.join(args)}" \
+				"\n  )"
+
+			# end
+
+		# 1. Recupero parametri registrati in PyTorch (weight_shapes)
+		shapes = {name: tuple(p.shape) for name, p in self.torch_layer.named_parameters()}
+
+		# 2. Ispezione dinamica del QNode tramite QuantumTape
+		qnode = self.torch_layer.qnode
+		dev = qnode.device
+
+		# Costruisce il tape usando dummy tensor per ispezionare il circuito reale
+		dummy_inputs = torch.full(
+			(self.input_dim,),
+			self.input_dim ** -0.5,
+			dtype=torch.float32,
+		)
+		dummy_weights = {
+			k: torch.zeros(p.shape, dtype=torch.float32) 
+			for k, p in self.torch_layer.named_parameters()
+		}
+
+		try:
+			tape = qnode.construct((dummy_inputs,), dummy_weights)
+		except Exception as e:
+			return f"<repr non disponibile: {e}>"
+
+		# Estrae la feature map (prima operazione) e l'ansatz (operazioni successive)
+		ops = tape.operations
+		feature_map_str = _format_op(ops[0]) if ops else "None"
+		ansatz_ops = [_format_op(op) for op in ops[1:]]
+		ansatz_str = ", ".join(ansatz_ops) if ansatz_ops else "None"
+
+		# Estrae il processo di misurazione
+		meas_str = ", ".join(repr(m) for m in tape.measurements)
+
+		dev_name = dev.short_name if hasattr(dev, "short_name") else getattr(dev, "name", str(dev))
+		shots = tape.shots
+		diff_method = getattr(qnode, "diff_method", self.diff_method)
+
+		return (
+			f"device='{dev_name}', "
+			f"diff_method='{diff_method}', "
+			f"shots={shots}, \n"
+			f"  feature_map={feature_map_str}, \n"
+			f"  ansatz={ansatz_str}, \n"
+			f"  measurement={meas_str}, \n"
+			f"  weight_shapes={shapes}"
+		)
+
+		# end
+
 	@property
 	def qnode(self):
 		return self.torch_layer.qnode
@@ -382,24 +479,23 @@ class QuantumBlock(nn.Module):
 	def forward(self, x):
 		if x.ndim != 2 or x.shape[-1] != self.input_dim:
 			raise ValueError(
-				"Errore in _CNNLSTMFeatureExtractor:\n"
+				"Errore in QuantumBlock:\n"
 				f"Atteso: (B,{self.input_dim})\n"
 				f"Ricevuto: {tuple(x.shape)}."
 			)
 
-		return self.torch_layer(x)
+		# NOTA
+		# Dato che le probabilità di uscita dal blocco quantistico sommano a 1 (media 1 / 2^n_qubits), senza riscalamento il classificatore lineare successivo riceve ingressi molto piccoli e i logit iniziali restano quasi uguali tra le classi.
+		# Per ovviare a questo problema, moltiplichiamo le probabilità di uscita per un fattore di scala apprendibile (logit_scale), cioè che può poi essere adattato dall'ottimizzatore.
+
+		return self.torch_layer(x) * self.logit_scale
 
 	# end class
 
 class _QuantumModel(_FeatureClassifier):
 	"""Modello quantistico di base."""
 
-	name_fields = [
-		"n_qubits", "q_layers",
-		"n_packets", "n_features", "num_classes"
-	]
 	embedding: str
-	encoder_type: str
 	is_quantum : bool = True
 
 	def __init__(
@@ -412,9 +508,7 @@ class _QuantumModel(_FeatureClassifier):
 
 		super().__init__(n_features, n_packets, num_classes)
 
-		self.n_features = n_features
-		self.n_packets = n_packets
-		self.num_classes = num_classes
+		self.uses_lengths = self.encoder_type == "cnnlstm"
 
 		self.n_qubits = n_qubits
 		self.q_layers = q_layers
@@ -454,6 +548,18 @@ class _QuantumModel(_FeatureClassifier):
 
 	# end class
 
+class AngleActivation(nn.Module):
+	"""Map classical features to angles in (-pi, pi)."""
+
+	def forward(self, x):
+		from math import pi
+
+		return pi * torch.tanh(x)
+
+		# end
+
+	# end class
+
 #	####################################################################	#
 #	Definizione dei modelli
 
@@ -461,7 +567,8 @@ class TrafficCNN(_FeatureClassifier):
 	"""Baseline CNN1D."""
 
 	model_label = "TrafficCNN"
-	name_fields = ["n_features", "n_packets", "num_classes"]
+	encoder_type = 'cnn'
+	uses_lengths = True
 	output_dim = 100
 	is_quantum : bool = False
 
@@ -489,7 +596,8 @@ class CNNLSTMModel(_FeatureClassifier):
 	"""Baseline originale."""
 
 	model_label = "CNNLSTM"
-	name_fields = ["n_features", "n_packets", "num_classes"]
+	encoder_type = 'cnnlstm'
+	uses_lengths = True
 	is_quantum : bool = False
 
 	def __init__(self, n_features: int, n_packets: int, num_classes: int):
@@ -522,16 +630,6 @@ class AmpeDenseModel(_QuantumModel):
 
 	# end class
 
-class AngeDenseModel(_QuantumModel):
-	"""Flatten -> Linear -> ReLU -> Angle(X)/QNN/probs -> Linear."""
-
-	model_label = 'AngeDense'
-	embedding = 'angle'
-	encoder_type = 'dense'
-	input_activation = nn.ReLU
-
-	# end class
-
 class AmpeCNNLSTMModel(_QuantumModel):
 	"""CNNLSTM -> Linear -> Sigmoid -> Amplitude/QNN/probs -> Linear."""
 
@@ -542,13 +640,23 @@ class AmpeCNNLSTMModel(_QuantumModel):
 
 	# end class
 
+class AngeDenseModel(_QuantumModel):
+	"""Flatten -> Linear -> pi*tanh -> Angle(X)/QNN/probs -> Linear."""
+
+	model_label = 'AngeDense'
+	embedding = 'angle'
+	encoder_type = 'dense'
+	input_activation = AngleActivation
+
+	# end class
+
 class AngeCNNLSTMModel(_QuantumModel):
-	"""CNNLSTM -> Linear -> Sigmoid -> Angle(X)/QNN/probs -> Linear."""
+	"""CNNLSTM -> Linear -> pi*tanh -> Angle(X)/QNN/probs -> Linear."""
 	
 	model_label = 'AngeCNNLSTM'
 	embedding = 'angle'
 	encoder_type = 'cnnlstm'
-	input_activation = nn.ReLU
+	input_activation = AngleActivation
 
 	# end class
 
@@ -560,8 +668,8 @@ MODEL_REGISTRY = {
 	"baseline": CNNLSTMModel,
 	# "resnet": ResNetModel,
 	"ampe_fixed_probs": AmpeDenseModel,
-	"ange_probs": AngeDenseModel,
 	"hybrid_ampe_fixed_probs": AmpeCNNLSTMModel,
+	"ange_probs": AngeDenseModel,
 	"hybrid_ange_probs": AngeCNNLSTMModel,
 }
 
@@ -574,6 +682,7 @@ def select_model(
 
 	Args:
 		num_classes (int): Numero di classi per la classificazione.
+		random_seed (int): Il seme casuale da utilizzare per la riproducibilità.
 		sc (SessionConfig): Configurazione dei parametri di sessione per l'esperimento corrente.
 
 	Raises:

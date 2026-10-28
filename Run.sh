@@ -50,7 +50,7 @@ LOCAL=(
 )
 
 PAPER_2025=(
-    --requested_device cpu --model.n_shots None
+    --requested_device cpu --model.quantum.n_shots None
     --model.name ampe_fixed_probs
     --kfold.test_folds 1 --kfold.test_ratio 0.2 --kfold.train_ratio 0.9
     --kfold.val_ratio 0.1 --training.epochs 100 --training.batch_size 32
@@ -73,9 +73,10 @@ PAPER_2026=(
 case "$PRESET" in
     mirage-test) ARGS=("${LOCAL[@]}" --model.name baseline) ;;
     flowpic-test) ARGS=("${LOCAL[@]}" --model.name resnet --dataset.is_flowpic) ;;
+    quantum-test) ARGS=("${LOCAL[@]}" --requested_device cpu --model.name ampe_fixed_probs) ;;
     paper2025) ARGS=("${QML_PAPER_2025[@]}") ;;
     baseline-paper2026) ARGS=("${PAPER_2026[@]}" --model.name baseline) ;;
-    quantum-paper2026) ARGS=("${PAPER_2026[@]}" --requested_device cpu --model.name ampe_fixed_probs --model.n_shots None --model.n_qubits 5) ;;
+    quantum-paper2026) ARGS=("${PAPER_2026[@]}" --requested_device cpu --model.name ampe_fixed_probs --model.quantum.n_shots None --model.quantum.n_qubits 5) ;;
     -h|--help|help|--list) help; exit 0 ;;
     *) echo "Preset sconosciuto: $PRESET. Usare --help." >&2; exit 2 ;;
 esac

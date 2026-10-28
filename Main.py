@@ -35,8 +35,6 @@ from sklearn.model_selection import StratifiedKFold
 # Machine Learning and Quantum ML
 import torch
 import torch.nn as nn
-import pennylane as qml
-# from Source.model_selection import \
 from Source.models import _BaseModel
 from Source.models import \
 	select_model, \
@@ -49,6 +47,7 @@ from Source.training_functions import \
 # Visualization
 import matplotlib.pyplot as plt
 from Source.visualization_functions import \
+	draw_quantum_circuit, \
 	draw_train_val_plot, \
 	draw_confusion_matrix
 from sklearn.metrics import \
@@ -76,6 +75,21 @@ def debug_print(message: str) -> None:
 		print(f"\n[DEBUG] {message}")
 
 	# end
+
+def convert(seconds: float) -> str:
+    # Separa i secondi interi dalla parte decimale
+    sec_int = int(seconds)
+    milliseconds = int(round((seconds - sec_int) * 1000))
+    
+    # Gestione dell'eventuale arrotondamento a 1000 ms
+    if milliseconds >= 1000:
+        sec_int += 1
+        milliseconds -= 1000
+
+    # Formatta ore, minuti e secondi con time.strftime usando l'orario UTC/epoch
+    time_str = time.strftime("%H:%M:%S", time.gmtime(sec_int))
+    
+    return f"{time_str}.{milliseconds:03d}"
 
 #	####################################################################	#
 #	Dispositivo utilizzato per il calcolo.
@@ -520,18 +534,17 @@ def init_model(device, fold_index: int, num_classes: int) -> _BaseModel:
 
 	model : _BaseModel = select_model(
 		num_classes, fold_seed,
-		session_config, runtime_config
+		session_config
 	)
 
-	# Si sposta il modello sul dispositivo corretto (CPU, GPU o MPS)
-	# e si imposta il tipo di dato appropriato.
-	model = \
-		model.to(device).float() \
-		if device.type == 'mps' \
-		else model.to(device).double()
+	# Scelta del tipo di dato appropriato in base al dispositivo.
+	model = model.float() if device.type == "mps" else model.double()
 
-	# Inizializzazione dei pesi del modello.
+	# Inizializzazione dei pesi del modello su CPU.
 	model.apply(weight_init)
+
+	# Trasferimento del modello sul dispositivo selezionato.
+	model = model.to(device)
 
 	return model
 
@@ -743,8 +756,11 @@ def get_model_info(model) -> str:
 	], columns=["Name", "Shape", "Params"])
 
 	return (
+		"Informazioni sul dataset: \n"
+		f"{session_config.dataset!r} | Classes: {model.num_classes} \n\n"
+
 		"Modello selezionato: \n"
-		f"{session_config.model.name} -> {model.get_model_name()} \n\n"
+		f"{session_config.model!r} \n\n"
 
 		"Struttura interna: \n"
 		f"{str(model)} \n\n"
@@ -810,9 +826,10 @@ def train_model(
 		"Orario corrente: "
 		f"{datetime.fromtimestamp(training_start_time).strftime('%Y-%m-%d_%H:%M:%S')}\n\n"
 
-		f"{repr(session_config)}"
-		f"[SAMPLES] Training: {len(train_loader.dataset)} in {len(train_loader)} batches | "
-		f"Validation: {len(val_loader.dataset)} in {len(val_loader)} batches"
+		f"{repr(session_config)} \n"
+		f"[SAMPLES] Training: {len(train_loader.dataset)} in {len(train_loader)} batches"
+		f" | Validation: {len(val_loader.dataset)} in {len(val_loader)} batches"
+		f" | Classes: {model.num_classes} \n"
 	)
 
 	#	################################################################	#
@@ -863,7 +880,6 @@ def train_model(
 		epoch_duration = epoch_end_time - epoch_start_time
 		elapsed_time = epoch_end_time - training_start_time
 
-		
 		# Aggiorna lo storico delle metriche per l'epoca corrente.
 		train_history_df.loc[len(train_history_df)] = {
 			"epoch": epoch,
@@ -880,8 +896,8 @@ def train_model(
 			f"| Val Accuracy: {val_acc:.4f}% "
 			f"| Val Macro F1: {(val_macrof1):.4f}%\n"
 
-			f"Epoch time: {epoch_duration:.2f}s "
-			f"| Elapsed time: {elapsed_time:.2f}s"
+			f"Epoch time: {convert(epoch_duration)} "
+			f"| Elapsed time: {convert(elapsed_time)}"
 		)
 
 		# CHECK : se il punteggio calcolato migliora, salva il modello e resetta il contatore per la patience.
@@ -896,7 +912,7 @@ def train_model(
 
 		if improved:
 			print(
-				f"  -> '{session_config.training.monitored_metric}' improved.\n"
+				f"  -> '{session_config.training.monitored_metric}' improved. \n"
 				f"     Model saved in {fold_model_path}."
 			)
 			torch.save(model.state_dict(), fold_model_path)
@@ -906,13 +922,15 @@ def train_model(
 			patience_counter = 0
 
 		elif session_config.training.early_stopping:
-			print(f"  -> No improvement.")
-
 			patience_counter += 1
+			print(f"  -> No improvement on '{session_config.training.monitored_metric}'.")
 			print(f"     Patience: {patience_counter} of {session_config.training.patience}" if True else "")
 
 		else:
-			print(f"  -> No improvement. Early stopping is disabled.")
+			print(
+				f"  -> No improvement on '{session_config.training.monitored_metric}'. \n" 
+				f"     Early stopping is disabled."
+			)
 
 		# Se il contatore di patience raggiunge il limite
 		# e l'early stopping è abilitato, si interrompe il training.
@@ -926,15 +944,19 @@ def train_model(
 	#	Fine del loop di addestramento.
 
 	training_end_time = time.time()
+	best_score_str = \
+		f"{best_score:.4f}" \
+		if session_config.training.monitored_metric == "val_loss" \
+		else f"{best_score:.4f}%"
 
 	print(
 		"\nAddestramento completato. \n"
 		f"Orario corrente: "
 		f"{datetime.fromtimestamp(training_end_time).strftime('%Y-%m-%d_%H:%M:%S')} \n"
 		f"Tempo di elaborazione: "
-		f"{training_end_time - training_start_time:.2f} secondi. \n"
+		f"{convert(training_end_time - training_start_time)} \n"
 		f"Migliore epoca: {best_epoch} | "
-		f"{session_config.training.monitored_metric}: {best_score:.6f}"
+		f"{session_config.training.monitored_metric}: {best_score_str}"
 	)
 
 	#	################################################################	#
@@ -997,7 +1019,7 @@ def compute_soft_output(
 
 	# Calcola la loss e l'accuratezza per il test set, per valutare le prestazioni del modello su dati mai visti prima.
 	print(f"Test Loss: {test_loss:.4f} | " if test_loss is not None else "", end="")
-	print(f"Test Acc: {test_acc:.2f}%")
+	print(f"Test Acc: {test_acc:.4f}%")
 
 	#	################################################################	#
 	#	Ritorno dei risultati.
@@ -1062,6 +1084,7 @@ def main(cli_overrides: bool):
 	config_path = output_dir / "config.json"
 
 	model_info_path = output_dir / "model_info.txt"
+	q_plot_path = output_dir / "quantum_circuit.png"
 
 	#	-----------------------------------------------------------------	#
 	#	Salvataggio di tutti i parametri di configurazione.
@@ -1185,7 +1208,6 @@ def main(cli_overrides: bool):
 		fold_model_path = fold_results_dir / "model.pth"
 		fold_plots_path = fold_results_dir / "train_val_plots.png"
 		fold_predictions_path = fold_results_dir / "predictions_test.csv"
-		fold_quantum_circuit = fold_results_dir / "quantum_circuit.png"
 		fold_report_path = fold_results_dir / "classification_report.txt"
 
 		#	-------------------------------------------------------------	#
@@ -1303,17 +1325,34 @@ def main(cli_overrides: bool):
 		check_loader_length(test_loader, "il test")
 
 		#	------------------------------------------------------------	#
-		#	Addestramento del modello.
+		#	Inizializzazione del modello.
 
 		model = init_model(device, fold_index, num_classes)
 
+		# Stampa e salvataggio delle informazioni sul modello.
 		if fold_index == 0:
 			model_info = get_model_info(model)
 			debug_print(model_info)
 			with open(model_info_path, "w") as f:
 				f.write(model_info)
 
-		# Per motivi di compatibilità, si inizializza a None.
+		# Visualizzazione e salvataggio del circuito quantistico.
+		if model.is_quantum and runtime_config.flags.save_output:
+			q_plot = draw_quantum_circuit(model, session_config)
+			
+			q_plot.set_size_inches(6, 7.5)
+			q_plot.suptitle("Quantum Circuit")
+			
+			q_plot.savefig(q_plot_path, bbox_inches='tight', pad_inches=0.2,)
+			print(f"\nCircuito quantistico salvato in {q_plot_path}")
+
+			if runtime_config.flags.debug:
+				q_plot.show()
+
+		#	------------------------------------------------------------	#
+		#	Addestramento del modello.
+
+		# Per motivi di compatibilità, 'criterion' si inizializza a None.
 		# Si aggiorna successivamente se la modalità di addestramento è abilitata.
 		criterion = None
 
@@ -1393,24 +1432,6 @@ def main(cli_overrides: bool):
 				print(f"\nStorico delle metriche salvato in {fold_history_path}")
 
 			# end exec_mode_train
-
-		#	------------------------------------------------------------	#
-		#	Visualizzazione del circuito quantistico.
-
-		if model.is_quantum and runtime_config.flags.save_output:
-			q_circuit = model.processing_block.qnode
-			q_weights = model.processing_block.torch_layer.weights
-
-			q_input = \
-				session_config.model.n_qubits \
-				if 'ange' in session_config.model.name \
-				else 2 ** session_config.model.n_qubits
-			# q_input = model.processing_block.input_dim
-
-			dummy_x = torch.zeros(q_input)
-
-			q_circuit_draw, _ = qml.draw_mpl(q_circuit)(dummy_x, q_weights)
-			q_circuit_draw.savefig(fold_quantum_circuit)
 
 		#	------------------------------------------------------------	#
 		#	Disegno dei grafici di loss / accuracy su Train / Val.
@@ -1524,7 +1545,7 @@ def main(cli_overrides: bool):
 		fold_end_time = time.time()
 		print(f"\nFine elaborazione del fold {fold_index + 1}/{len(folds)}")
 		print(f"Orario corrente: {datetime.fromtimestamp(fold_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
-		print(f"Tempo di elaborazione: {fold_end_time - fold_start_time:.2f} secondi")
+		print(f"Tempo di elaborazione: {convert(fold_end_time - fold_start_time)}")
 
 		print(f"\n#  {'-'*20}  #")
 
@@ -1543,7 +1564,7 @@ def main(cli_overrides: bool):
 	print(f"\nElaborazione completata.")
 	print(f"Orario d'inizio: {datetime.fromtimestamp(total_start_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Orario di fine: {datetime.fromtimestamp(total_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
-	print(f"Tempo di elaborazione: {total_end_time - total_start_time:.2f} secondi")
+	print(f"Tempo di elaborazione: {convert(total_end_time - total_start_time)}")
 
 	return
 

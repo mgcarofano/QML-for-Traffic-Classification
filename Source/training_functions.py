@@ -37,7 +37,8 @@ def train_epoch(
     # Set the model into train mode. Ensures layers like Dropout and BatchNorm behave correctly during training.
     model.train()
 
-    running_loss = 0.0
+    loss_num = 0.0
+    loss_den = 0.0
     correct = 0
     total = 0
 
@@ -75,6 +76,9 @@ def train_epoch(
         loss = criterion(outputs, labels)
         loss.backward()
 
+        valid_mask = (labels != criterion.ignore_index)
+        valid_labels = labels[valid_mask]
+
         # Se viene fornito un optimizer, si esegue un ulteriore step per aggiornare i pesi del modello.
         if optimizer is not None:
             optimizer.step()
@@ -84,11 +88,25 @@ def train_epoch(
         if scheduler is not None and is_scheduler_per_batch:
             scheduler.step()
 
-        # Aggiorna le metriche di monitoraggio della loss e dell'accuracy.
-        running_loss += loss.item()
+        # Aggiorna le metriche di monitoraggio della loss.
+        batch_den = \
+            float(valid_labels.numel()) \
+            if criterion.weight is None \
+            else float(criterion.weight[valid_labels].sum().item())
+
+        if batch_den <= 0:
+            raise ValueError(
+                "Errore nel calcolo della loss per epoca: "
+                "il batch non contiene target con peso totale positivo."
+            )
+        
+        loss_num += loss.item() * batch_den
+        loss_den += batch_den
+
+        # Aggiorna le metriche di monitoraggio dell'accuracy.
         _, predicted = outputs.max(1)
-        total += labels.size(0)
-        correct += predicted.eq(labels).sum().item()
+        total += valid_labels.numel()
+        correct += (predicted[valid_mask].eq(valid_labels)).sum().item()
 
         # end for batch
     
@@ -99,9 +117,12 @@ def train_epoch(
     #   ################################################################    #
     #   Ritorno dei risultati.
 
-    avg_loss = (running_loss / len(loader))
-    accuracy = 100.0 * correct / total
+    if loss_den <= 0:
+        raise ValueError("Errore nel calcolo della loss media finale: denominatore nullo.")
 
+    avg_loss = loss_num / loss_den
+
+    accuracy = 100.0 * correct / total
     return avg_loss, accuracy
 
     # end
@@ -130,7 +151,8 @@ def evaluate(
     # Disabilita dropout e batch normalization in fase di valutazione.
     model.eval()
 
-    running_loss = 0.0
+    loss_num = 0.0
+    loss_den = 0.0
     correct = 0
     total = 0
 
@@ -153,21 +175,39 @@ def evaluate(
             # Forward pass.
             outputs = model(inputs, lengths)
 
-            # La loss viene calcolata solo se è stato fornito un criterion:
-            # in fase di sola valutazione (es. modello caricato da
-            # checkpoint) il criterion potrebbe non esistere, e non è
-            # comunque necessario per misurare l'accuracy.
+            ignore_idx = criterion.ignore_index if criterion is not None else None
+            valid_mask = \
+                (labels != ignore_idx) \
+                if ignore_idx is not None \
+                else torch.ones_like(labels, dtype=torch.bool)
+            valid_labels = labels[valid_mask]
+
+            # Aggiorna le metriche di monitoraggio della loss, se fornita.
+            # In fase di sola valutazione (es. modello caricato da checkpoint) il criterion potrebbe non esistere, e non è comunque necessario per misurare l'accuracy.
             if criterion is not None:
                 loss = criterion(outputs, labels)
-                running_loss += loss.item()
+                
+                batch_den = \
+                    float(valid_labels.numel()) \
+                    if criterion.weight is None \
+                    else float(criterion.weight[valid_labels].sum().item())
 
-            # Aggiorna le metriche di monitoraggio della loss e dell'accuracy.
+                if batch_den <= 0:
+                    raise ValueError(
+                        "Errore nel calcolo della loss per epoca: "
+                        "il batch non contiene target con peso totale positivo."
+                    )
+                
+                loss_num += loss.item() * batch_den
+                loss_den += batch_den
+
+            # Aggiorna le metriche di monitoraggio dell'accuracy.
             _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
+            total += valid_labels.numel()
+            correct += (predicted[valid_mask].eq(valid_labels)).sum().item()
 
             all_preds.append(predicted.cpu())
-            all_labels.append(labels.cpu())
+            all_labels.append(valid_labels.cpu())
 
             #   ########################################################    #
             #   Calcolo delle probabilità per ciascuna classe.
@@ -195,7 +235,13 @@ def evaluate(
     # Se non è stato fornito un criterion, la loss media resta None
     # invece di essere forzata a 0.0, per non far pensare che il
     # modello abbia una loss realmente nulla.
-    avg_loss = (running_loss / len(loader)) if criterion is not None else None
+    if criterion is None:
+        avg_loss = None
+    else:
+        if loss_den <= 0:
+            raise ValueError("Errore nel calcolo della loss media finale: denominatore nullo.")
+
+        avg_loss = loss_num / loss_den
 
     accuracy = 100.0 * correct / total
 

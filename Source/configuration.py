@@ -527,7 +527,11 @@ class CrossValidationConfig:
 		else:
 			test_str = f"Test folds: {self.test_folds}"
 
-		return f"[CROSS-VALIDATION] Sub-sample ratio: {self.sub_sample_ratio} | Train ratio: {self.train_ratio} | Val ratio: {self.val_ratio} | {test_str}"
+		return "[CROSS-VALIDATION] " \
+			f"Sub-sample ratio: {self.sub_sample_ratio}" \
+			f" | Train ratio: {self.train_ratio}" \
+			f" | Val ratio: {self.val_ratio}" \
+			f" | {test_str}"
 
 		# end
 
@@ -793,12 +797,14 @@ class LossConfig:
 		)
 
 	def __post_init__(self) -> None:
-		if self.name not in ['CrossEntropy', 'WeightedCrossEntropy', 'Focal']:
+		# if self.name not in ['CrossEntropy', 'WeightedCrossEntropy', 'Focal']:
+		if self.name not in ['CrossEntropy', 'WeightedCrossEntropy']:
 			raise NotImplementedError(
 				f"Loss {self.name} non supportata. "
-				"Loss disponibili: ['CrossEntropy', 'WeightedCrossEntropy', 'Focal']."
+				"Loss disponibili: ['CrossEntropy', 'WeightedCrossEntropy']."
 			)
 
+		# # FOCAL LOSS: disabilitata
 		if self.name == "Focal":
 			if self.focal_alpha is None:
 				raise ValueError("Il parametro 'focal_alpha' deve essere specificato per la Focal Loss.")
@@ -873,7 +879,11 @@ class QuantumConfig:
 		check_positive_int('q_layers', self.q_layers)
 
 		if self.n_shots is not None:
-			check_positive_int('n_shots', self.n_shots)
+			raise NotImplementedError(
+				"Parametro 'n_shots' non supportato. \n"
+				"Utilizza n_shots=None."
+			)
+			# check_positive_int('n_shots', self.n_shots)
 
 		if self.diff_method not in ("backprop", "parameter-shift"):
 			raise NotImplementedError(
@@ -939,13 +949,28 @@ class ModelConfig:
 				f"Modelli disponibili: {sorted(MODEL_REGISTRY)}"
 			)
 
+		if self.is_quantum:
+			if self.quantum is None:
+				raise ValueError("È richiesto un oggetto QuantumConfig per i modelli quantistici.")
+
+			is_amplitude = getattr(MODEL_REGISTRY[self.name], "embedding", None) == "amplitude"
+
+			if is_amplitude and self.quantum.diff_method != "backprop":
+				raise NotImplementedError(
+					f"Il modello '{self.name}' usa AmplitudeEmbedding con un encoder classico addestrabile. \n"
+					"La combinazione con parameter-shift non è supportata. "
+					"Prova a utilizzare diff_method='backprop' con n_shots=None."
+				)
+
 		# end
 
 	def __repr__(self) -> str:
 		model_type = "quantum" if self.is_quantum else "classic"
-		model_params = f" | {repr(self.quantum)}" if self.is_quantum else ""
+		model_params = repr(self.quantum) if self.is_quantum else ""
 
-		return f"[MODEL] {self.name} ({model_type}){model_params}"
+		return \
+			f"[MODEL] {self.name} ({model_type}) \n" \
+			f"{model_params}"
 
 		# end
 
@@ -1287,9 +1312,6 @@ class SessionConfig:
 		pass
 
 		# end
-	
-	# def __repr__(self) -> str:
-	# 	return f"\nSessionConfig(\n{repr(self.dataset)}, \n{repr(self.preprocessing)}, \n{repr(self.traffic)}, \n{repr(self.kfold)}, \n{repr(self.training)}, \n{repr(self.optimizer)}, \n{repr(self.scheduler)}, \n{repr(self.loss)}, \n{repr(self.model)}\n)"
 
 	def __repr__(self) -> str:
 		return \
@@ -1298,7 +1320,7 @@ class SessionConfig:
 			f"{self.kfold}\n" \
 			f"{self.training}\n" \
 			f"{self.optimizer} | {self.scheduler} | {self.loss}\n" \
-			f"{self.model}\n"
+			f"{self.model}"
 
 		# end
 
