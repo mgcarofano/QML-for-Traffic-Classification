@@ -19,31 +19,53 @@ class TrafficDataset(Dataset):
 	def __init__(
 			self,
 			X_raw: np.ndarray, y_raw: np.ndarray,
-			lengths: np.ndarray,
+			lengths: np.ndarray | None,
 			num_classes: int,
 			dtype: torch.dtype,
 			transform=None,
 		):
 
 		#   ############################################################    #
-		#	Verifica degli input
+		#	Verifica degli input.
+		#	I dati devono essere già validati e preprocessati dal chiamante.
 
-		assert isinstance(X_raw, np.ndarray), "X_raw deve essere un array NumPy"
-		assert isinstance(y_raw, np.ndarray), "y_raw deve essere un array NumPy"
-		assert isinstance(lengths, np.ndarray), "lengths deve essere un array NumPy"
+		if not isinstance(X_raw, np.ndarray):
+			raise TypeError("Il tensore di campioni in input deve essere un array NumPy.")
+		if not isinstance(y_raw, np.ndarray):
+			raise TypeError("Il vettore di etichette deve essere un array NumPy.")
 
-		assert X_raw.ndim >= 2, "X_raw deve includere campioni e feature."
-		assert y_raw.ndim == 1, "y_raw deve avere shape (N,)."
-		assert lengths.ndim == 1, "lengths deve avere shape (N,)."
+		if y_raw.ndim != 1 or not np.issubdtype(y_raw.dtype, np.integer):
+			raise TypeError(
+				"Errore nel caricamento del vettore delle etichette: \n"
+				"Atteso: vettore 1D di interi. "
+				f"Ricevuto: shape {y_raw.shape}, dtype {y_raw.dtype}"
+			)
 
-		assert X_raw.shape[0] == y_raw.shape[0], "X_raw e y_raw devono avere lo stesso numero di campioni."
-		assert X_raw.shape[0] == lengths.shape[0], "X_raw e lengths devono avere lo stesso numero di campioni."
+		if dtype not in (torch.float32, torch.float64):
+			raise TypeError(
+				"Il tipo di dato deve essere torch.float32 o torch.float64. \n"
+				f"Ricevuto: {dtype}"
+			)
 
-		assert isinstance(num_classes, int) and num_classes > 0, "num_classes deve essere un intero positivo."
+		if transform is not None and not callable(transform):
+			raise TypeError(
+				"Il parametro 'transform' deve essere una funzione. \n"
+				f"Ricevuto: {type(transform)}"
+			)
 
-		assert y_raw.min() >= 0 and y_raw.max() < num_classes, "y_raw deve contenere etichette valide tra 0 e il numero totale di classi."
-
-		assert dtype in [torch.float32, torch.float64], "dtype deve essere torch.float32 o torch.float64."
+		if lengths is not None:
+			if not isinstance(lengths, np.ndarray):
+				raise TypeError("Il vettore delle lunghezze deve essere un array NumPy.")
+			if lengths.ndim != 1 or not np.issubdtype(lengths.dtype, np.integer):
+				raise TypeError(
+					"Il vettore delle lunghezze deve essere un array 1D. "
+					f"Ricevuto: shape {lengths.shape}, dtype {lengths.dtype}"
+				)
+			if len(lengths) != len(y_raw):
+				raise ValueError(
+					"Il vettore delle lunghezze deve avere la stessa lunghezza del vettore delle etichette. "
+					f"Ricevuto: len(lengths)={len(lengths)}, len(y_raw)={len(y_raw)}"
+				)
 
 		#   ############################################################    #
 
@@ -64,7 +86,7 @@ class TrafficDataset(Dataset):
 			np.ascontiguousarray(lengths),
 			dtype=torch.long,
 			device="cpu",
-		)
+		) if lengths is not None else None
 
 		self.num_classes = num_classes
 		self.transform = transform

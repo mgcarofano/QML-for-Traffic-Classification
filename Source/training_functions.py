@@ -55,7 +55,8 @@ def train_epoch(
 
     for batch in tqdm(loader, desc="Addestramento ", leave=False):
 
-        inputs, labels, lengths = batch
+        inputs, labels, *extra = batch
+        lengths = extra[0] if extra else None
 
         # Sposta inputs e labels sul device di calcolo solo se necessario:
         # - Se il device è la CPU : il trasferimento è superfluo e viene evitato.
@@ -71,6 +72,15 @@ def train_epoch(
 
         # FORWARD PASS: calcolo delle predizioni del modello sul batch corrente.
         outputs = model(inputs, lengths)
+
+        expected = (labels.shape[0], model.num_classes)
+
+        if tuple(outputs.shape) != expected:
+            raise ValueError(
+                "Shape dei logits non valida per la classificazione: \n"
+                f"Atteso {expected}. "
+                f"Ricevuto {tuple(outputs.shape)}."
+            )
 
         # BACKWARD PASS: calcolo dei gradienti e aggiornamento dei pesi.
         loss = criterion(outputs, labels)
@@ -167,13 +177,23 @@ def evaluate(
     with torch.no_grad():
         for batch in tqdm(loader, desc="Valutazione ", leave=False):
 
-            inputs, labels, lengths = batch
+            inputs, labels, *extra = batch
+            lengths = extra[0] if extra else None
 
             inputs = inputs.to(device, non_blocking=True) if device.type != 'cpu' else inputs
             labels = labels.to(device, dtype=torch.long, non_blocking=(device.type != "cpu"))
 
             # Forward pass.
             outputs = model(inputs, lengths)
+
+            expected = (labels.shape[0], model.num_classes)
+
+            if tuple(outputs.shape) != expected:
+                raise ValueError(
+                    "Shape dei logits non valida per la classificazione: \n"
+                    f"Atteso {expected}. "
+                    f"Ricevuto {tuple(outputs.shape)}."
+                )
 
             ignore_idx = criterion.ignore_index if criterion is not None else None
             valid_mask = \

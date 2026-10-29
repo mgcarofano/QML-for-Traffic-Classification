@@ -901,7 +901,7 @@ class QuantumConfig:
 			f"[QUANTUM] Layers: {self.q_layers}" \
 			f" | Simulator: {self.simulator}" \
 			f" | Qubits: {self.n_qubits}" \
-			f" | Shots: {self.n_shots}"
+			f" | Shots: {self.n_shots}\n"
 
 		# end
 
@@ -1301,32 +1301,6 @@ class SessionConfig:
 			) from error
 
 		return _from_dict(session_dict)
-
-		# end
-
-	@property
-	def model_input_shape(self) -> tuple[int, int]:
-		"""Restituisce la forma dell'input del modello come tuple (altezza, larghezza)."""
-
-		# Per dataset di tipo Flowpic composto da istogrammi 2D, la dimensione dell'input è determinata dal rapporto tra MTU e bin_size.
-		if self.dataset.is_flowpic:
-			dim = self.traffic.mtu // self.traffic.bin_size
-			return (dim, dim)
-
-		# Per dataset di tipo Mirage composto da sequenze di pacchetti, la dimensione dell'input è determinata dal numero di pacchetti e dal numero di caratteristiche per pacchetto del biflusso.
-		return (self.dataset.n_packets, self.dataset.n_features)
-
-		# end
-
-	def __post_init__(self) -> None:
-		model_class = MODEL_REGISTRY[self.model.name]
-		input_kind = "flowpic" if self.dataset.is_flowpic else "mirage"
-
-		if input_kind not in model_class.supported_inputs:
-			raise ValueError(
-				f"Il modello {self.model.name} non supporta {input_kind}."
-				f"Modelli disponibili: {sorted(model_class.supported_inputs)}"
-			)
 
 		# end
 

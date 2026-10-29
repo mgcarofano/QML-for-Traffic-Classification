@@ -18,7 +18,7 @@ import pennylane as qml
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-	from Source.configuration import SessionConfig
+	from Source.configuration import SessionConfig, RuntimeConfig
 
 #	####################################################################	#
 #	Funzioni di utilità
@@ -135,8 +135,7 @@ def check_model_compatibility(model, weights):
 	if problems:
 		raise RuntimeError(
 			f"Errore durante il caricamento del modello: {type(model).__name__}\n"
-			+ '\n'.join(problems) + "\n"
-			"Verifica che il dataset e il numero di classi usati per il training coincidano con quelli attuali."
+			+ '\n'.join(problems)
 		)
 
 	# Si può ritornare senza errori se non ci sono problemi di compatibilità.
@@ -166,6 +165,30 @@ def select_quantum_device(dev_name, n_qubits, random_seed):
 			f"Quantum device '{dev_name}' is not supported. \n"
 			f"Available devices are: ['default.qubit']"
 		)
+
+	# end
+
+def get_model_input_shape(
+		sc: "SessionConfig",
+		rc: "RuntimeConfig"
+	) -> tuple[int, int]:
+	"""Restituisce la forma dell'input del modello come (altezza, larghezza).
+
+	Args:
+		sc (SessionConfig): Configurazione dei parametri di sessione per l'esperimento corrente.
+		rc (RuntimeConfig): Configurazione dei parametri di runtime per l'esperimento corrente.
+
+	Returns:
+		tuple[int, int]: La forma dell'input del modello (altezza, larghezza).
+	"""
+
+	# Per dataset di tipo Flowpic composto da istogrammi 2D, la dimensione dell'input è determinata dal rapporto tra MTU e bin_size.
+	if rc.flags.is_flowpic:
+		dim = sc.traffic.mtu // sc.traffic.bin_size
+		return (dim, dim)
+
+	# Per dataset di tipo Mirage composto da sequenze di pacchetti, la dimensione dell'input è determinata dal numero di pacchetti e dal numero di caratteristiche per pacchetto del biflusso.
+	return (sc.dataset.n_packets, sc.dataset.n_features)
 
 	# end
 
@@ -459,6 +482,8 @@ class _CNNLSTMFeatureExtractor(nn.Module):
 			if lengths is not None:
 				batch_indices = torch.arange(out.size(0), device=out.device)
 				out = out[batch_indices, lengths - 1]
+			else:
+				out = out[:, -1, :]
 
 		elif self.n_dim == 1:
 			out = out.sum(dim=-1) / lengths.to(out.dtype).unsqueeze(1)
@@ -562,8 +587,9 @@ class _ResNetFeatureExtractor(nn.Module):
 			return self.pool(out).flatten(start_dim=1)
 
 		# Media solo sulle righe valide e su tutta la larghezza finale.
+		spatial_width = out.shape[3]
 		out = out.sum(dim=(2, 3))
-		valid_counts = lengths.to(out.dtype) * out.shape[3]
+		valid_counts = lengths.to(out.dtype) * spatial_width
 		return out / valid_counts[:, None]
 
 		# end
@@ -957,7 +983,8 @@ MODEL_REGISTRY = {
 def select_model(
 		num_classes: int,
 		random_seed: int,
-		sc: "SessionConfig"
+		sc: "SessionConfig",
+		rc: "RuntimeConfig",
 	) -> nn.Module:
 	"""Seleziona e restituisce il modello specificato.
 
@@ -965,6 +992,7 @@ def select_model(
 		num_classes (int): Numero di classi per la classificazione.
 		random_seed (int): Il seme casuale da utilizzare per la riproducibilità.
 		sc (SessionConfig): Configurazione dei parametri di sessione per l'esperimento corrente.
+		rc (RuntimeConfig): Configurazione dei parametri di runtime per l'esperimento corrente.
 
 	Raises:
 		NotImplementedError: Se il modello specificato non è supportato.
@@ -980,10 +1008,20 @@ def select_model(
 			f'Modello {sc.model.name} non supportato.\n'
 			f'Modelli disponibili: {", ".join(tuple(MODEL_REGISTRY))}.') from exc
 
-	height, width = sc.model_input_shape
+	height, width = get_model_input_shape(sc, rc)
+	input_kind = "flowpic" if rc.flags.is_flowpic else "mirage"
+
+	if input_kind not in model_class.supported_inputs:
+		raise ValueError(
+			f"Il modello {sc.model.name} non supporta '{input_kind}'. \n"
+			f"Input disponibili: {sorted(model_class.supported_inputs)}"
+		)
+	
 	params = dict(
-		input_height=height, input_width=width, num_classes=num_classes,
-		input_kind="flowpic" if sc.dataset.is_flowpic else "mirage"
+		input_height= height,
+		input_width= width,
+		num_classes= num_classes,
+		input_kind= input_kind
 	)
 
 	if model_class.is_quantum:

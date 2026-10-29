@@ -72,7 +72,7 @@ PAPER_2026=(
 
 case "$PRESET" in
     mirage-test) ARGS=("${LOCAL[@]}" --model.name baseline) ;;
-    flowpic-test) ARGS=("${LOCAL[@]}" --model.name resnet --dataset.is_flowpic) ;;
+    flowpic-test) ARGS=("${LOCAL[@]}" --model.name resnet --is_flowpic) ;;
     quantum-test) ARGS=("${LOCAL[@]}" --requested_device cpu --model.name ampe_fixed_probs) ;;
     paper2025) ARGS=("${QML_PAPER_2025[@]}") ;;
     baseline-paper2026) ARGS=("${PAPER_2026[@]}" --model.name baseline) ;;

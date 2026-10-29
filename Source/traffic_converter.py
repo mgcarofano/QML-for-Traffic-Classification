@@ -77,7 +77,7 @@ def mirage_pickle_converter(
 	flow_ids = []
 	dataset_ids = []
 	labels = []
-	# real_packets = []
+	real_packets = []
 
 	counter = {
 		# Contatore delle finestre temporali valide.
@@ -263,7 +263,7 @@ def mirage_pickle_converter(
 			flow_ids.append(i)
 			dataset_ids.append(counter["valid"])
 			labels.append(label)
-			# real_packets.append(len(real_rows))
+			real_packets.append(len(real_rows))
 
 			dataset.append([hist])
 			counter["valid"] += 1
@@ -287,7 +287,7 @@ def mirage_pickle_converter(
 		"FlowID": flow_ids,
 		"DatasetID": dataset_ids,
 		"Label": labels,
-		# "RealPackets": real_packets,
+		"RealPackets": real_packets,
 	})
 
 	# Se il flag di debug è attivo, si stampano informazioni dettagliate sui flussi specificati.
@@ -552,6 +552,6 @@ def get_flowpic_dir(session_config: SessionConfig) -> Path:
 
 	geometry = f"mtu{session_config.traffic.mtu}-bin{session_config.traffic.bin_size}"
 
-	return Path("Dataset", *new_parts, geometry, filters_parts)
+	return Path(*new_parts, geometry, filters_parts)
 
 	# end

@@ -37,9 +37,10 @@ import torch
 import torch.nn as nn
 from Source.models import _BaseModel
 from Source.models import \
-	select_model, \
 	weight_init, \
-	check_model_compatibility
+	check_model_compatibility, \
+	get_model_input_shape, \
+	select_model
 from Source.training_functions import \
 	train_epoch, \
 	evaluate
@@ -176,7 +177,7 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
 	#	################################################################	#
 	#	Elaborazione del dataset in formato MIRAGE (sequenza di pacchetti).
 
-	if not session_config.dataset.is_flowpic:
+	if not runtime_config.flags.is_flowpic:
 
 		# Il file pickle contiene due oggetti salvati in sequenza:
 		# 1. X_raw : i dati numerici dei flussi di traffico, in formato numpy array.
@@ -212,9 +213,9 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
 	#	################################################################	#
 	#	Elaborazione del dataset in formato FLOWPIC (istogrammi 2D).
 
-	elif session_config.dataset.is_flowpic:
+	elif runtime_config.flags.is_flowpic:
 
-		flowpics_dir = get_flowpic_dir(session_config)
+		flowpics_dir = Path("Dataset") / get_flowpic_dir(session_config)
 		flowpics_dir.mkdir(parents=True, exist_ok=True)
 
 		npz_path = flowpics_dir / f"{session_config.dataset.name}.npz"
@@ -261,13 +262,13 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
 	if len(X_raw) == 0 or len(y_raw) == 0:
 		raise ValueError("Errore nel caricamento del dataset: nessun campione disponibile.")
 
-	height, width = session_config.model_input_shape
+	height, width = get_model_input_shape(session_config, runtime_config)
 
-	if not session_config.dataset.is_flowpic:
+	if not runtime_config.flags.is_flowpic:
 		expected = (height, width)
 		if X_raw.ndim != 3 or X_raw.shape[2] != width or X_raw.shape[1] < height:
 			raise ValueError(
-				f"Formato del dataset Mirage non valido. \n"
+				"Formato del dataset Mirage non valido. \n"
 				f"Atteso: (N, T >= {expected}), "
 				f"Ricevuto: {X_raw.shape}."
 			)
@@ -276,11 +277,11 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
 		if not np.isfinite(X_raw).all():
 			raise ValueError("Errore nel calcolo del dataset Mirage: valori non finiti.")
 		
-	elif session_config.dataset.is_flowpic:
+	elif runtime_config.flags.is_flowpic:
 		expected = (1, height, width)
 		if X_raw.ndim != 4 or tuple(X_raw.shape[1:]) != expected:
 			raise ValueError(
-				f"Formato del dataset Flowpic non valido. \n"
+				"Formato del dataset Flowpic non valido. \n"
 				f"Atteso: (N, {expected}), "
 				f"Ricevuto: {X_raw.shape}."
 			)
@@ -487,7 +488,7 @@ def apply_data_preprocessing(X, scaler, lengths):
 		np.ndarray: Array contenente i dati preprocessati.
 	"""
 
-	height, width = session_config.model_input_shape
+	height, width = get_model_input_shape(session_config, runtime_config)
 	X_proc = X[:, :height, :].astype(np.float32, copy=True)
 	valid = np.arange(height)[None, :] < lengths[:, None]
 
@@ -580,7 +581,7 @@ def init_model(device, fold_index: int, num_classes: int) -> _BaseModel:
 
 	model : _BaseModel = select_model(
 		num_classes, fold_seed,
-		session_config
+		session_config, runtime_config
 	)
 
 	# Scelta del tipo di dato appropriato in base al dispositivo.
@@ -806,8 +807,8 @@ def get_model_info(model) -> str:
 		f"{session_config.dataset!r} | Classes: {model.num_classes} \n\n"
 
 		"Modello selezionato: \n"
-		f"{session_config.model!r} \n"
-		f"Model input: {model.input_kind}, {model.input_height}x{model.input_width} \n\n"
+		f"{session_config.model!r}"
+		f"[INPUT] {model.input_kind}, {model.input_height}x{model.input_width} \n\n"
 
 		"Struttura interna: \n"
 		f"{str(model)} \n\n"
@@ -1119,9 +1120,15 @@ def main(cli_overrides: bool):
 		else runtime_config.launch.source_session_id
 
 	# Directory per i risultati
+	dataset_dir_str = str(
+		session_config.dataset.path 
+		if not runtime_config.flags.is_flowpic 
+		else get_flowpic_dir(session_config)
+	).replace('/', '-')
+	
 	output_dir = Path(
 		"Results/"
-		f"{session_config.dataset.path.replace('/', '-')}/"
+		f"{dataset_dir_str}/"
 		f"Sample{session_config.kfold.sub_sample_ratio * 100:g}%/"
 		f"{session_config.model.name}/"
 		f"{session_id}/"
@@ -1195,6 +1202,11 @@ def main(cli_overrides: bool):
 
 	if num_classes <= 0:
 		raise EnvironmentError("Errore nel caricamento delle etichette delle classi.")
+	if y_encoded.min() < 0 or y_encoded.max() >= num_classes:
+		raise ValueError(
+			"Errore nel caricamento delle etichette delle classi: \n"
+			"Ci sono etichette non valide nel vettore 'y_encoded'."
+		)
 
 	print(f"\nNumero di classi: {num_classes}")
 	print(f"Etichette delle classi generate: {sorted(labels_map.values())}\n")
@@ -1202,10 +1214,10 @@ def main(cli_overrides: bool):
 	#	-----------------------------------------------------------------	#
 	#	Selezione della strategia di data preprocessing.
 
-	if session_config.dataset.is_flowpic:
+	if runtime_config.flags.is_flowpic:
 		debug_print("La fase di preprocessing è disponibile solo per il dataset grezzo (Mirage).")
 
-	elif not session_config.dataset.is_flowpic:
+	elif not runtime_config.flags.is_flowpic:
 		if session_config.preprocessing.strategy == "MinMax":
 			scaler = MinMaxScaler(feature_range=(0, 1))
 		else:
@@ -1289,12 +1301,14 @@ def main(cli_overrides: bool):
 		lengths_val = None
 		lengths_test = None
 
-		if not session_config.dataset.is_flowpic:
+		if not runtime_config.flags.is_flowpic:
 			real_lengths = metadata["RealPackets"].to_numpy(dtype=np.int64)
-
 			lengths = np.minimum(real_lengths, session_config.dataset.n_packets)
-			if np.any((lengths < 1) | (lengths > session_config.dataset.n_packets)):
-				raise ValueError(f"Ogni lunghezza deve essere compresa tra 1 e {session_config.dataset.n_packets}.")
+			if np.any(lengths < 1):
+				raise ValueError(
+					"Errore nel caricamento del vettore delle lunghezze: \n"
+					"Ogni flusso Mirage deve contenere almeno un pacchetto reale."
+				)
 			
 			lengths_train = lengths[train_indices]
 			lengths_val = lengths[val_indices]
@@ -1303,7 +1317,7 @@ def main(cli_overrides: bool):
 		#	------------------------------------------------------------	#
 		#	Applicazione della strategia di data preprocessing (solo per dataset Mirage).
 
-		if not session_config.dataset.is_flowpic:
+		if not runtime_config.flags.is_flowpic:
 			valid_train = np.arange(X_train.shape[1])[None, :] < lengths_train[:, None]
 			scaler.fit(X_train[valid_train])
 
