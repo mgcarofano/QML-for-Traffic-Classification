@@ -47,6 +47,11 @@ def weight_init(m: nn.Module) -> None:
 			nn.init.zeros_(m.bias)
 
 	# Inizializzazione per layer di normalizzazione batch.
+	elif isinstance(m, nn.GroupNorm):
+		if m.affine:
+			nn.init.ones_(m.weight)
+			nn.init.zeros_(m.bias)
+
 	elif isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
 		if m.affine:
 			nn.init.ones_(m.weight)
@@ -164,6 +169,28 @@ def select_quantum_device(dev_name, n_qubits, random_seed):
 
 	# end
 
+def mask_rows(x, lengths, n_dim=2):
+	"""Applica la maschera per gestire i padding nelle sequenze di pacchetti.
+
+	Args:
+		x (torch.Tensor): Il tensore di input da mascherare.
+		lengths (torch.Tensor): Il vettore delle lunghezze effettive delle sequenze.
+		n_dim (int): Il numero di dimensioni spaziali del tensore (1 o 2). Default è 2.
+
+	Returns:
+		torch.Tensor: Il tensore mascherato, con i valori di padding azzerati.
+	"""
+
+	if lengths is None:
+		return x
+
+	valid = torch.arange(x.shape[2], device=x.device)[None, :] < lengths[:, None]
+	mask = valid[:, None, :, None] if n_dim == 2 else valid[:, None, :]
+
+	return x.masked_fill(~mask, 0.0)
+
+	# end
+
 #	####################################################################	#
 #	Definizione delle classi base per i modelli
 
@@ -171,14 +198,99 @@ class _BaseModel(nn.Module):
 	"""Base PyTorch con validazione dei metadati comuni."""
 
 	is_quantum : bool = False
+	supported_inputs = frozenset({"mirage", "flowpic"})
 
-	def __init__(self, n_features: int, n_packets: int, num_classes: int):
+	def __init__(self, input_height, input_width, input_kind, num_classes):
 
 		super().__init__()
 
-		self.n_features = n_features
-		self.n_packets = n_packets
+		self.input_height = input_height
+		self.input_width = input_width
 		self.num_classes = num_classes
+
+		if input_kind not in self.supported_inputs:
+			raise ValueError(f"{type(self).__name__} non supporta {input_kind}.")
+		self.input_kind = input_kind
+
+	def _prepare_input(self, x, lengths):
+		"""Prepara l'input per il modello, applicando eventuale padding e mascheramento.
+
+		Args:
+			x: il dataset in input, come tensore PyTorch.
+			lengths: le lunghezze reali dei flussi Mirage, necessarie per il padding corretto.
+
+		## Raises (per tutti i tipi di dataset):
+			ValueError: Se il formato del dataset in input non è valido.
+			ValueError: Se il batch è vuoto o non è floating point.
+
+		## Raises (solo per dataset di tipo Mirage):
+			ValueError: Se il vettore delle lunghezze è None.
+			ValueError: Se il vettore delle lunghezze non ha la shape corretta.
+			ValueError: Se le lunghezze non sono comprese nell'intervallo valido.
+
+		Returns:
+			tuple: Una tupla contenente il tensore preparato e le lunghezze (None per FlowPic).
+		"""
+
+		expected = \
+			(self.input_height, self.input_width) \
+			if self.input_kind == "mirage" \
+			else (1, self.input_height, self.input_width)
+
+		# CHECK 1: verifica tipo e forma del dataset in input.
+		if not isinstance(x, torch.Tensor) or tuple(x.shape[1:]) != expected:
+			raise ValueError(
+				f"Formato del dataset in input non valido. \n"
+				f"Atteso: (B, {expected}), "
+				f"Ricevuto: {x.shape}."
+			)
+
+		# CHECK 2: verifica che il batch non sia vuoto e che sia floating point.
+		if x.shape[0] == 0 or not x.is_floating_point():
+			raise ValueError(
+				"Errore nel caricamento del dataset in input: \n"
+				"Il batch deve essere non vuoto e floating point."
+			)
+
+		# Per dataset di tipo FlowPic, non è necessario applicare padding o mascheramento in quanto ogni istogramma contiene sia i pacchetti reali che quelli di padding.
+		if self.input_kind == "flowpic":
+			return x, None
+
+		# Invece per dataset di tipo Mirage, si applica padding e mascheramento per gestire le lunghezze variabili dei flussi e migliorare l'efficienza e l'accuratezza del modello.
+		elif self.input_kind == "mirage":
+
+			# CHECK 3: verifica che il vettore delle lunghezze sia valido.
+			if lengths is None:
+				raise ValueError(
+					"Errore nel caricamento di 'lengths': \n"
+					"Il vettore delle lunghezze è richiesto per i dataset di tipo Mirage."
+				)
+
+			lengths = torch.as_tensor(lengths, device=x.device, dtype=torch.long)
+
+			# CHECK 4: verifica la forma del vettore delle lunghezze.
+			if tuple(lengths.shape) != (x.shape[0],):
+				raise ValueError(
+					"Errore nel caricamento di 'lengths': \n"
+					f"Atteso: ({x.shape[0]},), "
+					f"Ricevuto: {lengths.shape}."
+				)
+
+			# CHECK 5: verifica che le lunghezze siano comprese nell'intervallo valido.
+			if torch.any((lengths < 1) | (lengths > self.input_height)):
+				raise ValueError(
+					"Errore nel caricamento di 'lengths': \n"
+					f"Trovate lunghezze non valide. Devono essere comprese in [1,{self.input_height}]."
+				)
+
+			x = mask_rows(x.unsqueeze(1), lengths, n_dim=2)
+
+			# mask = torch.arange(self.input_height, device=x.device)[None, :] < lengths[:, None]
+			# x = x.masked_fill(~mask[:, :, None], 0.0).unsqueeze(1)
+
+			return x, lengths
+
+			# end if self.input_kind
 
 		# end
 
@@ -188,136 +300,274 @@ class _FeatureClassifier(_BaseModel):
 	"""Un solo forward per feature -> adapter -> processing -> logits. I componenti vengono assegnati una sola volta, senza alias registrati.
 	"""
 
-	uses_lengths: bool = False
+	def forward(self, x, lengths=None):
 
-	def forward(self, x, lengths):
+		input, lengths = self._prepare_input(x, lengths)
 
-		if self.uses_lengths:
-			x = self.feature_extractor(x, lengths)
-		else:
-			x = self.feature_extractor(x)
+		features = self.feature_extractor(input, lengths)
+		features = self.input_adapter(features)
+		features = self.processing_block(features)
 
-		x = self.input_adapter(x)
-		x = self.processing_block(x)
-
-		return self.classifier(x)
+		return self.classifier(features)
 
 		# end
 
 	# end class
 
 #	####################################################################	#
-#	Definizione dell'estrattore di feature CNN + LSTM
+#	Definizione di blocchi BatchNorm sicuri
+#	Consente l'utilizzo di batch normalization manuale quando il batch è troppo piccolo per evitare problemi di stima della media e della varianza.
+
+class _SafeBatchNorm1d(nn.BatchNorm1d):
+
+	def forward(self, x):
+
+		if self.training and x.numel() // x.shape[1] == 1:
+			return nn.functional.batch_norm(
+				x, self.running_mean, self.running_var,
+				self.weight, self.bias, training=False,
+				momentum=0.0, eps=self.eps
+			)
+
+		return super().forward(x)
+
+		# end
+
+	# end class
+
+class _SafeBatchNorm2d(nn.BatchNorm2d):
+
+	def forward(self, x):
+
+		if self.training and x.numel() // x.shape[1] == 1:
+			return nn.functional.batch_norm(
+				x, self.running_mean, self.running_var,
+				self.weight, self.bias, training=False,
+				momentum=0.0, eps=self.eps
+			)
+
+		return super().forward(x)
+
+		# end
+
+	# end class
+
+#	####################################################################	#
+#	Definizione degli estrattori di feature
+
+class _DenseFeatureExtractor(nn.Module):
+
+	def forward(self, input, lengths=None):
+
+		out = input.flatten(start_dim=1)
+		return out
+
+		# end
+
+	# end class
 
 class _CNNLSTMFeatureExtractor(nn.Module):
 	"""Due Conv2d + LSTM + Linear, uscita (B, 100)."""
 
 	output_dim = 100
 
-	def __init__(self, n_features: int, n_packets: int, n_dim: int = 2):
+	def __init__(self, input_height, input_width, input_kind, n_dim=2):
 
 		super().__init__()
 
-		self.n_dim = n_dim
-		self.n_features = n_features
-		self.n_packets = n_packets
-
-		if self.n_dim not in [1, 2]:
+		if n_dim not in (1, 2):
 			raise ValueError("Il valore di n_dim può essere solo 1 o 2.")
+		if n_dim == 1 and input_kind != "mirage":
+			raise ValueError("La CNN1D e' riservata alle sequenze Mirage.")
+		self.n_dim = n_dim
+		self.input_kind = input_kind
 
 		# Using padding='same' with even kernel lengths and odd dilation may require a zero-padded copy of the input be created.
 		self.pad2d = nn.ZeroPad2d((0, 1, 1, 2))
 
-		self.conv1 = \
-			nn.Conv2d(1, 32, (4, 2), stride=1, padding=0) \
-			if self.n_dim == 2 \
-			else nn.Conv1d(self.n_features, 32, kernel_size=5, padding=2, bias=False)
-		
-		self.bn1 = nn.BatchNorm2d(32) if self.n_dim == 2 else nn.BatchNorm1d(32)
+		spatial_width = input_width if input_kind == "mirage" else input_height
 
-		self.conv2 = \
-			nn.Conv2d(32, 64, (4, 2), stride=1, padding=0, bias=False) \
-			if self.n_dim == 2 \
-			else nn.Conv1d(32, 64, kernel_size=3, padding=1, bias=False)
-		
-		self.bn2 = nn.BatchNorm2d(64) if self.n_dim == 2 else nn.BatchNorm1d(64)
-
-		self.relu = nn.ReLU()
-
-		if self.n_dim == 2:
-			with torch.no_grad():
-				dummy = self.conv1.weight.new_zeros(1, 1, self.n_packets, self.n_features)
-				dummy = self.conv1(self.pad2d(dummy))
-				dummy = self.conv2(self.pad2d(dummy))
-
-				batches, channels, packets, features = dummy.shape
-				lstm_input_size = channels * features
-
-			self.lstm = nn.LSTM(lstm_input_size, 100, batch_first=True)
+		# Configurazione del modello per convoluzioni 2D (es. CNNLSTMModel)
+		if n_dim == 2:
+			self.conv1 = nn.Conv2d(1, 32, (4, 2), bias=True)
+			self.bn1 = _SafeBatchNorm2d(32)
+			self.conv2 = nn.Conv2d(32, 64, (4, 2), bias=False)
+			self.bn2 = _SafeBatchNorm2d(64)
+			self.lstm = nn.LSTM(64 * spatial_width, 100, batch_first=True)
 			self.fc1 = nn.Linear(100, self.output_dim)
 
-		# Per la TrafficCNN con n_dim == 1, non si utilizza la rete LSTM.
-		else:
+		# Configurazione del modello per convoluzioni 1D senza LSTM (es. TrafficCNN)
+		elif n_dim == 1:
+			self.conv1 = nn.Conv1d(input_width, 32, 5, padding=2, bias=False)
+			self.bn1 = _SafeBatchNorm1d(32)
+			self.conv2 = nn.Conv1d(32, 64, 3, padding=1, bias=False)
+			self.bn2 = _SafeBatchNorm1d(64)
 			self.fc1 = nn.Linear(64, self.output_dim)
+
+		self.relu = nn.ReLU()
 
 		# Evita di applicare Kaiming anche al classificatore finale e alle proiezioni verso gli embedding.
 		self.fc1._init_nonlinearity = "relu"
 
 		# end
 
-	def forward(self, x, lengths):
+	def forward(self, input, lengths=None):
 
 		#	############################################################	#
-		#	Inizializzazione e validazione dell'input.
+		#	Inizializzazione.
 
-		if x.ndim != 3 or tuple(x.shape[1:]) != (self.n_packets, self.n_features):
-			raise ValueError(
-				"Errore in _CNNLSTMFeatureExtractor:\n"
-				f"Atteso: (B,{self.n_packets},{self.n_features})\n"
-				f"Ricevuto: {tuple(x.shape)}."
-			)
+		# Trasformazione dell'input in base al tipo di input e al numero di dimensioni (1D o 2D).
+		if self.n_dim == 1:
+			out = input[:, 0].transpose(1, 2)
+		elif self.input_kind == "flowpic":
+			out = input.transpose(-1, -2).contiguous()
+		else:
+			out = input
 
-		lengths = torch.as_tensor(lengths, dtype=torch.long, device=x.device)
-		valid = torch.arange(x.size(1), device=x.device)[None, :] < lengths[:, None]
-
-		# Azzera anche eventuali valori di padding modificati dal preprocessing.
-		x = x.masked_fill(~valid.unsqueeze(-1), 0.0)
+		# mask = None
+		# if self.input_kind == "mirage" and lengths is not None:
+		# 	valid = torch.arange(out.shape[2], device=out.device)[None, :] < lengths[:, None]
+		# 	mask = valid[:, None, :, None] if self.n_dim == 2 else valid[:, None, :]
 
 		#	############################################################	#
 		#	Esecuzione del forward pass.
 
-		out = x.unsqueeze(1) \
-			if self.n_dim == 2 \
-			else x.transpose(1, 2)
+		for conv, bn in ((self.conv1, self.bn1), (self.conv2, self.bn2)):
 
-		conv_mask = valid[:, None, :, None] \
-			if self.n_dim == 2 \
-			else valid[:, None, :]
+			# Applica il padding solo per convoluzioni 2D.
+			if self.n_dim == 2:
+				out = self.pad2d(out)
 
-		# Dopo l'esecuzione di ogni blocco convoluzionale, applica la maschera per azzerare i valori di padding.
-		out = self.pad2d(out) if self.n_dim == 2 else out
-		out = self.conv1(out)
-		out = self.relu(self.bn1(out))
-		out = out.masked_fill(~conv_mask, 0.0)
+			out = conv(out)
+			out = bn(out)
+			out = self.relu(out)
 
-		out = self.pad2d(out) if self.n_dim == 2 else out
-		out = self.conv2(out)
-		out = self.relu(self.bn2(out))
-		out = out.masked_fill(~conv_mask, 0.0)
+			# Dopo l'esecuzione di ogni blocco convoluzionale, applica la maschera per azzerare i valori di padding.
+			# if mask is not None:
+			# 	out = out.masked_fill(~mask, 0.0)
+			out = mask_rows(out, lengths, n_dim=self.n_dim)
 
+			# end for conv, bn
+
+		# Esecuzione del blocco LSTM per convoluzioni 2D o aggregazione per convoluzioni 1D.
 		if self.n_dim == 2:
 			out = out.permute(0, 2, 1, 3).flatten(start_dim=2)
 			out, _ = self.lstm(out)
-			batch_indices = torch.arange(out.size(0), device=out.device)
-			out = out[batch_indices, lengths - 1]
-		else:
-			# out = out.transpose(1, 2)
+
+			# Se è disponibile il vettore delle lunghezze, taglia l'output alla lunghezza effettiva di ciascuna sequenza.
+			# Migliora l'efficienza evitando di considerare i pacchetti di padding per la classificazione finale.
+			if lengths is not None:
+				batch_indices = torch.arange(out.size(0), device=out.device)
+				out = out[batch_indices, lengths - 1]
+
+		elif self.n_dim == 1:
 			out = out.sum(dim=-1) / lengths.to(out.dtype).unsqueeze(1)
+
+			# end if
 
 		out = self.relu(self.fc1(out))
 
 		return out
-	
+
+		# end
+
+	# end class
+
+class _ResidualBlock2D(nn.Module):
+	"""Due Conv2D 3x3 + ReLU. Utilizza una shortcut 1x1 se cambia la shape dell'input."""
+
+	def __init__(self, in_channels, out_channels, stride=1):
+
+		super().__init__()
+
+		self.stride = stride
+
+		self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride=stride, padding=1, bias=False)
+		self.norm1 = nn.GroupNorm(8, out_channels)
+		self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False)
+		self.norm2 = nn.GroupNorm(8, out_channels)
+
+		self.shortcut = (
+			nn.Identity() if stride == 1 and in_channels == out_channels
+			else nn.Sequential(
+				nn.Conv2d(in_channels, out_channels, 1, stride=stride, bias=False),
+				nn.GroupNorm(8, out_channels)
+			)
+		)
+
+		self.relu = nn.ReLU()
+
+		# end
+
+	def forward(self, x, lengths=None):
+
+		next_lengths = (lengths + self.stride - 1) // self.stride if lengths is not None else None
+
+		out = self.conv1(x)
+		out = self.norm1(out)
+		out = self.relu(out)
+		out = mask_rows(out, next_lengths)
+
+		out = self.conv2(out)
+		out = self.norm2(out)
+		out = self.relu(out + self.shortcut(x))
+		out = mask_rows(out, next_lengths)
+
+		return out, next_lengths
+
+		# end
+
+	# end class
+
+class _ResNetFeatureExtractor(nn.Module):
+	"""ResNet18 adattata: un canale, stem 3x3/s1, no maxpool, GroupNorm."""
+
+	output_dim = 512
+
+	def __init__(self):
+		super().__init__()
+
+		self.stem = nn.Sequential(
+			nn.Conv2d(1, 64, 3, padding=1, bias=False),
+			nn.GroupNorm(8, 64), nn.ReLU()
+		)
+
+		blocks = []
+		current = 64
+		for stage, channels in enumerate((64, 128, 256, 512)):
+			for block_index in range(2):
+
+				is_first_block = stage > 0 and block_index == 0
+				stride = 2 if is_first_block else 1
+
+				blocks.append(_ResidualBlock2D(current, channels, stride))
+				current = channels
+
+				# end for
+
+		self.blocks = nn.ModuleList(blocks)
+		self.pool = nn.AdaptiveAvgPool2d((1, 1))
+
+		# end
+
+	def forward(self, input, lengths=None):
+
+		out = self.stem(input)
+		out = mask_rows(out, lengths)
+
+		for block in self.blocks:
+			out, lengths = block(out, lengths)
+
+		if lengths is None:
+			return self.pool(out).flatten(start_dim=1)
+
+		# Media solo sulle righe valide e su tutta la larghezza finale.
+		out = out.sum(dim=(2, 3))
+		valid_counts = lengths.to(out.dtype) * out.shape[3]
+		return out / valid_counts[:, None]
+
+		# end
+
 	# end class
 
 #	####################################################################	#
@@ -331,9 +581,9 @@ class QuantumBlock(nn.Module):
 	"""
 
 	def __init__(
-			self, embedding: str, diff_method: str,
-			q_layers: int, n_qubits: int, n_shots: int,
-			random_seed: int, dev_name: str
+			self, embedding, diff_method,
+			q_layers, n_qubits, n_shots,
+			random_seed, dev_name
 		):
 
 		#	############################################################	#
@@ -433,10 +683,11 @@ class QuantumBlock(nn.Module):
 		dummy_inputs = torch.full(
 			(self.input_dim,),
 			self.input_dim ** -0.5,
-			dtype=torch.float32,
+			dtype=self.logit_scale.dtype,
+			device=self.logit_scale.device,
 		)
 		dummy_weights = {
-			k: torch.zeros(p.shape, dtype=torch.float32) 
+			k: torch.zeros_like(p)
 			for k, p in self.torch_layer.named_parameters()
 		}
 
@@ -488,27 +739,33 @@ class QuantumBlock(nn.Module):
 		# Dato che le probabilità di uscita dal blocco quantistico sommano a 1 (media 1 / 2^n_qubits), senza riscalamento il classificatore lineare successivo riceve ingressi molto piccoli e i logit iniziali restano quasi uguali tra le classi.
 		# Per ovviare a questo problema, moltiplichiamo le probabilità di uscita per un fattore di scala apprendibile (logit_scale), cioè che può poi essere adattato dall'ottimizzatore.
 
-		return self.torch_layer(x) * self.logit_scale
+		# Utilizzare la Sigmoid potrebbe causare underflow o divisioni per zero. Per ovviare a questo problema, si limitano i valori del tensore in ingresso al più piccolo intero positivo rappresentabile dal tipo di dato del tensore.
+		if self.embedding == "amplitude":
+			min_positive_val = torch.finfo(x.dtype).eps
+			x = x.clamp_min(min_positive_val)
+
+		return self.torch_layer(x).to(dtype=x.dtype, device=x.device) * self.logit_scale
 
 	# end class
 
 class _QuantumModel(_FeatureClassifier):
-	"""Modello quantistico di base."""
+	"""Encoder classico -> proiezione -> QNN -> classificatore classico."""
 
-	embedding: str
 	is_quantum : bool = True
+	embedding: str
 
-	def __init__(
-			self,
-			n_features: int, n_packets: int, num_classes: int,
-			q_layers: int, n_qubits: int, n_shots: int,
-			random_seed: int, dev_name: str,
-			diff_method: str
+	def __init__(self, input_height, input_width, input_kind, num_classes,
+			q_layers, n_qubits, n_shots,
+			random_seed, dev_name, diff_method,
 		):
 
-		super().__init__(n_features, n_packets, num_classes)
+		super().__init__(input_height, input_width, input_kind, num_classes)
 
-		self.uses_lengths = self.encoder_type == "cnnlstm"
+		if self.encoder_type not in ("dense", "cnnlstm"):
+			raise ValueError(
+				f"Encoder sconosciuto: {self.encoder_type}."
+				"Opzioni disponibili: 'dense', 'cnnlstm'."
+			)
 
 		self.n_qubits = n_qubits
 		self.q_layers = q_layers
@@ -519,29 +776,32 @@ class _QuantumModel(_FeatureClassifier):
 
 		self.diff_method = diff_method
 
-		projection = None
 		if self.encoder_type == "dense":
-			self.feature_extractor = nn.Flatten()
-			input_dim = 2 ** self.n_qubits if self.embedding == 'amplitude' else self.n_qubits
-			feature_dim = self.n_packets * self.n_features
-			projection = nn.Linear(feature_dim, input_dim)
-		else:
+			self.feature_extractor = _DenseFeatureExtractor()
+			feature_dim = self.input_height * self.input_width
+
+		elif self.encoder_type == "cnnlstm":
 			self.feature_extractor = _CNNLSTMFeatureExtractor(
-				self.n_features, self.n_packets, n_dim=2
+				self.input_height,
+				self.input_width,
+				self.input_kind
 			)
+
 			feature_dim = self.feature_extractor.output_dim
 
 		block = QuantumBlock(
-			self.embedding, self.diff_method,
-			self.q_layers, self.n_qubits, self.n_shots,
-			random_seed, dev_name
+			self.embedding,
+			diff_method, q_layers, n_qubits,
+			n_shots, random_seed, dev_name
 		)
 
-		if projection is None:
-			projection = nn.Linear(feature_dim, block.input_dim)
+		self.input_adapter = nn.Sequential(
+			nn.Linear(feature_dim, block.input_dim),
+			self.input_activation()
+		)
 
-		self.input_adapter = nn.Sequential(projection, self.input_activation())
 		self.processing_block = block
+
 		self.classifier = nn.Linear(block.output_dim, self.num_classes)
 
 		# end
@@ -564,25 +824,25 @@ class AngleActivation(nn.Module):
 #	Definizione dei modelli
 
 class TrafficCNN(_FeatureClassifier):
-	"""Baseline CNN1D."""
+	"""Baseline CNN1D. Supporta solo dataset di tipo Mirage."""
 
 	model_label = "TrafficCNN"
-	encoder_type = 'cnn'
-	uses_lengths = True
-	output_dim = 100
-	is_quantum : bool = False
+	encoder_type = "cnn"
+	supported_inputs = frozenset({"mirage"})
 
-	def __init__(self, n_features: int, n_packets: int, num_classes: int):
+	def __init__(self, input_height, input_width, input_kind, num_classes):
 
-		super().__init__(n_features, n_packets, num_classes)
+		super().__init__(input_height, input_width, input_kind, num_classes)
 
 		self.feature_extractor = _CNNLSTMFeatureExtractor(
-			self.n_features, self.n_packets, n_dim=1
+			self.input_height,
+			self.input_width,
+			self.input_kind,
+			n_dim=1
 		)
 
 		self.input_adapter = nn.Identity()
 		self.processing_block = nn.Identity()
-
 		self.classifier = nn.Linear(
 			self.feature_extractor.output_dim,
 			self.num_classes
@@ -593,24 +853,45 @@ class TrafficCNN(_FeatureClassifier):
 	# end class
 
 class CNNLSTMModel(_FeatureClassifier):
-	"""Baseline originale."""
+	"""Baseline CNN2D. Funziona sia per dataset di tipo Mirage sia per dataset di tipo FlowPic."""
 
 	model_label = "CNNLSTM"
-	encoder_type = 'cnnlstm'
-	uses_lengths = True
-	is_quantum : bool = False
+	encoder_type = "cnnlstm"
 
-	def __init__(self, n_features: int, n_packets: int, num_classes: int):
+	def __init__(self, input_height, input_width, input_kind, num_classes):
 
-		super().__init__(n_features, n_packets, num_classes)
+		super().__init__(input_height, input_width, input_kind, num_classes)
 
 		self.feature_extractor = _CNNLSTMFeatureExtractor(
-			self.n_features, self.n_packets, n_dim=2
+			self.input_height,
+			self.input_width,
+			self.input_kind
 		)
 
 		self.input_adapter = nn.Identity()
 		self.processing_block = nn.Identity()
+		self.classifier = nn.Linear(
+			self.feature_extractor.output_dim,
+			self.num_classes
+		)
 
+		# end
+
+	# end class
+
+class ResNetModel(_FeatureClassifier):
+	""" Classificatore per traffico di rete basato su backbone ResNet + Linear."""
+
+	model_label = "ResNet18Traffic"
+	encoder_type = "resnet"
+
+	def __init__(self, input_height, input_width, input_kind, num_classes):
+
+		super().__init__(input_height, input_width, input_kind, num_classes)
+
+		self.feature_extractor = _ResNetFeatureExtractor()
+		self.input_adapter = nn.Identity()
+		self.processing_block = nn.Identity()
 		self.classifier = nn.Linear(
 			self.feature_extractor.output_dim,
 			self.num_classes
@@ -623,9 +904,9 @@ class CNNLSTMModel(_FeatureClassifier):
 class AmpeDenseModel(_QuantumModel):
 	"""Flatten -> Linear -> Sigmoid -> Amplitude/QNN/probs -> Linear."""
 
-	model_label = 'AmpeDense'
-	embedding = 'amplitude'
-	encoder_type = 'dense'
+	model_label = "AmpeDense"
+	embedding = "amplitude"
+	encoder_type = "dense"
 	input_activation = nn.Sigmoid
 
 	# end class
@@ -633,9 +914,9 @@ class AmpeDenseModel(_QuantumModel):
 class AmpeCNNLSTMModel(_QuantumModel):
 	"""CNNLSTM -> Linear -> Sigmoid -> Amplitude/QNN/probs -> Linear."""
 
-	model_label = 'AmpeCNNLSTM'
-	embedding = 'amplitude'
-	encoder_type = 'cnnlstm'
+	model_label = "AmpeCNNLSTM"
+	embedding = "amplitude"
+	encoder_type = "cnnlstm"
 	input_activation = nn.Sigmoid
 
 	# end class
@@ -643,19 +924,19 @@ class AmpeCNNLSTMModel(_QuantumModel):
 class AngeDenseModel(_QuantumModel):
 	"""Flatten -> Linear -> pi*tanh -> Angle(X)/QNN/probs -> Linear."""
 
-	model_label = 'AngeDense'
-	embedding = 'angle'
-	encoder_type = 'dense'
+	model_label = "AngeDense"
+	embedding = "angle"
+	encoder_type = "dense"
 	input_activation = AngleActivation
 
 	# end class
 
 class AngeCNNLSTMModel(_QuantumModel):
 	"""CNNLSTM -> Linear -> pi*tanh -> Angle(X)/QNN/probs -> Linear."""
-	
-	model_label = 'AngeCNNLSTM'
-	embedding = 'angle'
-	encoder_type = 'cnnlstm'
+
+	model_label = "AngeCNNLSTM"
+	embedding = "angle"
+	encoder_type = "cnnlstm"
 	input_activation = AngleActivation
 
 	# end class
@@ -666,7 +947,7 @@ class AngeCNNLSTMModel(_QuantumModel):
 MODEL_REGISTRY = {
 	"traffic": TrafficCNN,
 	"baseline": CNNLSTMModel,
-	# "resnet": ResNetModel,
+	"resnet": ResNetModel,
 	"ampe_fixed_probs": AmpeDenseModel,
 	"hybrid_ampe_fixed_probs": AmpeCNNLSTMModel,
 	"ange_probs": AngeDenseModel,
@@ -692,29 +973,29 @@ def select_model(
 		nn.Module: Il modello selezionato.
 	"""
 
-	params = {
-		"n_features": sc.dataset.n_features,
-		"n_packets": sc.dataset.n_packets,
-		"num_classes": num_classes,
-	}
-
 	try:
-		model : _BaseModel = MODEL_REGISTRY[sc.model.name]
+		model_class : _BaseModel = MODEL_REGISTRY[sc.model.name]
 	except KeyError as exc:
 		raise NotImplementedError(
 			f'Modello {sc.model.name} non supportato.\n'
 			f'Modelli disponibili: {", ".join(tuple(MODEL_REGISTRY))}.') from exc
 
-	if model.is_quantum:
-		params.update({
-			"random_seed": random_seed,
-			"n_qubits": sc.model.quantum.n_qubits,
-			"q_layers": sc.model.quantum.q_layers,
-			"n_shots": sc.model.quantum.n_shots,
-			"dev_name": sc.model.quantum.simulator,
-			"diff_method": sc.model.quantum.diff_method,
-		})
-	
-	return model(**params)
+	height, width = sc.model_input_shape
+	params = dict(
+		input_height=height, input_width=width, num_classes=num_classes,
+		input_kind="flowpic" if sc.dataset.is_flowpic else "mirage"
+	)
+
+	if model_class.is_quantum:
+		params.update(
+			random_seed= random_seed,
+			n_qubits= sc.model.quantum.n_qubits,
+			q_layers= sc.model.quantum.q_layers,
+			n_shots= sc.model.quantum.n_shots,
+			dev_name= sc.model.quantum.simulator,
+			diff_method= sc.model.quantum.diff_method,
+		)
+
+	return model_class(**params)
 
 	# end
