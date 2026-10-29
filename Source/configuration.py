@@ -270,21 +270,17 @@ class DatasetConfig:
 	name: str
 	""" Name of the dataset file. """
 	
-	is_flowpic: bool
-	""" Whether to use the FlowPic dataset or the original Mirage dataset. If True, generate the FlowPic dataset from raw data using the `traffic_converter` module. """
-	
 	n_packets: int
-	""" Number of packets to consider in each flow. """
+	""" Number of packets to consider in each flow. This is used to limit the number of packets when processing the dataset. This do not represent an actual dimension of the dataset for the input to the model. """
 	
 	n_features: int
-	""" Number of features for each packet in the dataset. """
+	""" Number of features for each packet in the dataset. This do not represent an actual dimension of the dataset for the input to the model. """
 
 	@classmethod
 	def from_defaults(cls) -> "DatasetConfig":
 		return cls(
 			path= "mirage/2019",
 			name= "mirage2019_LOPEZ_lopez_lopez_100P_4F_APP_xST_PAD_metadata",
-			is_flowpic= False,
 			n_packets= 100,
 			n_features= 4,
 		)
@@ -312,7 +308,7 @@ class DatasetConfig:
 	def __repr__(self) -> str:
 		return \
 			f"[DATASET] Path: {self.path}/{self.name}\n" \
-			f"          FlowPic: {self.is_flowpic} | Dimension: {self.n_packets}x{self.n_features}"
+			f"          Limit: {self.n_packets} packets, {self.n_features} features"
 
 		# end
 
@@ -986,6 +982,9 @@ class FlagsConfig:
 	
 	debug_cycle: bool
 	""" Whether to enable debug mode inside each cycle of the execution loop in mirage_pickle_converter(). """
+
+	is_flowpic: bool
+	""" Whether to use the FlowPic dataset or the original Mirage dataset. If True, generate the FlowPic dataset from raw data using the `traffic_converter` module. """
 	
 	save_output: bool
 	""" Whether to save the output of the notebook. """
@@ -995,6 +994,7 @@ class FlagsConfig:
 		return cls(
 			debug= False,
 			debug_cycle= False,
+			is_flowpic= False,
 			save_output= True,
 		)
 
@@ -1007,13 +1007,8 @@ class FlagsConfig:
 			**_overrides(cls, args),
 		)
 
-	def __post_init__(self) -> None:
-		pass
-
-		# end
-
 	def __repr__(self) -> str:
-		return f"\nFlagsConfig(\n\tdebug={self.debug}, \n\tdebug_cycle={self.debug_cycle}, \n\tsave_output={self.save_output}\n)"
+		return f"\nFlagsConfig(\n\tdebug={self.debug}, \n\tdebug_cycle={self.debug_cycle}, \n\tis_flowpic={self.is_flowpic}, \n\tsave_output={self.save_output}\n)"
 
 		# end
 
@@ -1260,7 +1255,8 @@ class SessionConfig:
 				)
 
 				model_dict = dict(session_dict["model"])
-				model_dict["quantum"] = QuantumConfig(**model_dict["quantum"])
+				quantum_dict = model_dict.get("quantum")
+				model_dict["quantum"] = QuantumConfig(**quantum_dict) if quantum_dict is not None else None
 
 				dataset = DatasetConfig(**session_dict["dataset"])
 				preprocessing = PreprocessingConfig(**session_dict["preprocessing"])
@@ -1308,8 +1304,29 @@ class SessionConfig:
 
 		# end
 
+	@property
+	def model_input_shape(self) -> tuple[int, int]:
+		"""Restituisce la forma dell'input del modello come tuple (altezza, larghezza)."""
+
+		# Per dataset di tipo Flowpic composto da istogrammi 2D, la dimensione dell'input è determinata dal rapporto tra MTU e bin_size.
+		if self.dataset.is_flowpic:
+			dim = self.traffic.mtu // self.traffic.bin_size
+			return (dim, dim)
+
+		# Per dataset di tipo Mirage composto da sequenze di pacchetti, la dimensione dell'input è determinata dal numero di pacchetti e dal numero di caratteristiche per pacchetto del biflusso.
+		return (self.dataset.n_packets, self.dataset.n_features)
+
+		# end
+
 	def __post_init__(self) -> None:
-		pass
+		model_class = MODEL_REGISTRY[self.model.name]
+		input_kind = "flowpic" if self.dataset.is_flowpic else "mirage"
+
+		if input_kind not in model_class.supported_inputs:
+			raise ValueError(
+				f"Il modello {self.model.name} non supporta {input_kind}."
+				f"Modelli disponibili: {sorted(model_class.supported_inputs)}"
+			)
 
 		# end
 
@@ -1439,11 +1456,6 @@ class RuntimeConfig:
 			) from error
 
 		return _from_dict(runtime_dict)
-
-		# end
-
-	def __post_init__(self) -> None:
-		pass
 
 		# end
 

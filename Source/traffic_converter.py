@@ -56,14 +56,10 @@ def mirage_pickle_converter(
 		rc (RuntimeConfig): Configurazione dei parametri di runtime per l'esperimento corrente.
 
 	Returns:
-		numpy.ndarray: Array di shape (N, 1, D, D) contenente gli
-		istogrammi 2D delle sessioni di traffico, dove N è il numero di
-		finestre temporali valide e D è la dimensione dell'istogramma, calcolata in base ai parametri MTU e BIN_SIZE.
-		Restituisce un array vuoto di shape (0,) se nessuna finestra valida
-		viene trovata nel file. \n
+		numpy.ndarray: Array di shape (N, 1, D, D) contenente gli istogrammi 2D delle sessioni di traffico, dove N è il numero di finestre temporali valide e D è la dimensione dell'istogramma, calcolata in base ai parametri MTU e BIN_SIZE. Restituisce un array vuoto di shape (0, 1, D, D) se nessuna finestra valida viene trovata nel file. \n
 
 		**pd.DataFrame** \n
-		DataFrame contenente i metadati dei flussi validi, con le colonne "FlowID", "DatasetID" e "Label".
+		DataFrame contenente i metadati dei flussi validi, con le colonne "FlowID", "DatasetID", "Label".
 	"""
 
 	#   ####################################################################    #
@@ -81,7 +77,7 @@ def mirage_pickle_converter(
 	flow_ids = []
 	dataset_ids = []
 	labels = []
-	real_packets = []
+	# real_packets = []
 
 	counter = {
 		# Contatore delle finestre temporali valide.
@@ -102,7 +98,8 @@ def mirage_pickle_converter(
 		# Contatore delle finestre temporali scartate per durata insufficiente.
 		"insufficient_tps": 0
 	}
-	
+
+	min_packets = min_dim = min_tps = None
 	if sc.traffic.filters:
 		# Numero minimo di pacchetti che una finestra deve contenere per essere considerata valida.
 		min_packets = sc.traffic.filters.min_packets
@@ -205,7 +202,7 @@ def mirage_pickle_converter(
 			#   ############################################################    #
 			#   Applicazione di filtri di qualità.
 
-			if ts.max() - ts.min() < 0:
+			if not np.isfinite(ts).all() or np.any(np.diff(ts) < 0):
 				counter["invalid_duration"] += 1
 				if debug_cycle:
 					print(f"[DEBUG] Flusso n.{i} scartato per durata non valida.")
@@ -248,7 +245,7 @@ def mirage_pickle_converter(
 					print(f"[DEBUG] sizes.shape = {sizes.shape}, ts.shape = {ts.shape}")
 				
 				# end if
-			
+
 			if debug_cycle:
 				print(f"[DEBUG] Pacchetti reali del flusso n.{i}:")
 				print(pd.DataFrame(real_rows, columns=['DIR', 'PL', 'TCPWIN', 'IAT']), "\n")
@@ -266,7 +263,7 @@ def mirage_pickle_converter(
 			flow_ids.append(i)
 			dataset_ids.append(counter["valid"])
 			labels.append(label)
-			real_packets.append(len(real_rows))
+			# real_packets.append(len(real_rows))
 
 			dataset.append([hist])
 			counter["valid"] += 1
@@ -282,13 +279,15 @@ def mirage_pickle_converter(
 		assert debug_counter.sum().iloc[0] == total, \
 			"[ERROR] Il conteggio dei pacchetti non corrisponde al numero di flussi in input."
 
-	ret = np.asarray(dataset, dtype=np.float32)
+	dim = sc.traffic.mtu // sc.traffic.bin_size
+	ret = (np.asarray(dataset, dtype=np.float32) if dataset
+		   else np.empty((0, 1, dim, dim), dtype=np.float32))
 
 	metadata = pd.DataFrame({
 		"FlowID": flow_ids,
 		"DatasetID": dataset_ids,
 		"Label": labels,
-		"RealPackets": real_packets,
+		# "RealPackets": real_packets,
 	})
 
 	# Se il flag di debug è attivo, si stampano informazioni dettagliate sui flussi specificati.
@@ -318,59 +317,58 @@ def session_2d_histogram(
 	2D che rappresenta la distribuzione spazio-temporale dei pacchetti
 	di una finestra di traffico di rete.
 
-	L'asse X rappresenta il tempo normalizzato nell'intervallo [0, 1500].
-	L'asse Y rappresenta la dimensione dei pacchetti in byte, da 0 a 1500 (MTU).
+	- L'asse X rappresenta il tempo normalizzato nell'intervallo [0, mtu].
+	- L'asse Y rappresenta la dimensione dei pacchetti in byte, da 0 a mtu.
+	- La cella H[i_size, i_time] è la frequenza relativa dei pacchetti nel bin spazio-temporale corrispondente. Per un istogramma non vuoto H.sum() == 1.
 
 	Args:
-		sizes (numpy.ndarray): Array 1D delle dimensioni in byte dei pacchetti,
-			allineato per indice con ts: cioè, sizes[i] è la dimensione del
-			pacchetto ts[i]. Shape: (N,).
-		ts (numpy.ndarray): Array 1D dei timestamp di arrivo dei pacchetti,
-			espressi in secondi relativi all'inizio della finestra. Shape: (N,).
+		sizes (numpy.ndarray): Array 1D delle dimensioni in byte dei pacchetti, allineato per indice con ts: cioè, sizes[i] è la dimensione del pacchetto ts[i]. Shape: (N,).
+		ts (numpy.ndarray): Array 1D dei timestamp di arrivo dei pacchetti, espressi in secondi relativi all'inizio della finestra. Shape: (N,).
 		mtu (int): Maximum Transmission Unit (Ethernet).
-		bin_size (int): Dimensione in byte di ciascun bin sull'asse Y dell'istogramma 2D.
-		plot (bool, optional): Se True, visualizza l'istogramma con matplotlib
-			usando una colormap binaria (cioè, bianco se 0 pacchetti, nero se 1+
-			pacchetti). Defaults to False.
+		bin_size (int): Ampiezza di ciascun bin: byte sull'asse Y, unità normalizzate sull'asse X dell'istogramma 2D.
+		plot (bool, optional): Se True, visualizza l'istogramma con matplotlib usando una colormap binaria (cioè, bianco se 0 pacchetti, nero se 1+ pacchetti). Defaults to False.
 		title (str, optional): Titolo della finestra di traffico, usato per il plot. Defaults to None.
 
 	Returns:
-		numpy.ndarray: Matrice 2D di shape (D, D) e dtype float32,
-			dove H[y, x] è il numero di pacchetti con dimensione y byte arrivati
-			al tempo normalizzato x. La dimensione D è calcolata in base ai parametri MTU e BIN_SIZE.
+		numpy.ndarray: Matrice 2D di shape (D, D) e dtype float32, dove H[y, x] è il numero di pacchetti con dimensione y byte arrivati al tempo normalizzato x. La dimensione D è calcolata in base ai parametri MTU e BIN_SIZE.
 	"""
 
 	#   ####################################################################    #
-	#   INIZIALIZZAZIONE
+	#   Inizializzazione e controllo di validità degli argomenti.
 
-	sizes = np.asarray(sizes)
-	ts = np.asarray(ts)
+	sizes = np.asarray(sizes, np.float32)
+	ts = np.asarray(ts, np.float32)
+
+	if (sizes.ndim != 1 or ts.ndim != 1) or (sizes.shape != ts.shape or sizes.size == 0):
+		raise ValueError(
+			"Errore nel caricamento dei dati: \n"
+			"'sizes' e 'ts' devono essere vettori 1D non vuoti e allineati."
+		)
+	
+	if not np.isfinite(sizes).all() or not np.isfinite(ts).all():
+		raise ValueError(
+			"Errore nel caricamento dei dati: \n"
+			"'sizes' e 'ts' devono contenere solo valori finiti."
+		)
+	
+	if np.any(np.diff(ts) < 0):
+		raise ValueError(
+			"Errore nel caricamento di 'ts': \n"
+			"I timestamp devono essere non decrescenti."
+		)
+	
+	if np.any((sizes < 0) | (sizes > mtu)):
+		raise ValueError(
+			"Errore nel caricamento di 'sizes': \n"
+			"Trovati valori al di fuori dell'intervallo [0, MTU]."
+		)
 
 	#   ####################################################################    #
-	#   CONTROLLO DI VALIDITÀ DEGLI ARGOMENTI
-
-	if sizes.shape[0] != ts.shape[0]:
-		raise ValueError("Gli array 'ts' e 'sizes' devono avere la stessa lunghezza.")
-
-	#   ####################################################################    #
-	#   NORMALIZZAZIONE DEI TIMESTAMP
-	#   L'intera durata della finestra viene sempre mappata su 1500 pixel,
-	#   indipendentemente da quanto dura in secondi.
-
-	# 1. Rende i timestamp relativi all'inizio della finestra.
-	ts_norm = ts - ts[0]
-
-	# 2. Scala nell'intervallo [0.0, 1.0].
-	try:
-		ts_norm = ts_norm / (ts.max() - ts.min())
-	except ZeroDivisionError:
-		ts_norm = ts_norm / 1.0
-
-	# 3. Scala nell'intervallo [0, 1500].
-	ts_norm = ts_norm * mtu
-
-	#   ####################################################################    #
-	#   COSTRUZIONE DEL FLOWPIC
+	#   Costruzione del FlowPic (istogramma 2D dei pacchetti).
+	
+	duration = ts[-1] - ts[0]
+	ts_norm = np.zeros_like(ts) if duration == 0 else (ts - ts[0]) / duration * mtu
+	edges = np.arange(0, mtu + 1, bin_size)
 
 	H, _, _ = np.histogram2d(
 
@@ -379,37 +377,27 @@ def session_2d_histogram(
 		sizes,
 		ts_norm,
 
-		# Costruisce una griglia di bins 1500x1500 per l'istogramma 2D.
+		# Costruisce una griglia di bins per l'istogramma 2D.
 		# Fissa esplicitamente i limiti dei bin a [0, MTU] su entrambi gli assi.
 		# Senza questo parametro il calcolo dei limiti dipende dai valori
 		# min/max dei dati, portando a risultati incoerenti tra dataset
 		# e istogramma.
-		bins = (range(0, mtu + 1, bin_size), range(0, mtu + 1, bin_size)),
+		bins=(edges, edges),
 	)
 
 	#   ####################################################################    #
-	#   NORMALIZZAZIONE RISPETTO AL NUMERO DI PACCHETTI
+	#   Normalizzazione rispetto al numero di pacchetti.
 	#   Normalizza l'istogramma in modo che la somma di tutti i pixel sia 1.
 
 	if H.sum() > 0:
 		H = H / H.sum()
 
 	#   ####################################################################    #
-	#   VISUALIZZAZIONE OPZIONALE DELL'ISTOGRAMMA
+	#   Visualizzazione opzionale dell'istogramma.
 
 	if plot:
 
 		H_plot = H
-
-		# Si riduce la risoluzione dell'istogramma per il plot,
-		# raggruppando i pixel in blocchi di dimensione BIN_SIZE x BIN_SIZE.
-		# Dopo il reshape, le colonne 0, 2 indicizzano i blocchi originali,
-		# mentre le colonne 1, 3 contano il totale dei pacchetti in ciascun blocco.
-		# if BIN_SIZE > 1:
-		#     n = MTU // BIN_SIZE
-		#     H_plot = H[:n*BIN_SIZE, :n*BIN_SIZE] \
-		#         .reshape(n, BIN_SIZE, n, BIN_SIZE) \
-		#         .sum(axis=(1, 3))
 
 		plt.pcolormesh(
 			# Costruisce la griglia di coordinate per il plot.
@@ -438,7 +426,7 @@ def session_2d_histogram(
 		plt.show()
 
 	#   ####################################################################    #
-	#   RITORNO DELLA MATRICE 2D
+	#   Ritorno della matrice 2D normalizzata.
 
 	# Converte i conteggi in numeri a virgola mobile a 32 bit per ridurre
 	# l'uso di memoria, dato che i valori sono normalizzati tra 0 e 1.
@@ -562,6 +550,8 @@ def get_flowpic_dir(session_config: SessionConfig) -> Path:
 		if v is not None
 	)
 
-	return Path("Dataset", *new_parts, filters_parts)
+	geometry = f"mtu{session_config.traffic.mtu}-bin{session_config.traffic.bin_size}"
+
+	return Path("Dataset", *new_parts, geometry, filters_parts)
 
 	# end

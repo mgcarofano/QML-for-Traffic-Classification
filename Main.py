@@ -77,19 +77,19 @@ def debug_print(message: str) -> None:
 	# end
 
 def convert(seconds: float) -> str:
-    # Separa i secondi interi dalla parte decimale
-    sec_int = int(seconds)
-    milliseconds = int(round((seconds - sec_int) * 1000))
-    
-    # Gestione dell'eventuale arrotondamento a 1000 ms
-    if milliseconds >= 1000:
-        sec_int += 1
-        milliseconds -= 1000
+	# Separa i secondi interi dalla parte decimale
+	sec_int = int(seconds)
+	milliseconds = int(round((seconds - sec_int) * 1000))
 
-    # Formatta ore, minuti e secondi con time.strftime usando l'orario UTC/epoch
-    time_str = time.strftime("%H:%M:%S", time.gmtime(sec_int))
-    
-    return f"{time_str}.{milliseconds:03d}"
+	# Gestione dell'eventuale arrotondamento a 1000 ms
+	if milliseconds >= 1000:
+		sec_int += 1
+		milliseconds -= 1000
+
+	# Formatta ore, minuti e secondi con time.strftime usando l'orario UTC/epoch
+	time_str = time.strftime("%H:%M:%S", time.gmtime(sec_int))
+
+	return f"{time_str}.{milliseconds:03d}"
 
 #	####################################################################	#
 #	Dispositivo utilizzato per il calcolo.
@@ -158,14 +158,14 @@ def resolve_device(requested: str = "auto") -> torch.device:
 #	####################################################################	#
 #	Caricamento o generazione (opzionale) del dataset.
 
-def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
+def load_dataset() -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
 	"""Carica il dataset dal file PICKLE specificato.
 
 	Se `USE_FLOWPIC_DATASET` è impostato su True nella configurazione della sessione,
 	questa funzione dovrebbe caricare il dataset FlowPic precomputato dal file .npz corrispondente.
 
 	Returns:
-		tuple[np.ndarray, np.ndarray, dict]: Una tupla contenente i dati dei flussi (X_raw), le etichette (y_raw) e i relativi metadati.
+		tuple[np.ndarray, np.ndarray, pd.DataFrame]: Una tupla contenente i dati dei flussi (X_raw), le etichette (y_raw) e i relativi metadati.
 	"""
 
 	#	################################################################	#
@@ -174,6 +174,7 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 	dataset_path = Path(f"Dataset/{session_config.dataset.path}/{session_config.dataset.name}")
 
 	#	################################################################	#
+	#	Elaborazione del dataset in formato MIRAGE (sequenza di pacchetti).
 
 	if not session_config.dataset.is_flowpic:
 
@@ -208,6 +209,9 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 		# print(f"Numero di righe diverse: {len(diff)}")
 		# print(diff)
 
+	#	################################################################	#
+	#	Elaborazione del dataset in formato FLOWPIC (istogrammi 2D).
+
 	elif session_config.dataset.is_flowpic:
 
 		flowpics_dir = get_flowpic_dir(session_config)
@@ -234,24 +238,63 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, dict]:
 
 		else:
 			# Caricamento degli istogrammi 2D FlowPic precomputati.
-			histograms = np.load(npz_path)['data']
+			with np.load(npz_path, allow_pickle=False) as archive:
+				histograms = archive["data"].astype(np.float32, copy=False)
 			print(f"\nCaricato dataset (shape={histograms.shape}) da: {npz_path}")
 
 			# Caricamento dei metadati in formato CSV.
 			metadata = pd.read_csv(meta_path)
 			print(f"Caricati metadati (di {len(metadata)} righe) da: {meta_path} ")
 
-		# Prima di procedere con split/training, si verifica che gli istogrammi e i metadati siano allineati.
-		if histograms.shape[0] != len(metadata):
-			raise ValueError("Disallineamento tra istogrammi e metadati!")
-		if list(metadata["DatasetID"]) != list(range(len(metadata))):
-			raise ValueError("DatasetID non contiguo!")
+		# # Prima di procedere con split/training, si verifica che gli istogrammi e i metadati siano allineati.
+		# if histograms.shape[0] != len(metadata):
+		# 	raise ValueError("Disallineamento tra istogrammi e metadati!")
 
 		X_raw = histograms
 		y_raw = metadata["Label"].values
 
 	# end if USE_FLOWPIC_DATASET
 
+	#	################################################################	#
+	#	Verifica della correttezza dei dati e dei metadati.
+
+	if len(X_raw) == 0 or len(y_raw) == 0:
+		raise ValueError("Errore nel caricamento del dataset: nessun campione disponibile.")
+
+	height, width = session_config.model_input_shape
+
+	if not session_config.dataset.is_flowpic:
+		expected = (height, width)
+		if X_raw.ndim != 3 or X_raw.shape[2] != width or X_raw.shape[1] < height:
+			raise ValueError(
+				f"Formato del dataset Mirage non valido. \n"
+				f"Atteso: (N, T >= {expected}), "
+				f"Ricevuto: {X_raw.shape}."
+			)
+		
+		X_raw = np.ascontiguousarray(X_raw[:, :height, :], dtype=np.float32)
+		if not np.isfinite(X_raw).all():
+			raise ValueError("Errore nel calcolo del dataset Mirage: valori non finiti.")
+		
+	elif session_config.dataset.is_flowpic:
+		expected = (1, height, width)
+		if X_raw.ndim != 4 or tuple(X_raw.shape[1:]) != expected:
+			raise ValueError(
+				f"Formato del dataset Flowpic non valido. \n"
+				f"Atteso: (N, {expected}), "
+				f"Ricevuto: {X_raw.shape}."
+			)
+		
+		if not np.isfinite(X_raw).all() or np.any(X_raw < 0):
+			raise ValueError("Errore nel calcolo del dataset Flowpic: valori non finiti o negativi.")
+
+		# end if
+
+	if len(X_raw) != len(y_raw) or len(X_raw) != len(metadata):
+		raise ValueError("Dati, etichette e metadati non sono allineati.")
+	if list(metadata["DatasetID"]) != list(range(len(metadata))):
+		raise ValueError("DatasetID non contiguo!")
+	
 	return X_raw, y_raw, metadata
 
 	# end
@@ -432,23 +475,26 @@ def split_train_val(train_indices_temp, y_temp) -> tuple:
 #	####################################################################	#
 #	Applicazione della strategia di data preprocessing.
 
-def apply_data_preprocessing(X, scaler):
-	"""Applica il preprocessing ai dati utilizzando lo scaler specificato.
+def apply_data_preprocessing(X, scaler, lengths):
+	"""Applica il preprocessing ai dati utilizzando lo scaler specificato, lavorando solo sulle lunghezze valide dei campioni. Valido solo per dataset di tipo Mirage (sequenze di pacchetti).
 
 	Args:
 		X (np.ndarray): Array contenente i dati da preprocessare.
 		scaler: Oggetto scaler utilizzato per normalizzare i dati.
+		lengths (np.ndarray): Array contenente le lunghezze valide per ciascun campione.
 
 	Returns:
 		np.ndarray: Array contenente i dati preprocessati.
 	"""
 
-	X_proc = X.copy().astype(np.float32)
-	X_proc = X_proc[:, :session_config.dataset.n_packets, :]
-	X_proc = scaler.transform(np.reshape(X_proc, [-1, session_config.dataset.n_features]))
-	X_proc = np.reshape(X_proc, [-1, session_config.dataset.n_packets, session_config.dataset.n_features])
+	height, width = session_config.model_input_shape
+	X_proc = X[:, :height, :].astype(np.float32, copy=True)
+	valid = np.arange(height)[None, :] < lengths[:, None]
 
-	return X_proc
+	X_proc = scaler.transform(X_proc.reshape(-1, width)).reshape(-1, height, width)
+	X_proc[~valid] = 0.0
+	
+	return X_proc.astype(np.float32, copy=False)
 
 	# end
 
@@ -760,7 +806,8 @@ def get_model_info(model) -> str:
 		f"{session_config.dataset!r} | Classes: {model.num_classes} \n\n"
 
 		"Modello selezionato: \n"
-		f"{session_config.model!r} \n\n"
+		f"{session_config.model!r} \n"
+		f"Model input: {model.input_kind}, {model.input_height}x{model.input_width} \n\n"
 
 		"Struttura interna: \n"
 		f"{str(model)} \n\n"
@@ -1236,29 +1283,33 @@ def main(cli_overrides: bool):
 		# TODO: vedi notebook.
 
 		#	------------------------------------------------------------	#
-		#	Estrazione delle lunghezze reali dei flussi.
+		#	Estrazione delle lunghezze reali dei flussi (solo per dataset Mirage).
 
-		lengths = np.array(metadata["RealPackets"])
-
-		if np.any((lengths < 1) | (lengths > session_config.dataset.n_packets)):
-			raise ValueError(
-				"Ogni lunghezza deve essere compresa "
-				f"tra 1 e {session_config.dataset.n_packets}."
-			)
-
-		lengths_train = lengths[train_indices]
-		lengths_val = lengths[val_indices]
-		lengths_test = lengths[test_indices]
-
-		#	------------------------------------------------------------	#
-		#	Applicazione della strategia di data preprocessing.
+		lengths_train = None
+		lengths_val = None
+		lengths_test = None
 
 		if not session_config.dataset.is_flowpic:
-			scaler.fit(np.reshape(X_train, [-1, session_config.dataset.n_features]))
+			real_lengths = metadata["RealPackets"].to_numpy(dtype=np.int64)
 
-			X_train = apply_data_preprocessing(X_train, scaler)
-			X_val = apply_data_preprocessing(X_val, scaler)
-			X_test = apply_data_preprocessing(X_test, scaler)
+			lengths = np.minimum(real_lengths, session_config.dataset.n_packets)
+			if np.any((lengths < 1) | (lengths > session_config.dataset.n_packets)):
+				raise ValueError(f"Ogni lunghezza deve essere compresa tra 1 e {session_config.dataset.n_packets}.")
+			
+			lengths_train = lengths[train_indices]
+			lengths_val = lengths[val_indices]
+			lengths_test = lengths[test_indices]
+
+		#	------------------------------------------------------------	#
+		#	Applicazione della strategia di data preprocessing (solo per dataset Mirage).
+
+		if not session_config.dataset.is_flowpic:
+			valid_train = np.arange(X_train.shape[1])[None, :] < lengths_train[:, None]
+			scaler.fit(X_train[valid_train])
+
+			X_train = apply_data_preprocessing(X_train, scaler, lengths_train)
+			X_val = apply_data_preprocessing(X_val, scaler, lengths_val)
+			X_test = apply_data_preprocessing(X_test, scaler, lengths_test)
 
 		#	------------------------------------------------------------	#
 		#	Stampa dei risultati.
