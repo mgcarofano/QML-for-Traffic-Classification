@@ -1058,11 +1058,6 @@ class LaunchConfig:
 		)
 
 		# end
-
-	def use_config_file(self) -> bool:
-		return self.source_session_id is not None
-
-		# end
 	
 	def __post_init__(self) -> None:
 		if self.source_session_id is not None:

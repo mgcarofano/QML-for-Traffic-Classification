@@ -12,7 +12,13 @@
 # Importing session parameters
 from dataclasses import asdict
 from Source.configuration import SessionConfig, RuntimeConfig, ExecutionConfig
-from Source.configuration import parse_args
+from Source.configuration import \
+	parse_args, \
+	find_session_config
+from Source.session_io import TerminalLog, FoldInterrupt, EpochInterrupted
+from Source.session_io import \
+	atomic_write, \
+	write_config
 
 # Dataset loading and manipulation
 import numpy as np
@@ -57,10 +63,12 @@ from sklearn.metrics import \
 	classification_report
 
 # More libraries
-import random
-import json
-import time
 from datetime import datetime
+import json
+import random
+import re
+import time
+import traceback
 
 #	####################################################################	#
 #	Funzioni di utilità
@@ -92,8 +100,121 @@ def convert(seconds: float) -> str:
 
 	return f"{time_str}.{milliseconds:03d}"
 
+def use_config_file() -> bool:
+	return runtime_config.launch.source_session_id is not None
+
+	# end
+
 #	####################################################################	#
-#	Dispositivo utilizzato per il calcolo.
+#	Calcolo dei parametri di esecuzione.
+
+def allocate_session(start_time: int, results_dir="Results") -> tuple[str, Path]:
+	"""Determina il nome e il percorso dei risultati per la sessione corrente: a partire dall'orario di lancio, per iniziare un nuovo esperimento; oppure da una sessione esistente specificata nel file di configurazione, generando un nuovo identificativo con un suffisso di versione.
+
+	Args:
+		start_time (int): Timestamp di inizio della sessione utilizzato per generare l'identificativo della sessione.
+		results_dir (str, optional): Directory principale dove salvare i risultati. Defaults to "Results".
+
+	Raises:
+		ValueError: Se l'identificativo generato già esiste.
+		FileExistsError: Se la directory dei risultati per la sessione corrente esiste già.
+
+	Returns:
+		tuple[str, Path]: Una tupla contenente il nome e il percorso dei risultati per la sessione corrente.
+	"""
+
+	#	################################################################	#
+	#	Inizializzazione
+
+	# Nome del dataset da aggiungere al percorso dei risultati.
+	dataset_dir_str = str(
+		session_config.dataset.path 
+		if not runtime_config.flags.is_flowpic 
+		else get_flowpic_dir(session_config)
+	).replace('/', '-')
+
+	# Directory principale per i risultati.
+	root = Path(results_dir)
+	root.mkdir(parents=True, exist_ok=True)
+
+	#	################################################################	#
+	#	Scelta del nome della nuova sessione.
+
+	# Raccoglie i nomi di tutte le directory esistenti dentro la cartella 'root'.
+	# Esplora ricorsivamente il contenuto di root, includendo le sue sottodirectory.
+	existing = {p.name for p in root.rglob("*") if p.is_dir()}
+
+	#	################################################################	#
+	#	Scelta del nome della nuova sessione.
+	#	CASO 1: Uso del file di configurazione.
+	#	Trova il numero di versione successivo della stessa famiglia.
+
+	if use_config_file():
+		# Recupera la base del nome della sessione, rimuovendo il suffisso di versione (_vX)
+		base = re.sub(
+			pattern = r"(?:_v[0-9]+)+$",
+			repl= "",
+			string= runtime_config.launch.source_session_id
+		)
+
+		# Costruisce un’espressione regolare per riconoscere le versioni esistenti per la sessione 'base'.
+		# Si utilizza re.escape() per trattare correttamente eventuali caratteri speciali presenti in 'base'.
+		pattern = re.compile(re.escape(base) + r"_v([0-9]+)$")
+
+		versions = [
+			# Estrae il numero di versione dal match trovato e lo converte in intero.
+			int(m.group(1))
+
+			# Esamina ogni nome raccolto dalle directory esistenti.
+			for name in existing
+
+			# Filtra solo i nomi che corrispondono al 'pattern' delle versioni.
+			# Esempio: con base "abc_v1" OK, mentre "abc_v1_extra" "abc_backup_v2" NO.
+			if (m := pattern.fullmatch(name))
+		]
+
+		# Determina il numero di versione successivo in base alla versione massima esistente.
+		# Se non ci sono versioni esistenti, inizia da "v2" (default=1 + 1).
+		# Inoltre, la logica non considera eventuali versioni mancanti nella sequenza; es. se esistono "v1" e "v3", sceglie "v4", e non "v2".
+		session_id = f"{base}_v{max(versions, default=1) + 1}"
+
+	#	################################################################	#
+	#	Scelta del nome della nuova sessione.
+	#	CASO 2: Nessun file di configurazione disponibile.
+	#	Genera l’identificativo della nuova esecuzione a partire dal timestamp di inizio.
+
+	else:
+		session_id = datetime.fromtimestamp(start_time).strftime("%Y-%m-%d_%H-%M")
+
+	#	################################################################	#
+	#	Creazione della directory della nuova sessione.
+
+	# L'identificativo della nuova sessione non deve essere già occupato.
+	# Per il ramo che crea una nuova versione, questo controllo è ridondante.
+	if session_id in existing:
+		raise ValueError(
+			f"L'esperimento '{session_id}' esiste già. \n"
+			"Aspetta un minuto prima di eseguire un nuovo esperimento."
+		)
+	
+	destination = root / Path(
+		f"{dataset_dir_str}/"
+		f"Sample{session_config.kfold.sub_sample_ratio * 100:g}%/"
+		f"{session_config.model.name}/"
+		f"{session_id}"
+	)
+
+	try:
+		destination.mkdir(parents=True, exist_ok=False)
+	except FileExistsError:
+		raise FileExistsError(
+			f"La directory dei risultati '{destination}' esiste già. \n"
+			"Aspetta un minuto prima di eseguire un nuovo esperimento."
+		)
+
+	return session_id, destination
+
+	# end
 
 def resolve_device(requested: str = "auto") -> torch.device:
 	"""Calcola il dispositivo da utilizzare, risolvendo automaticamente in base alla configurazione della macchina corrente o validando un dispositivo esplicito.
@@ -153,6 +274,57 @@ def resolve_device(requested: str = "auto") -> torch.device:
 		)
 
 	return device
+
+	# end
+
+def resolve_checkpoint_session(execution_config: ExecutionConfig) -> Path | None:
+	"""Verifica la disponibilità dei checkpoint della sessione di training
+	e confronta l'ambiente di esecuzione corrente con quello salvato nella configurazione.
+
+	Args:
+		execution_config (ExecutionConfig): Configurazione dei parametri di esecuzione per l'esperimento corrente.
+
+	Raises:
+		FileNotFoundError: Se uno o più checkpoint della sessione di training sono mancanti.
+		RuntimeError: Se l'ambiente di esecuzione corrente non è compatibile con quello salvato nella configurazione.
+
+	Returns:
+		Path: Percorso della directory contenente i checkpoint della sessione di training, o None se non applicabile.
+	"""
+
+	#	############################################################	#
+	#	Verifica la presenza dei checkpoint per ciascun fold del dataset.
+
+	checkpoint_dir = find_session_config(runtime_config.launch.source_session_id).parent
+
+	missing = [
+		checkpoint_dir / f"fold{i}" / "model.pth"
+		for i in range(session_config.kfold.test_folds)
+		if not (checkpoint_dir / f"fold{i}" / "model.pth").is_file()
+	]
+
+	if missing:
+		raise FileNotFoundError(
+			"Checkpoint mancanti nella sessione di training: \n"
+			+ "\n".join(f"{i+1}: \t{str(m)}" for i, m in enumerate(missing))
+		)
+	
+	#	############################################################	#
+	#	Verifica la compatibilità dell'ambiente di esecuzione.
+
+	checkpoint_execution = ExecutionConfig.from_json(checkpoint_dir / "config.json")
+	source_environment = (checkpoint_execution.current_device, str(checkpoint_execution.dtype))
+	current_environment = (execution_config.current_device, str(execution_config.dtype))
+
+	if source_environment != current_environment:
+		raise RuntimeError(
+			"La configurazione attuale della macchina non è compatibile con quella salvata nel file di configurazione: \n"
+			f"Atteso: {source_environment} \n"
+			f"Ricevuto: {current_environment}"
+		)
+
+	# Restituisce la directory dei checkpoint se i controlli precedenti sono stati superati.
+	return checkpoint_dir
 
 	# end
 
@@ -303,13 +475,14 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
 #	####################################################################	#
 #	Generazione delle etichette per le classi del dataset.
 
-def encode_labels(X_raw, y_raw, labels_map_path):
+def encode_labels(X_raw, y_raw, labels_map_path, reference_labels_path=None):
 	"""Codifica le etichette del dataset utilizzando LabelEncoder.
 
 	Args:
 		X_raw (array-like): Array contenente i dati grezzi del dataset.
 		y_raw (array-like): Array contenente le etichette grezze del dataset.
 		labels_map_path (str): Percorso del file JSON in cui salvare o leggere la mappatura delle etichette.
+		reference_labels_path (str, optional): Percorso del file JSON contenente la mappatura di riferimento delle etichette. Default è None.
 
 	Raises:
 		ValueError: Se le etichette del dataset non corrispondono a quelle salvate nella configurazione.
@@ -318,39 +491,52 @@ def encode_labels(X_raw, y_raw, labels_map_path):
 		tuple: L'array completo delle etichette codificate e un dizionario che mappa in modo univoco le etichette originali.
 	"""
 
+	#	################################################################	#
+	#	Creazione della mappatura delle etichette.
+
 	le = LabelEncoder()
 
 	y_encoded = le.fit_transform(y_raw)
 	ordinal_classes = np.unique(y_encoded)
 	labels_map = {}
 	for l, c in zip(ordinal_classes, le.inverse_transform(ordinal_classes)):
-		labels_map[int(l)] = c
+		labels_map[int(l)] = c.item() if isinstance(c, np.generic) else c
 
-	if not runtime_config.launch.use_config_file():
-		with open(labels_map_path, "w", encoding="utf-8") as f:
-			json.dump(labels_map, f)
+	#	################################################################	#
+	#	Confronto con la mappatura di riferimento, se disponibile.
 
-	elif runtime_config.launch.use_config_file():
-		# Se il file di configurazione esiste, si verifica che le classi nel dataset corrispondano a quelle nel file di configurazione.
-		with open(labels_map_path, "r", encoding="utf-8") as f:
-			config_labels_map = json.load(f)
+	if reference_labels_path is not None:
 
-		# Le chiavi lette da JSON sono stringhe.
-		# Vengono prima convertite per essere confrontate.
-		config_labels_map = {int(key): value for key, value in config_labels_map.items()}
+		if Path(reference_labels_path).is_file():
+			with Path(reference_labels_path).open(encoding="utf-8") as stream:
+				config_labels_map = json.load(stream)
 
-		if config_labels_map != labels_map:
-			raise ValueError(
-				f"Le etichette del dataset ({labels_map}) non corrispondono "
-				f"a quelle salvate nella configurazione ({config_labels_map})."
-			)
+			# Le chiavi lette da JSON sono stringhe. Vengono prima convertite per essere confrontate.
+			config_labels_map = {int(key): value for key, value in config_labels_map.items()}
+			if config_labels_map != labels_map:
+				raise ValueError(
+					"Le etichette del dataset non corrispondono a quelle salvate nella configurazione. \n"
+					f"Atteso: {len(config_labels_map)} etichette. \n{sorted(config_labels_map.values())} \n"
+					f"Ricevuto: {len(labels_map)} etichette. \n{sorted(labels_map.values())}"
+				)
 
-		# end use_config_file()
+		else:
+			print("Mappatura originale assente: etichette ricostruite dal dataset corrente.")
+
+		# end if
+
+	#	################################################################	#
+	#	Verifica e ritorno delle etichette codificate.
+
+	if runtime_config.flags.save_output:
+		write_config(labels_map_path, labels_map)
 
 	if len(X_raw) != len(y_encoded):
 		raise ValueError("Disallineamento tra dati e etichette!")
 
 	return y_encoded, labels_map
+
+	# end
 
 #	####################################################################	#
 #	Implementazione della K-fold cross-validation.
@@ -503,14 +689,12 @@ def apply_data_preprocessing(X, scaler, lengths):
 #	Creazione dei percorsi dei file di output.
 
 def get_fold_directory(output_dir: Path, fold_index: int) -> Path:
+	# """Directory di sola destinazione, mai usata per individuare checkpoint sorgenti."""
 	"""Crea e restituisce il percorso della directory dei risultati per il fold selezionato in modalità di addestramento, altrimenti verifica che esista (in base alla directory di output fornita nel file di configurazione).
 
 	Args:
 		output_dir (Path): Directory di output principale.
 		fold_index (int): Indice del fold selezionato.
-
-	Raises:
-		FileNotFoundError: Se la directory dei risultati per il fold selezionato non viene trovata.
 
 	Returns:
 		Path: Percorso della directory dei risultati per il fold selezionato.
@@ -520,24 +704,21 @@ def get_fold_directory(output_dir: Path, fold_index: int) -> Path:
 	#	Verifica dei parametri.
 
 	if not 0 <= fold_index < session_config.kfold.test_folds:
-		raise ValueError(f"fold_index deve essere compreso tra 0 e {session_config.kfold.test_folds-1}.")
+		raise ValueError(
+			"Indice del fold non valido. \n"
+			f"Atteso: [0, {session_config.kfold.test_folds -1}], "
+			f"Ricevuto: {fold_index}"
+		)
 
 	#	################################################################	#
 	#	Creazione della directory dei risultati per il fold selezionato.
+	#	Vale solo per la modalità di addestramento o se è abilitato il salvataggio dell'output.
+	#	Quando la modalità di valutazione è attiva ma non si vuole salvare l'output, la directory non viene creata.
 
 	fold_results_dir = output_dir / f"fold{fold_index}"
 
-	if runtime_config.launch.exec_mode_train:
-		fold_results_dir.mkdir(parents=True, exist_ok=True)
-
-	elif not runtime_config.launch.exec_mode_train:
-		if not fold_results_dir.exists():
-			raise FileNotFoundError(
-				f"Directory dei risultati per il fold {fold_index} "
-				f"non trovata: {fold_results_dir}"
-			)
-
-		# end if
+	if runtime_config.launch.exec_mode_train or runtime_config.flags.save_output:
+		fold_results_dir.mkdir(parents=True, exist_ok=False)
 
 	return fold_results_dir
 
@@ -680,6 +861,8 @@ def build_scheduler(optimizer, train_loader):
 		oppure None se 'NoSched' è selezionato.
 	"""
 
+	lr_sched = None
+
 	if session_config.scheduler.name == 'OneCycleSched':
 		lr_sched = torch.optim.lr_scheduler.OneCycleLR(
 			optimizer,
@@ -785,7 +968,7 @@ def build_loss_function(
 	# end
 
 #	####################################################################	#
-#	# Stampa delle informazioni sul modello e sui parametri.
+#	Stampa e recupero delle informazioni sul modello e sui parametri.
 
 def get_model_info(model) -> str:
 	"""Restituisce le informazioni sul modello, tra cui il nome della classe del modello, il numero di parametri addestrabili e la struttura interna dei suoi livelli.
@@ -820,6 +1003,74 @@ def get_model_info(model) -> str:
 
 	# end
 
+def load_source_history(checkpoint_dir, fold_index):
+	"""Carica lo storico dell'addestramento da un file CSV, se disponibile, e determina l'epoca migliore in base alla metrica monitorata.
+
+	Args:
+		checkpoint_dir (Path): Directory contenente i checkpoint.
+		fold_index (int): Indice del fold per cui caricare lo storico.
+
+	Raises:
+		ValueError: Se lo storico è incompleto o vuoto.
+		ValueError: Se lo storico non è valido (epoche duplicate o valori non finiti).
+		ValueError: Se le epoche non sono consecutive.
+
+	Returns:
+		tuple[pd.DataFrame, int, float, str]: Una tupla contenente lo storico dell'addestramento come DataFrame, l'epoca migliore, il punteggio migliore e la metrica monitorata.
+	"""
+
+	#	################################################################	#
+	#	Inizializzazione
+
+	best_epoch = None
+	best_score = None
+
+	checkpoint_session = SessionConfig.from_json(checkpoint_dir / "config.json")
+	metric = checkpoint_session.training.monitored_metric
+	delta = checkpoint_session.training.min_delta
+
+	path = checkpoint_dir / f"fold{fold_index}" / "training_history.csv"
+
+	#	################################################################	#
+	#	CASO SPECIALE: storico di addestramento non disponibile.
+	#	È il caso previsto quando il training originale era stato eseguito con save_output disabilitato.
+
+	if not path.is_file():
+		print(
+			f"Storico non disponibile in {path}. \n"
+			"Non è possibile rigenerare i grafici di addestramento."
+		)
+		return None, None, None, metric
+
+	#	################################################################	#
+	#	Caricamento e validazione dello storico di addestramento.
+
+	history = pd.read_csv(path)
+	required = {
+		"epoch", "time",
+		"train_loss", "train_accuracy",
+		"val_loss", "val_accuracy", "val_macrof1"
+	}
+
+	if not required.issubset(history.columns) or history.empty:
+		raise ValueError(f"Storico incompleto o vuoto: {path}")
+	if history["epoch"].duplicated().any() or not np.isfinite(history[list(required)].to_numpy(dtype=float)).all():
+		raise ValueError(f"Storico non valido: {path}")
+	if history["epoch"].tolist() != list(range(1, len(history) + 1)):
+		raise ValueError(f"Epoche non consecutive: {path}")
+
+	#	################################################################	#
+	#	Selezione dell'epoca migliore in base alla metrica monitorata.
+
+	for row in history.to_dict("records"):
+		score = float(row[metric])
+		if best_epoch is None or (score < best_score - delta if metric == "val_loss" else score > best_score + delta):
+			best_epoch, best_score = int(row["epoch"]), score
+
+	return history, best_epoch, best_score, metric
+
+	# end
+
 #	####################################################################	#
 #	Addestramento del modello.
 
@@ -829,11 +1080,12 @@ def train_model(
 		optimizer, lr_sched, criterion,
 		fold_model_path: str,
 	) -> tuple[torch.nn.Module, pd.DataFrame, int, float]:
-	"""Addestra il modello per un numero specificato di epoche.
+	"""Addestra il modello per un numero specificato di epoche. Si può interrompere anticipatamente l'addestramento con Ctrl+C scartando l'epoca incompleta.
 
 	## Funzionalità
 		- Monitora le metriche di addestramento e validazione.
 		- Implementa early stopping e aggiorna i pesi del modello in base alla metrica di valutazione selezionata.
+		- Supporta l'interruzione anticipata dell'addestramento con Ctrl+C, mantenendo i pesi aggiornati fino all'epoca migliore.
 
 	Args:
 		model: Il modello da addestrare.
@@ -864,6 +1116,7 @@ def train_model(
 	best_score = float('inf') if minimize else -float('inf')
 	best_epoch = None
 	patience_counter = 0
+	interrupted = False
 
 	#	################################################################	#
 	#	Inizio del loop di addestramento.
@@ -883,110 +1136,133 @@ def train_model(
 	#	################################################################	#
 	#	Esecuzione del loop di addestramento.
 
-	for epoch in range(1, session_config.training.epochs +1):
+	with FoldInterrupt() as stop:
+		for epoch in range(1, session_config.training.epochs +1):
 
-		# Salva il timestamp di inizio epoca per calcolare la durata dell'epoca corrente.
-		epoch_start_time = time.time()
-		print(f"\nEpoch {epoch}/{session_config.training.epochs}\n")
+			# Salva il timestamp di inizio epoca per calcolare la durata dell'epoca corrente.
+			epoch_start_time = time.time()
 
-		# Calcola la loss e l'accuratezza per il training set e il validation set.
-		train_loss, train_acc = train_epoch(
-			model, device,
-			train_loader,
-			criterion, optimizer, lr_sched
-		)
+			try:
 
-		# In fase di addestramento, non serve restituire le predizioni e le etichette predette. Si inserisce '_' per ignorarle.
-		val_loss, val_acc, val_preds, val_true, _ = evaluate(
-			model, device,
-			val_loader,
-			criterion
-		)
+				stop.check()
 
-		val_macrof1 = f1_score(
-			val_true.detach().cpu().numpy(),
-			val_preds.detach().cpu().numpy(),
-			labels= np.arange(model.num_classes),
-			average= "macro",
-			zero_division= 0,
-		) * 100
+				print(f"\nEpoch {epoch}/{session_config.training.epochs}")
 
-		metrics = {
-			"train_loss": float(train_loss),
-			"train_accuracy": float(train_acc),
-			"val_loss": float(val_loss),
-			"val_accuracy": float(val_acc),
-			"val_macrof1": float(val_macrof1),
-		}
+				# Calcola la loss e l'accuratezza per il training set e il validation set.
+				train_loss, train_acc = train_epoch(
+					model, device,
+					train_loader,
+					criterion, optimizer, lr_sched,
+					stop=stop,
+				)
 
-		invalid_metrics = [name for name, value in metrics.items() if not np.isfinite(value)]
-		if invalid_metrics:
-			raise RuntimeError("Errore nel calcolo delle metriche di addestramento: valori non finiti per [" + ", ".join(invalid_metrics) + "]")
+				val_loss, val_acc, val_preds, val_true, _ = evaluate(
+					model, device,
+					val_loader,
+					criterion,
+					stop=stop,
+				)
 
-		# Calcola la durata dell'epoca corrente e il tempo totale trascorso dall'inizio dell'addestramento.
-		epoch_end_time = time.time()
-		epoch_duration = epoch_end_time - epoch_start_time
-		elapsed_time = epoch_end_time - training_start_time
+				val_macrof1 = f1_score(
+					val_true.detach().cpu().numpy(),
+					val_preds.detach().cpu().numpy(),
+					labels= np.arange(model.num_classes),
+					average= "macro",
+					zero_division= 0,
+				) * 100
 
-		# Aggiorna lo storico delle metriche per l'epoca corrente.
-		train_history_df.loc[len(train_history_df)] = {
-			"epoch": epoch,
-			"time": epoch_duration,
-			**metrics
-		}
+				metrics = {
+					"train_loss": float(train_loss),
+					"train_accuracy": float(train_acc),
+					"val_loss": float(val_loss),
+					"val_accuracy": float(val_acc),
+					"val_macrof1": float(val_macrof1),
+				}
 
-		# Stampa in console le metriche dell'epoca corrente.
-		print(
-			f"\nTrain Loss: {train_loss:.4f} "
-			f"| Train Accuracy: {train_acc:.4f}%\n"
+				invalid_metrics = [name for name, value in metrics.items() if not np.isfinite(value)]
+				if invalid_metrics:
+					raise RuntimeError("Errore nel calcolo delle metriche di addestramento: valori non finiti per [" + ", ".join(invalid_metrics) + "]")
 
-			f"Val Loss: {val_loss:.4f} "
-			f"| Val Accuracy: {val_acc:.4f}% "
-			f"| Val Macro F1: {(val_macrof1):.4f}%\n"
+				stop.check()
 
-			f"Epoch time: {convert(epoch_duration)} "
-			f"| Elapsed time: {convert(elapsed_time)}"
-		)
+			except (EpochInterrupted, KeyboardInterrupt):
+				interrupted = True
+				print(f"\nTraining interrotto all'epoca {epoch}.")
+				break
 
-		# CHECK : se il punteggio calcolato migliora, salva il modello e resetta il contatore per la patience.
-		current_score = metrics[session_config.training.monitored_metric]
+			# end try
 
-		if best_epoch is None:
-			improved = True
-		elif minimize:
-			improved = current_score < (best_score - session_config.training.min_delta)
-		else:
-			improved = current_score > (best_score + session_config.training.min_delta)
+			# CHECK : se il punteggio calcolato migliora, salva il modello e resetta il contatore per la patience.
+			current_score = metrics[session_config.training.monitored_metric]
 
-		if improved:
+			if best_epoch is None:
+				improved = True
+			elif minimize:
+				improved = current_score < (best_score - session_config.training.min_delta)
+			else:
+				improved = current_score > (best_score + session_config.training.min_delta)
+
+			if improved:
+				print(
+					f"  -> '{session_config.training.monitored_metric}' improved. \n"
+					f"     Model saved in {fold_model_path}."
+				)
+
+				atomic_write(fold_model_path, lambda stream: torch.save(model.state_dict(), stream))
+
+				best_score = current_score
+				best_epoch = epoch
+				patience_counter = 0
+
+			elif session_config.training.early_stopping:
+				patience_counter += 1
+				print(f"  -> No improvement on '{session_config.training.monitored_metric}'.")
+				print(f"     Patience: {patience_counter} of {session_config.training.patience}" if True else "")
+
+				# Se il contatore di patience raggiunge il limite si interrompe il training.
+				if patience_counter >= session_config.training.patience:
+					print("     Early stopping triggered.")
+					break
+
+			else:
+				print(
+					f"  -> No improvement on '{session_config.training.monitored_metric}'. \n" 
+					f"     Early stopping is disabled."
+				)
+
+			# Calcola la durata dell'epoca corrente e il tempo totale trascorso dall'inizio dell'addestramento.
+			epoch_end_time = time.time()
+			epoch_duration = epoch_end_time - epoch_start_time
+			elapsed_time = epoch_end_time - training_start_time
+
+			# Aggiorna lo storico delle metriche per l'epoca corrente.
+			train_history_df.loc[len(train_history_df)] = {
+				"epoch": epoch,
+				"time": epoch_duration,
+				**metrics
+			}
+
+			# Stampa in console le metriche dell'epoca corrente.
 			print(
-				f"  -> '{session_config.training.monitored_metric}' improved. \n"
-				f"     Model saved in {fold_model_path}."
-			)
-			torch.save(model.state_dict(), fold_model_path)
+				f"\nTrain Loss: {train_loss:.4f} "
+				f"| Train Accuracy: {train_acc:.4f}%\n"
 
-			best_score = current_score
-			best_epoch = epoch
-			patience_counter = 0
+				f"Val Loss: {val_loss:.4f} "
+				f"| Val Accuracy: {val_acc:.4f}% "
+				f"| Val Macro F1: {(val_macrof1):.4f}%\n"
 
-		elif session_config.training.early_stopping:
-			patience_counter += 1
-			print(f"  -> No improvement on '{session_config.training.monitored_metric}'.")
-			print(f"     Patience: {patience_counter} of {session_config.training.patience}" if True else "")
-
-		else:
-			print(
-				f"  -> No improvement on '{session_config.training.monitored_metric}'. \n" 
-				f"     Early stopping is disabled."
+				f"Epoch time: {convert(epoch_duration)} "
+				f"| Elapsed time: {convert(elapsed_time)}"
 			)
 
-		# Se il contatore di patience raggiunge il limite
-		# e l'early stopping è abilitato, si interrompe il training.
-		if patience_counter >= session_config.training.patience and session_config.training.early_stopping:
-			print("     Early stopping triggered.")
-			break
+			if stop.requested:
+				interrupted = True
+				print("\nStop ricevuto durante la finalizzazione dell'epoca completa.")
+				break
 
-		# end for epoch
+			# end for epoch
+
+		# end with stop
 
 	#	################################################################	#
 	#	Fine del loop di addestramento.
@@ -998,14 +1274,18 @@ def train_model(
 		else f"{best_score:.4f}%"
 
 	print(
-		"\nAddestramento completato. \n"
+		f"\nAddestramento {'interrotto' if interrupted else 'completato'}. \n"
 		f"Orario corrente: "
 		f"{datetime.fromtimestamp(training_end_time).strftime('%Y-%m-%d_%H:%M:%S')} \n"
 		f"Tempo di elaborazione: "
 		f"{convert(training_end_time - training_start_time)} \n"
-		f"Migliore epoca: {best_epoch} | "
-		f"{session_config.training.monitored_metric}: {best_score_str}"
 	)
+
+	# Se non è stata completata alcuna epoca, interrompe il processo e segnala che il test del fold sarà saltato.
+	# Altrimenti prosegue con la stampa e il salvataggio delle informazioni sulla migliore epoca.
+	if best_epoch is None:
+		print("Non è stata completata alcuna epoca. Il test del fold sarà saltato.")
+		return model, train_history_df, None, None
 
 	#	################################################################	#
 	#	Salvataggio dei risultati.
@@ -1018,6 +1298,11 @@ def train_model(
 	)
 	model.load_state_dict(best_model)
 	del best_model
+
+	print(
+		f"Migliore epoca: {best_epoch} | "
+		f"{session_config.training.monitored_metric}: {best_score_str}"
+	)
 
 	return model, train_history_df, best_epoch, best_score
 
@@ -1091,7 +1376,7 @@ def compute_soft_output(
 #	####################################################################	#
 #	Main
 
-def main(cli_overrides: bool):
+def main(terminal_log: TerminalLog):
 
 	#	-----------------------------------------------------------------	#
 	#	Inizio dell'elaborazione.
@@ -1101,89 +1386,58 @@ def main(cli_overrides: bool):
 	print(f"Orario corrente: {datetime.fromtimestamp(total_start_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 
 	#	-----------------------------------------------------------------	#
-	# 	Calcolo dei parametri di esecuzione.
+	# 	Calcolo e salvataggio dei parametri di esecuzione.
+
+	# Identificatore della sessione corrente e directory di output corrispondente.
+	session_id, output_dir = allocate_session(total_start_time, results_dir="Results")
+	print(f"Identificatore della sessione selezionato: {session_id}")
+
+	# Percorso per il log del terminale.
+	terminal_log_path = output_dir / "terminal.log"
+	terminal_log.attach(terminal_log_path)
+
+	# Percorso per i file di output relativi alle informazioni sul modello.
+	model_info_path = output_dir / "model_info.txt"
+	q_plot_path = output_dir / "quantum_circuit.png"
+
+	# Percorso per il file di configurazione.
+	config_path = output_dir / "config.json"
 
 	# Dispositivo utilizzato per il calcolo.
 	device = resolve_device(runtime_config.launch.requested_device)
-	print(f"\nDispositivo selezionato: {device.type}")
+	print(f"Dispositivo selezionato: {device.type}")
 	if device.type == "cuda":
 		print(f"GPU: {torch.cuda.get_device_name(0)}")
 
 	# Tipo di dato utilizzato per il calcolo.
 	dtype = torch.float32 if device.type == "mps" else torch.float64
-
-	# Identificatore della sessione corrente.
-	# Può identificare una nuova sessione, a partire dall'orario di lancio, oppure una sessione esistente se si utilizza un file di configurazione.
-	session_id = \
-		datetime.fromtimestamp(total_start_time).strftime("%Y-%m-%d_%H-%M") \
-		if not runtime_config.launch.use_config_file() \
-		else runtime_config.launch.source_session_id
-
-	# Directory per i risultati
-	dataset_dir_str = str(
-		session_config.dataset.path 
-		if not runtime_config.flags.is_flowpic 
-		else get_flowpic_dir(session_config)
-	).replace('/', '-')
-	
-	output_dir = Path(
-		"Results/"
-		f"{dataset_dir_str}/"
-		f"Sample{session_config.kfold.sub_sample_ratio * 100:g}%/"
-		f"{session_config.model.name}/"
-		f"{session_id}/"
-	)
-
-	# Percorso per il file di configurazione.
-	config_path = output_dir / "config.json"
-
-	model_info_path = output_dir / "model_info.txt"
-	q_plot_path = output_dir / "quantum_circuit.png"
+	print(f"Tipo di dato selezionato: {dtype}")
 
 	#	-----------------------------------------------------------------	#
-	#	Salvataggio di tutti i parametri di configurazione.
+	#	Verifica e salvataggio dei parametri nel file di configurazione.
 
-	execution_config = \
-		ExecutionConfig.from_args(session_id, device.type, str(dtype)) \
-		if not runtime_config.launch.use_config_file() \
-		else ExecutionConfig.from_json(config_path)
+	execution_config = ExecutionConfig.from_args(session_id, device.type, str(dtype))
+	if not runtime_config.launch.exec_mode_train and use_config_file():
+		checkpoint_dir = resolve_checkpoint_session(execution_config)
+	else:
+		checkpoint_dir = None
 
-	# Verifica della compatibilità con l'ambiente corrente.
-	if runtime_config.launch.use_config_file():
-		if execution_config.current_device != device.type or execution_config.dtype != str(dtype):
-			raise RuntimeError(
-				"La configurazione attuale della macchina "
-				f"({(device.type, str(dtype))}) "
-				"non è compatibile con quella salvata nel file di configurazione "
-				f"({(execution_config.current_device, execution_config.dtype)})!"
-			)
-
-	# Se non si utilizza un file di configurazione, si salvano i parametri correnti.
-	if not runtime_config.launch.use_config_file() or cli_overrides:
-
-		# Per una nuova sessione la directory non deve già esistere.
-		# Per una sessione caricata, invece, si riutilizza quella esistente.
-		if not runtime_config.launch.use_config_file():
-			if output_dir.exists():
-				raise FileExistsError(f"La directory dei risultati '{output_dir}' esiste già. Aspetta un minuto prima di eseguire un nuovo esperimento.")
-			output_dir.mkdir(parents=True, exist_ok=False)
-		
-		with config_path.open("w", encoding="utf-8") as file:
-			json.dump(
-				{
-					"execution": asdict(execution_config),
-					**asdict(runtime_config),
-					**asdict(session_config),
-				},
-				file, indent=4, ensure_ascii=False, allow_nan=False,
-			)
-
-		# end use_config_file()
-
-	del execution_config
+	write_config(
+		config_path,
+		{
+			"execution": asdict(execution_config),
+			**asdict(runtime_config),
+			**asdict(session_config),
+		}
+	)
 
 	print(f"Directory dei risultati per la sessione corrente: {output_dir}")
 	print(f"Percorso del file di configurazione per la sessione corrente: {config_path}")
+
+	if checkpoint_dir is not None:
+		print(f"Directory dei checkpoint della sessione di origine: {checkpoint_dir}")
+
+	del execution_config
 
 	#	-----------------------------------------------------------------	#
 	#	Caricamento o generazione (opzionale) del dataset.
@@ -1197,7 +1451,8 @@ def main(cli_overrides: bool):
 	# Creazione del percorso di output per la mappatura delle etichette.
 	labels_map_path = output_dir / "labels_map.json"
 
-	y_encoded, labels_map = encode_labels(X_raw, y_raw, labels_map_path)
+	reference_labels_path = checkpoint_dir / "labels_map.json" if checkpoint_dir is not None else None
+	y_encoded, labels_map = encode_labels(X_raw, y_raw, labels_map_path, reference_labels_path)
 	num_classes = len(labels_map)
 
 	if num_classes <= 0:
@@ -1250,6 +1505,8 @@ def main(cli_overrides: bool):
 
 	print(f"\n#  {'-'*20}  #")
 
+	skipped_folds = []
+
 	for fold_index, current_fold in enumerate(folds):
 
 		fold_start_time = time.time()
@@ -1264,10 +1521,14 @@ def main(cli_overrides: bool):
 
 		fold_confusion_matrix_path = fold_results_dir / "confusion_matrix.png"
 		fold_history_path = fold_results_dir / "training_history.csv"
-		fold_model_path = fold_results_dir / "model.pth"
 		fold_plots_path = fold_results_dir / "train_val_plots.png"
 		fold_predictions_path = fold_results_dir / "predictions_test.csv"
 		fold_report_path = fold_results_dir / "classification_report.txt"
+
+		fold_model_path = \
+			fold_results_dir / "model.pth" \
+			if runtime_config.launch.exec_mode_train \
+			else checkpoint_dir / f"fold{fold_index}" / "model.pth"
 
 		#	-------------------------------------------------------------	#
 		#	Suddivisione del dataset in Train / Val / Test.
@@ -1398,8 +1659,12 @@ def main(cli_overrides: bool):
 		if fold_index == 0:
 			model_info = get_model_info(model)
 			debug_print(model_info)
-			with open(model_info_path, "w") as f:
-				f.write(model_info)
+
+			if runtime_config.flags.save_output:
+				with open(model_info_path, "w", encoding="utf-8") as f:
+					f.write(model_info)
+
+			# end if
 
 		# Visualizzazione e salvataggio del circuito quantistico.
 		if model.is_quantum and runtime_config.flags.save_output:
@@ -1415,19 +1680,29 @@ def main(cli_overrides: bool):
 				q_plot.show()
 
 		#	------------------------------------------------------------	#
-		#	Addestramento del modello.
+		#	Inizializzazione dei parametri di checkpoint.
 
-		# Per motivi di compatibilità, 'criterion' si inizializza a None.
-		# Si aggiorna successivamente se la modalità di addestramento è abilitata.
+		# Si recupera la metrica di checkpoint dai parametri di sessione.
+		# Se è disponibile un checkpoint precedente, la metrica verrà aggiornata di conseguenza.
+		checkpoint_metric = session_config.training.monitored_metric
+
+		# Si inizializzano a None per motivi di compatibilità.
+		# Si aggiornano successivamente se la modalità di addestramento è abilitata.
 		criterion = None
+		train_history_df = None
+		best_epoch = None
+		best_score = None
+
+		#	------------------------------------------------------------	#
+		#	Valutazione del modello.
 
 		runtime_config.print_exec_mode()
 		if not runtime_config.launch.exec_mode_train:
-			print(f"Caricamento modello per la valutazione da: {fold_results_dir}")
+			print(f"Caricamento modello per la valutazione da: {fold_model_path}")
 			print("Il modello non verrà addestrato, ma solo valutato sul test set.")
 
 			# Si caricano i pesi salvati del modello dalla directory di output specificata.
-			weights = torch.load(fold_model_path, map_location=device)
+			weights = torch.load(fold_model_path, map_location=device, weights_only=True)
 
 			# Verifica la compatibilità tra il modello corrente e i pesi salvati.
 			check_model_compatibility(model, weights)
@@ -1437,9 +1712,25 @@ def main(cli_overrides: bool):
 			print(f"\nEsito caricamento: {load_result}")
 			print("Modello caricato correttamente.\n")
 
-			# Si imposta il modello in modalità di valutazione
-			# per disabilitare il dropout e la batch normalization.
+			# Si imposta il modello in modalità di valutazione per disabilitare il dropout e la batch normalization.
 			model.eval()
+
+			# Se è abilitato il salvataggio dell'output, prova a caricare lo storico di addestramento dal checkpoint.
+			if runtime_config.flags.save_output:
+
+				train_history_df, \
+				best_epoch, \
+				best_score, \
+				checkpoint_metric = load_source_history(checkpoint_dir, fold_index)
+
+				# Verifica e salva lo storico delle metriche di addestramento nella cartella dell'esperimento corrente.
+				if train_history_df is not None:
+					train_history_df.to_csv(fold_history_path, index=False, float_format="%.8f")
+
+				# end if
+
+		#	------------------------------------------------------------	#
+		#	Addestramento del modello.
 
 		elif runtime_config.launch.exec_mode_train:
 
@@ -1451,7 +1742,7 @@ def main(cli_overrides: bool):
 				raise ValueError("L'ottimizzatore non è stato creato correttamente.")
 
 			lr_sched = build_scheduler(optimizer, train_loader)
-			if lr_sched is None:
+			if lr_sched is None and session_config.scheduler.name != "NoSched":
 				raise ValueError("Lo scheduler non è stato creato correttamente.")
 
 			criterion = build_loss_function(
@@ -1471,7 +1762,35 @@ def main(cli_overrides: bool):
 				fold_model_path,
 			)
 
-			# Verifica la correttezza della miglior epoca e del miglior punteggio.
+			# Se il fold corrente non ha prodotto un checkpoint valido, salva solo lo storico di addestramento e passa al fold successivo.
+			if best_epoch is None:
+				skipped_folds.append(fold_index)
+
+				if runtime_config.flags.save_output:
+					train_history_df.to_csv(
+						fold_history_path,
+						index=False,
+						lineterminator="\n",
+						float_format="%.8f"
+					)
+					print(f"\nStorico delle metriche salvato in {fold_history_path}")
+
+				plt.close("all")
+
+				fold_end_time = time.time()
+				print(f"\nFine elaborazione del fold {fold_index + 1}/{len(folds)}")
+				print(f"Orario corrente: {datetime.fromtimestamp(fold_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
+				print(f"Tempo di elaborazione: {convert(fold_end_time - fold_start_time)}")
+
+				print(f"\n#  {'-'*20}  #")
+
+				continue
+
+				# end if
+
+			#	--------------------------------------------------------	#
+			#	Verifica della correttezza della miglior epoca e del miglior punteggio.
+
 			selected_row = train_history_df.loc[train_history_df["epoch"] == best_epoch]
 			if len(selected_row) != 1:
 				raise RuntimeError(
@@ -1501,11 +1820,11 @@ def main(cli_overrides: bool):
 		#	------------------------------------------------------------	#
 		#	Disegno dei grafici di loss / accuracy su Train / Val.
 
-		if runtime_config.launch.exec_mode_train and runtime_config.flags.save_output:
+		if runtime_config.flags.save_output and train_history_df is not None and best_epoch is not None:
 
 			score_text = \
 				f"{best_score:.2f}%" \
-				if session_config.training.monitored_metric == "val_accuracy" \
+				if checkpoint_metric == "val_accuracy" \
 				else f"{best_score:.4f}"
 
 			fig, axes = plt.subplots(1, 3, figsize=(18, 5), layout='constrained')
@@ -1513,7 +1832,7 @@ def main(cli_overrides: bool):
 			fig.suptitle(
 				"Metriche di addestramento | "
 				f"Checkpoint: epoch {best_epoch} | "
-				f"{session_config.training.monitored_metric}: {score_text}"
+				f"{checkpoint_metric}: {score_text}"
 			)
 
 			draw_train_val_plot(
@@ -1607,6 +1926,8 @@ def main(cli_overrides: bool):
 		#	-------------------------------------------------------------	#
 		#	Fine dell'elaborazione del fold corrente.
 
+		plt.close("all")
+
 		fold_end_time = time.time()
 		print(f"\nFine elaborazione del fold {fold_index + 1}/{len(folds)}")
 		print(f"Orario corrente: {datetime.fromtimestamp(fold_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
@@ -1630,6 +1951,7 @@ def main(cli_overrides: bool):
 	print(f"Orario d'inizio: {datetime.fromtimestamp(total_start_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Orario di fine: {datetime.fromtimestamp(total_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Tempo di elaborazione: {convert(total_end_time - total_start_time)}")
+	print(f"Fold senza checkpoint: {skipped_folds}")
 
 	return
 
@@ -1637,55 +1959,36 @@ def main(cli_overrides: bool):
 
 if __name__ == "__main__":
 
-	#	-----------------------------------------------------------------	#
-	#	Creazione degli oggetti con i parametri di sessione e runtime.
-
 	global session_config
 	global runtime_config
 
-	# Lettura degli argomenti da linea di comando.
-	args = parse_args()
+	with TerminalLog() as terminal_log:
+		try:
 
-	session_config = SessionConfig.from_args(args)
-	runtime_config = RuntimeConfig.from_args(args)
+			# Lettura degli argomenti da linea di comando.
+			args = parse_args()
 
-	#	-----------------------------------------------------------------	#
-	#	Verifica della corretta creazione degli oggetti di configurazione.
-	
-	if session_config is None:
-		raise ValueError("Errore nel caricamento del file di configurazione (session)!")
+			# Creazione degli oggetti con i parametri di sessione e runtime.
+			session_config = SessionConfig.from_args(args)
+			runtime_config = RuntimeConfig.from_args(args)
 
-	if runtime_config is None:
-		raise ValueError("Errore nel caricamento del file di configurazione (runtime)!")
-
-	cli_overrides = \
-		set(vars(args)) - {
-			"source_session_id",
-			"exec_mode_train",
-			"save_output"
-		}
-
-	if vars(args).get('source_session_id') is not None:
-		if cli_overrides and vars(args).get('save_output'):
-			raise ValueError(
-				"Modalità di valutazione attivata.\n"
-				"Non è possibile sovrascrivere parametri da CLI se 'save_output' è attivo.\n"
-				f"Parametri da CLI: {cli_overrides}. "
+			# Stampa di debug dei parametri di configurazione.
+			debug_print(
+				f"Parametri di sessione in 'session_config':" \
+				f"\n{session_config}" \
+				"\n\n" \
+				f"Parametri di runtime in 'runtime_config':" \
+				f"\n{runtime_config}"
 			)
-	
-	# Stampa di debug dei parametri di configurazione.
-	debug_print(
-		f"Parametri di sessione in 'session_config':" \
-		f"\n{session_config}" \
-		"\n\n" \
-		f"Parametri di runtime in 'runtime_config':" \
-		f"\n{runtime_config}"
-	)
 
-	#	-----------------------------------------------------------------	#
-	#	Funzione principale per l'esecuzione del programma.
+			# Esecuzione della funzione principale del programma.
+			main(terminal_log)
 
-	main(cli_overrides is not None)
+		# La gestione delle eccezioni durante l'esecuzione del programma viene centralizzata qui.
+		# Il traceback viene emesso una volta sola, sia a terminale sia nel log.
+		except Exception:
+			traceback.print_exc()
+			exit(1)
 
 	exit(0)
 
