@@ -189,7 +189,7 @@ def mirage_pickle_converter(
 
 			# Array dei timestamp di arrivo di ciascun pacchetto, espressi in millisecondi assoluti dall'inizio della cattura.
 			# Dato che i timestamp nel dataset grezzo sono in microsecondi, si divide per 1000.0 per ottenere i millisecondi.
-			ts = np.cumsum(real_rows[:, 3]) / 1000.0
+			ts = np.cumsum(real_rows[:, 3], dtype=np.float64) / 1000.0
 
 			# Array delle dimensioni in byte di ciascun pacchetto,
 			# nell'ordine corrispondente ai timestamp.
@@ -216,7 +216,7 @@ def mirage_pickle_converter(
 
 			if min_packets:
 				filter_1 = sizes.shape[0]
-				if not(filter_1 > min_packets):
+				if filter_1 < min_packets:
 					counter["insufficient_packets"] += 1
 					if debug_cycle:
 						print(f"[DEBUG] Flusso n.{i} scartato per numero pacchetti insufficiente ({filter_1}).")
@@ -224,7 +224,7 @@ def mirage_pickle_converter(
 
 			if min_dim:
 				filter_2 = np.sum(sizes)
-				if not(filter_2 > min_dim):
+				if filter_2 < min_dim:
 					counter["insufficient_dim"] += 1
 					if debug_cycle:
 						print(f"[DEBUG] Flusso n.{i} scartato per dimensione insufficiente ({filter_2} byte).")
@@ -232,7 +232,7 @@ def mirage_pickle_converter(
 
 			if min_duration:
 				filter_3 = ts[-1] - ts[0]
-				if not(filter_3 > min_duration):
+				if filter_3 < min_duration:
 					counter["insufficient_tps"] += 1
 					if debug_cycle:
 						print(f"[DEBUG] Flusso n.{i} scartato per durata insufficiente ({filter_3:.4f} millisecondi).")

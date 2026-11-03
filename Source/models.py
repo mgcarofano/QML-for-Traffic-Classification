@@ -761,8 +761,8 @@ class QuantumBlock(nn.Module):
 				f"Ricevuto: {tuple(x.shape)}."
 			)
 
-		# Utilizzare la Sigmoid potrebbe causare underflow o divisioni per zero.
-		# Per ovviare a questo problema, si limitano i valori del tensore in ingresso al più piccolo valore positivo rappresentabile dal tipo di dato del tensore (epsilon macchina del dtype).
+		# Con AmplitudeEmbedding, utilizzare la Sigmoid potrebbe causare underflow o divisioni per zero.
+		# Per ovviare a questo problema, si applica una soglia inferiore pari all'epsilon macchina del dtype (the difference between 1.0 and the next smallest representable float larger than 1.0).
 		if self.embedding == "amplitude":
 			min_positive_val = torch.finfo(x.dtype).eps
 			x = x.clamp_min(min_positive_val)
@@ -770,7 +770,7 @@ class QuantumBlock(nn.Module):
 		# Dato che le probabilità di uscita dal blocco quantistico sommano a 1 (media 1 / 2^n_qubits), senza riscalamento il classificatore lineare successivo riceve ingressi molto piccoli e i logit iniziali restano quasi uguali tra le classi.
 		# Per ovviare a questo problema, moltiplichiamo le probabilità di uscita per un fattore di scala apprendibile (logit_scale), cioè che può poi essere adattato dall'ottimizzatore.
 		out = self.torch_layer(x)
-		out = out.to(dtype=out.dtype, device=out.device)
+		out = out.to(dtype=x.dtype, device=x.device)
 		out = out * self.logit_scale
 
 		return out

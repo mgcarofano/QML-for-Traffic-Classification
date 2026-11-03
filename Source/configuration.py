@@ -312,9 +312,6 @@ def check_positive_int(name: str, value):
 	Raises:
 		TypeError: Se il valore non può essere convertito in un intero.
 		ValueError: Se il valore non è un intero positivo.
-
-	Returns:
-		int: Il valore convertito in intero.
 	"""
 	
 	from numbers import Integral
@@ -510,7 +507,10 @@ class TrafficConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"[TRAFFIC] MTU: {self.mtu} | Bin size: {self.bin_size} | Filters: {self.filters}\n)"
+		return "[TRAFFIC] " \
+		       f"MTU: {self.mtu}" \
+		       f" | Bin size: {self.bin_size}" \
+		       f" | Filters: {self.filters} \n"
 
 		# end
 

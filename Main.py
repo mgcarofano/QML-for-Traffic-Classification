@@ -493,7 +493,7 @@ def encode_labels(X_raw, y_raw, labels_map_path, reference_labels_path=None):
 	#	################################################################	#
 	#	Verifica e ritorno delle etichette codificate.
 
-	if runtime_config.flags.save_output:
+	if runtime_config.launch.exec_mode_train or runtime_config.flags.save_output:
 		atomic_dump(labels_map_path, labels_map)
 
 	if len(X_raw) != len(y_encoded):
@@ -1327,22 +1327,25 @@ def main(terminal_log: TerminalLog):
 		fold_results_dir = get_fold_directory(output_dir, fold_index)
 		print(f"Directory dei risultati per il fold selezionato: {fold_results_dir}")
 
-		if runtime_config.launch.exec_mode_train:
+		# Gli artefatti del modello sono scritti durante il training
+		# oppure letti dalla sessione sorgente durante la valutazione.
+		artifact_dir = (
+			fold_results_dir
+			if runtime_config.launch.exec_mode_train
+			else checkpoint_dir / f"fold{fold_index}"
+		)
 
-			fold_confusion_matrix_path = fold_results_dir / "confusion_matrix.png"
-			fold_history_path = fold_results_dir / "training_history.csv"
-			fold_model_path = fold_results_dir / "model.pth"
-			fold_plots_path = fold_results_dir / "train_val_plots.png"
-			fold_predictions_path = fold_results_dir / "predictions_test.csv"
-			fold_report_path = fold_results_dir / "classification_report.txt"
-			fold_scaler_path = fold_results_dir / "scaler.pkl"
-			fold_splits_path = fold_results_dir / "split_indices.npz"
+		# Creazione dei percorsi degli artefatti legati al modello.
+		fold_model_path = artifact_dir / "model.pth"
+		fold_scaler_path = artifact_dir / "scaler.pkl"
+		fold_splits_path = artifact_dir / "split_indices.npz"
 
-		else:
-
-			fold_model_path = checkpoint_dir / f"fold{fold_index}" / "model.pth"
-			fold_scaler_path = checkpoint_dir / f"fold{fold_index}" / "scaler.pkl"
-			fold_splits_path = checkpoint_dir / f"fold{fold_index}" / "split_indices.npz"
+		# Creazione dei percorsi di grafici, tabelle e report.
+		fold_confusion_matrix_path = fold_results_dir / "confusion_matrix.png"
+		fold_history_path = fold_results_dir / "training_history.csv"
+		fold_plots_path = fold_results_dir / "train_val_plots.png"
+		fold_predictions_path = fold_results_dir / "predictions_test.csv"
+		fold_report_path = fold_results_dir / "classification_report.txt"
 
 		#	-------------------------------------------------------------	#
 		#	Suddivisione del dataset in Train / Val / Test.
@@ -1571,7 +1574,8 @@ def main(terminal_log: TerminalLog):
 			print(f"\nEsito caricamento: {load_result}")
 			print("Modello caricato correttamente.\n")
 
-			# Si imposta il modello in modalità di valutazione per disabilitare il dropout e la batch normalization.
+			# Si imposta il modello in modalità di valutazione.
+			# Vedi training_functions.py per ulteriori dettagli.
 			model.eval()
 
 			# Se è abilitato il salvataggio dell'output, prova a caricare lo storico di addestramento dal checkpoint.

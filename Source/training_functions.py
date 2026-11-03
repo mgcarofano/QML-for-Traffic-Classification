@@ -540,7 +540,7 @@ def train_model(
             elif sc.training.early_stopping:
                 patience_counter += 1
                 print(f"  -> No improvement on '{sc.training.monitored_metric}'.")
-                print(f"     Patience: {patience_counter} of {sc.training.patience}" if True else "")
+                print(f"     Patience: {patience_counter} of {sc.training.patience}")
 
             else:
                 print(
@@ -616,7 +616,7 @@ def train_model(
     #	################################################################	#
     #	Salvataggio dei risultati (se disponibile).
 
-    # Ricarica i pesi del modello in base al miglior punteggio ottenuto in addestramento.
+    # Ricarica i pesi del modello in base al miglior punteggio di validazione sulla metrica monitorata.
     best_model = torch.load(
         fold_model_path,
         map_location=device,
