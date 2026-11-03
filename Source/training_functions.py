@@ -16,7 +16,7 @@ from sklearn.metrics import f1_score
 from Source.configuration import SessionConfig
 from Source.utils import \
     convert, \
-	atomic_write, \
+    atomic_write, \
     custom_tqdm
 
 from datetime import datetime
@@ -126,13 +126,10 @@ def train_epoch(
     correct = 0
     total = 0
 
-    # Alcuni scheduler (es. OneCycleLR) sono configurati per uno step per
-	# ogni batch mentre altri sono pensati per un solo step a fine epoca.
-    # Chiamare scheduler.step() con la granularità sbagliata altera
-    # l'aggiornamento del learning rate e può compromettere l'addestramento.
+    # Alcuni scheduler (es. OneCycleLR) sono configurati per uno step per ogni batch mentre altri sono pensati per un solo step a fine epoca. Chiamare scheduler.step() con la granularità sbagliata altera l'aggiornamento del learning rate e può compromettere l'addestramento.
     is_scheduler_per_batch = isinstance(
-		scheduler, torch.optim.lr_scheduler.OneCycleLR
-	)
+        scheduler, torch.optim.lr_scheduler.OneCycleLR
+    )
 
     #   ################################################################    #
     #   Ciclo di addestramento sui batch del DataLoader.
@@ -231,7 +228,7 @@ def evaluate(
         model, device, loader,
         criterion = None,
         stop = None,
-    ) -> tuple[float, float, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[float | None, float, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Valuta il modello su un DataLoader.
 
     La funzione è pensata per essere utilizzabile sia in fase di training (dove la loss serve per il monitoraggio delle epoche) sia in fase di testing su un modello già addestrato e caricato da checkpoint. In questo secondo caso, calcolare l'accuracy non richiede la loss function: le due metriche sono logicamente indipendenti.
@@ -244,13 +241,16 @@ def evaluate(
         stop (opzionale): Un oggetto per il controllo dell'interruzione anticipata. Default è None.
 
     Returns:
-        tuple: Una tupla contenente la loss media, l'accuracy, tutte le predizioni e tutte le etichette e tutti i vettori delle probabilità predette (softmax).
+        tuple: Una tupla contenente la loss media (o None se non calcolabile), l'accuracy, tutte le predizioni e tutte le etichette e tutti i vettori delle probabilità predette (softmax).
     """
     
     #   ################################################################    #
     #   Inizializzazione
     
-    # Disabilita dropout e batch normalization in fase di valutazione.
+    # Imposta il modello in modalità valutazione (inference/evaluation mode).
+    # Modifica il comportamento dei layer sensibili allo stato, ad esempio:
+    # Dropout: disattiva lo spegnimento casuale dei neuroni, garantendo predizioni deterministiche.
+    # BatchNorm: utilizza le medie e varianze correnti (running statistics) apprese durante il training, invece di calcolare le statistiche sui singoli batch correnti.
     model.eval()
 
     loss_num = 0.0
@@ -265,12 +265,13 @@ def evaluate(
     #   ################################################################    #
     #   Ciclo di valutazione sui batch del DataLoader.
 
-    # Si utilizza "torch.no_grad()" per disabilitare il calcolo del gradiente durante la fase di valutazione, migliorando le prestazioni e riducendo l'uso della memoria.
+    # Il contesto "torch.no_grad()" disabilita il calcolo dei gradienti durante la fase di valutazione, migliorando le prestazioni e riducendo l'uso della memoria.
     with torch.no_grad():
         for batch in custom_tqdm(loader, desc="Valutazione ", leave=False):
 
             if stop is not None:
                 stop.check()
+
             inputs, labels, *extra = batch
             lengths = extra[0] if extra else None
 
@@ -295,14 +296,15 @@ def evaluate(
                 if ignore_idx is not None \
                 else torch.ones_like(labels, dtype=torch.bool)
             valid_labels = labels[valid_mask]
+            n_valid = valid_labels.numel()
 
             # Aggiorna le metriche di monitoraggio della loss, se fornita.
             # In fase di sola valutazione (es. modello caricato da checkpoint) il criterion potrebbe non esistere, e non è comunque necessario per misurare l'accuracy.
-            if criterion is not None:
+            if criterion is not None and n_valid > 0:
                 loss = criterion(outputs, labels)
                 
                 batch_den = \
-                    float(valid_labels.numel()) \
+                    float(n_valid) \
                     if criterion.weight is None \
                     else float(criterion.weight[valid_labels].sum().item())
 
@@ -315,13 +317,15 @@ def evaluate(
                 loss_num += loss.item() * batch_den
                 loss_den += batch_den
 
+                # end if
+
             # Aggiorna le metriche di monitoraggio dell'accuracy.
             _, predicted = outputs.max(1)
             total += valid_labels.numel()
             correct += (predicted[valid_mask].eq(valid_labels)).sum().item()
 
             all_preds.append(predicted.cpu())
-            all_labels.append(valid_labels.cpu())
+            all_labels.append(labels.cpu())
 
             #   ########################################################    #
             #   Calcolo delle probabilità per ciascuna classe.
@@ -356,255 +360,276 @@ def evaluate(
         avg_loss = None
     else:
         if loss_den <= 0:
-            raise ValueError("Errore nel calcolo della loss media finale: denominatore nullo.")
+            raise ValueError(
+                "Errore nel calcolo della loss media finale: \n"
+                "denominatore nullo."
+            )
 
         avg_loss = loss_num / loss_den
 
-    accuracy = 100.0 * correct / total
-
-    all_preds = torch.cat(all_preds)
-    all_labels = torch.cat(all_labels)
-    all_probs = torch.cat(all_probs)
+    if total <= 0:
+        raise ValueError(
+            "Errore nel calcolo dell'accuracy finale: \n"
+            "nessun campione valido trovato."
+        )
 
     return (
-        avg_loss, accuracy,
-        all_preds, all_labels, all_probs
+        avg_loss,
+        100.0 * correct / total,
+        torch.cat(all_preds),
+        torch.cat(all_labels),
+        torch.cat(all_probs)
     )
 
     # end
 
 def train_model(
-		model, device,
-		train_loader, val_loader,
-		optimizer, lr_sched, criterion,
-		fold_model_path: str,
+        model, device,
+        train_loader, val_loader,
+        optimizer, lr_sched, criterion,
+        fold_model_path: str,
         sc: SessionConfig,
-	) -> tuple[torch.nn.Module, pd.DataFrame, int, float]:
-	"""Addestra il modello per un numero specificato di epoche. Si può interrompere anticipatamente l'addestramento con Ctrl+C scartando l'epoca incompleta.
+    ) -> tuple[torch.nn.Module, pd.DataFrame, int | None, float | None]:
+    """Addestra il modello per un numero specificato di epoche. Si può interrompere anticipatamente l'addestramento con Ctrl+C scartando l'epoca incompleta.
 
-	## Funzionalità
-		- Monitora le metriche di addestramento e validazione.
-		- Implementa early stopping e aggiorna i pesi del modello in base alla metrica di valutazione selezionata.
-		- Supporta l'interruzione anticipata dell'addestramento con Ctrl+C, mantenendo i pesi aggiornati fino all'epoca migliore.
+    ## Funzionalità
+        - Monitora le metriche di addestramento e validazione.
+        - Implementa early stopping e aggiorna i pesi del modello in base alla metrica di valutazione selezionata.
+        - Supporta l'interruzione anticipata dell'addestramento con Ctrl+C, mantenendo i pesi aggiornati fino all'epoca migliore.
 
-	Args:
-		model: Il modello da addestrare.
-		device: Il dispositivo su cui eseguire l'addestramento.
-		train_loader: Il DataLoader per il set di addestramento.
-		val_loader: Il DataLoader per il set di validazione.
-		optimizer: L'ottimizzatore da utilizzare.
-		lr_sched: Il scheduler del learning rate.
-		criterion: La funzione di loss.
-		fold_model_path (str): Il percorso dove viene salvato il modello aggiornato.
-		sc (SessionConfig): Configurazione dei parametri di sessione per l'esperimento corrente.
-	
-	Returns:
-		tuple: il modello addestrato, il DataFrame contenente lo storico dell'addestramento, l'epoca migliore e il punteggio migliore.
-	"""
+    Args:
+        model: Il modello da addestrare.
+        device: Il dispositivo su cui eseguire l'addestramento.
+        train_loader: Il DataLoader per il set di addestramento.
+        val_loader: Il DataLoader per il set di validazione.
+        optimizer: L'ottimizzatore da utilizzare.
+        lr_sched: Il scheduler del learning rate.
+        criterion: La funzione di loss.
+        fold_model_path (str): Il percorso dove viene salvato il modello aggiornato.
+        sc (SessionConfig): Configurazione dei parametri di sessione per l'esperimento corrente.
+    
+    Returns:
+        tuple: il modello addestrato, il DataFrame contenente lo storico dell'addestramento, l'epoca e il punteggio migliore (o None se non disponibili).
+    """
 
-	#	################################################################	#
-	#	Inizializzazione delle metriche da monitorare.
+    #	################################################################	#
+    #	Inizializzazione delle metriche da monitorare.
 
-	# Questo dizionario terrà traccia delle metriche di addestramento e validazione per ogni epoca.
-	train_history_df = pd.DataFrame(columns=[
-		"epoch", "time",
-		"train_loss", "train_accuracy",
-		"val_loss", "val_accuracy", "val_macrof1",
-	])
+    # Questo dizionario terrà traccia delle metriche di addestramento e validazione per ogni epoca.
+    train_history_df = pd.DataFrame(columns=[
+        "epoch", "time",
+        "train_loss", "train_accuracy",
+        "val_loss", "val_accuracy", "val_macrof1",
+    ])
 
-	# Inizializza le variabili per il monitoraggio della metrica di valutazione selezionata.
-	minimize = sc.training.monitored_metric == "val_loss"
-	best_score = float('inf') if minimize else -float('inf')
-	best_epoch = None
-	patience_counter = 0
-	interrupted = False
+    # Inizializza le variabili per il monitoraggio della metrica di valutazione selezionata.
+    minimize = sc.training.monitored_metric == "val_loss"
+    best_score = float('inf') if minimize else -float('inf')
+    best_epoch = None
+    patience_counter = 0
+    interrupted = False
 
-	#	################################################################	#
-	#	Inizio del loop di addestramento.
+    #	################################################################	#
+    #	Inizio del loop di addestramento.
 
-	training_start_time = time.time()
-	print(
-		f"Addestramento iniziato.\n"
-		"Orario corrente: "
-		f"{datetime.fromtimestamp(training_start_time).strftime('%Y-%m-%d_%H:%M:%S')}\n\n"
+    training_start_time = time.time()
+    print(
+        f"Addestramento iniziato.\n"
+        "Orario corrente: "
+        f"{datetime.fromtimestamp(training_start_time).strftime('%Y-%m-%d_%H:%M:%S')}\n\n"
 
-		f"{repr(sc)} \n"
-		f"[SAMPLES] Training: {len(train_loader.dataset)} in {len(train_loader)} batches"
-		f" | Validation: {len(val_loader.dataset)} in {len(val_loader)} batches"
-		f" | Classes: {model.num_classes} \n"
-	)
+        f"{repr(sc)} \n"
+        f"[SAMPLES] Training: {len(train_loader.dataset)} in {len(train_loader)} batches"
+        f" | Validation: {len(val_loader.dataset)} in {len(val_loader)} batches"
+        f" | Classes: {model.num_classes} \n"
+    )
 
-	#	################################################################	#
-	#	Esecuzione del loop di addestramento.
+    #	################################################################	#
+    #	Esecuzione del loop di addestramento.
 
-	with FoldInterrupt() as stop:
-		for epoch in range(1, sc.training.epochs +1):
+    with FoldInterrupt() as stop:
+        for epoch in range(1, sc.training.epochs +1):
 
-			# Salva il timestamp di inizio epoca per calcolare la durata dell'epoca corrente.
-			epoch_start_time = time.time()
+            # Salva il timestamp di inizio epoca per calcolare la durata dell'epoca corrente.
+            epoch_start_time = time.time()
 
-			try:
+            try:
 
-				stop.check()
+                stop.check()
 
-				print(f"\nEpoch {epoch}/{sc.training.epochs}")
+                print(f"\nEpoch {epoch}/{sc.training.epochs}")
 
-				# Calcola la loss e l'accuratezza per il training set e il validation set.
-				train_loss, train_acc = train_epoch(
-					model, device,
-					train_loader,
-					criterion, optimizer, lr_sched,
-					stop=stop,
-				)
+                #	####################################################	#
+                #   Calcola le metriche di addestramento per Train/Val.
 
-				val_loss, val_acc, val_preds, val_true, _ = evaluate(
-					model, device,
-					val_loader,
-					criterion,
-					stop=stop,
-				)
+                train_loss, train_acc = train_epoch(
+                    model, device,
+                    train_loader,
+                    criterion, optimizer, lr_sched,
+                    stop=stop,
+                )
 
-				val_macrof1 = f1_score(
-					val_true.detach().cpu().numpy(),
-					val_preds.detach().cpu().numpy(),
-					labels= np.arange(model.num_classes),
-					average= "macro",
-					zero_division= 0,
-				) * 100
+                val_loss, val_acc, val_preds, val_true, _ = evaluate(
+                    model, device,
+                    val_loader,
+                    criterion,
+                    stop=stop,
+                )
 
-				metrics = {
-					"train_loss": float(train_loss),
-					"train_accuracy": float(train_acc),
-					"val_loss": float(val_loss),
-					"val_accuracy": float(val_acc),
-					"val_macrof1": float(val_macrof1),
-				}
+                valid_val = val_true != criterion.ignore_index
+                val_macrof1 = f1_score(
+                    val_true[valid_val].numpy(),
+                    val_preds[valid_val].numpy(),
+                    labels= np.arange(model.num_classes),
+                    average= "macro",
+                    zero_division= 0,
+                ) * 100
 
-				invalid_metrics = [name for name, value in metrics.items() if not np.isfinite(value)]
-				if invalid_metrics:
-					raise RuntimeError("Errore nel calcolo delle metriche di addestramento: valori non finiti per [" + ", ".join(invalid_metrics) + "]")
+                metrics = {
+                    "train_loss": float(train_loss),
+                    "train_accuracy": float(train_acc),
+                    "val_loss": float(val_loss),
+                    "val_accuracy": float(val_acc),
+                    "val_macrof1": float(val_macrof1),
+                }
 
-				stop.check()
+                #	####################################################	#
+                #   Verifica la validità delle metriche calcolate.
 
-			except (EpochInterrupted, KeyboardInterrupt):
-				interrupted = True
-				print(f"\nTraining interrotto all'epoca {epoch}.")
-				break
+                invalid_metrics = [name for name, value in metrics.items() if not np.isfinite(value)]
+                if invalid_metrics:
+                    raise RuntimeError("Errore nel calcolo delle metriche di addestramento: valori non finiti per [" + ", ".join(invalid_metrics) + "]")
 
-			# end try
+                stop.check()
 
-			# CHECK : se il punteggio calcolato migliora, salva il modello e resetta il contatore per la patience.
-			current_score = metrics[sc.training.monitored_metric]
+            except (EpochInterrupted, KeyboardInterrupt):
+                interrupted = True
+                print(f"\nTraining interrotto all'epoca {epoch}.")
+                break
 
-			if best_epoch is None:
-				improved = True
-			elif minimize:
-				improved = current_score < (best_score - sc.training.min_delta)
-			else:
-				improved = current_score > (best_score + sc.training.min_delta)
+            # end try
 
-			if improved:
-				print(
-					f"  -> '{sc.training.monitored_metric}' improved. \n"
-					f"     Model saved in {fold_model_path}."
-				)
+            #	########################################################	#
+            #   Salvataggio del checkpoint in caso di miglioramento.
 
-				atomic_write(fold_model_path, lambda stream: torch.save(model.state_dict(), stream))
+            # Calcola il punteggio corrente in base alla metrica monitorata.
+            current_score = metrics[sc.training.monitored_metric]
 
-				best_score = current_score
-				best_epoch = epoch
-				patience_counter = 0
+            # Verifica se il punteggio corrente rappresenta un miglioramento rispetto al miglior punteggio precedente.
+            if best_epoch is None:
+                improved = True
+            elif minimize:
+                improved = current_score < (best_score - sc.training.min_delta)
+            else:
+                improved = current_score > (best_score + sc.training.min_delta)
 
-			elif sc.training.early_stopping:
-				patience_counter += 1
-				print(f"  -> No improvement on '{sc.training.monitored_metric}'.")
-				print(f"     Patience: {patience_counter} of {sc.training.patience}" if True else "")
+            if improved:
+                print(
+                    f"  -> '{sc.training.monitored_metric}' improved. \n"
+                    f"     Model saved in {fold_model_path}."
+                )
 
-				# Se il contatore di patience raggiunge il limite si interrompe il training.
-				if patience_counter >= sc.training.patience:
-					print("     Early stopping triggered.")
-					break
+                # Salvataggio del modello corrente.
+                atomic_write(fold_model_path, lambda stream: torch.save(model.state_dict(), stream))
 
-			else:
-				print(
-					f"  -> No improvement on '{sc.training.monitored_metric}'. \n" 
-					f"     Early stopping is disabled."
-				)
+                # Aggiornamento del miglior punteggio e reset del contatore di patience.
+                best_score = current_score
+                best_epoch = epoch
+                patience_counter = 0
 
-			# Calcola la durata dell'epoca corrente e il tempo totale trascorso dall'inizio dell'addestramento.
-			epoch_end_time = time.time()
-			epoch_duration = epoch_end_time - epoch_start_time
-			elapsed_time = epoch_end_time - training_start_time
+            elif sc.training.early_stopping:
+                patience_counter += 1
+                print(f"  -> No improvement on '{sc.training.monitored_metric}'.")
+                print(f"     Patience: {patience_counter} of {sc.training.patience}" if True else "")
 
-			# Aggiorna lo storico delle metriche per l'epoca corrente.
-			train_history_df.loc[len(train_history_df)] = {
-				"epoch": epoch,
-				"time": epoch_duration,
-				**metrics
-			}
+            else:
+                print(
+                    f"  -> No improvement on '{sc.training.monitored_metric}'. \n" 
+                    f"     Early stopping is disabled."
+                )
 
-			# Stampa in console le metriche dell'epoca corrente.
-			print(
-				f"\nTrain Loss: {train_loss:.4f} "
-				f"| Train Accuracy: {train_acc:.4f}%\n"
+            #	########################################################	#
+            #   Finalizzazione dell'epoca.
 
-				f"Val Loss: {val_loss:.4f} "
-				f"| Val Accuracy: {val_acc:.4f}% "
-				f"| Val Macro F1: {(val_macrof1):.4f}%\n"
+            # Calcola la durata dell'epoca corrente e il tempo totale trascorso dall'inizio dell'addestramento.
+            epoch_end_time = time.time()
+            epoch_duration = epoch_end_time - epoch_start_time
+            elapsed_time = epoch_end_time - training_start_time
 
-				f"Epoch time: {convert(epoch_duration)} "
-				f"| Elapsed time: {convert(elapsed_time)}"
-			)
+            # Aggiorna lo storico delle metriche per l'epoca corrente.
+            train_history_df.loc[len(train_history_df)] = {
+                "epoch": epoch,
+                "time": epoch_duration,
+                **metrics
+            }
 
-			if stop.requested:
-				interrupted = True
-				print("\nStop ricevuto durante la finalizzazione dell'epoca completa.")
-				break
+            # Stampa in console le metriche dell'epoca corrente.
+            print(
+                f"\nTrain Loss: {train_loss:.4f} "
+                f"| Train Accuracy: {train_acc:.4f}%\n"
 
-			# end for epoch
+                f"Val Loss: {val_loss:.4f} "
+                f"| Val Accuracy: {val_acc:.4f}% "
+                f"| Val Macro F1: {(val_macrof1):.4f}%\n"
 
-		# end with stop
+                f"Epoch time: {convert(epoch_duration)} "
+                f"| Elapsed time: {convert(elapsed_time)}"
+            )
 
-	#	################################################################	#
-	#	Fine del loop di addestramento.
+            # Controlla se è stato richiesta l'interruzione del training.
+            if stop.requested:
+                interrupted = True
+                print("\nStop ricevuto durante la finalizzazione dell'epoca completa.")
+                break
 
-	training_end_time = time.time()
-	best_score_str = \
-		f"{best_score:.4f}" \
-		if sc.training.monitored_metric == "val_loss" \
-		else f"{best_score:.4f}%"
+            # Se il contatore di patience raggiunge il limite si interrompe il training.
+            if sc.training.early_stopping and patience_counter >= sc.training.patience:
+                print("\nInterruzione dell'addestramento per early stopping.")
+                break
 
-	print(
-		f"\nAddestramento {'interrotto' if interrupted else 'completato'}. \n"
-		f"Orario corrente: "
-		f"{datetime.fromtimestamp(training_end_time).strftime('%Y-%m-%d_%H:%M:%S')} \n"
-		f"Tempo di elaborazione: "
-		f"{convert(training_end_time - training_start_time)} \n"
-	)
+            # end for epoch
 
-	# Se non è stata completata alcuna epoca, interrompe il processo e segnala che il test del fold sarà saltato.
-	# Altrimenti prosegue con la stampa e il salvataggio delle informazioni sulla migliore epoca.
-	if best_epoch is None:
-		print("Non è stata completata alcuna epoca. Il test del fold sarà saltato.")
-		return model, train_history_df, None, None
+        # end with stop
 
-	#	################################################################	#
-	#	Salvataggio dei risultati.
+    #	################################################################	#
+    #	Fine del loop di addestramento.
 
-	# Ricarica i pesi del modello con la miglior loss di validazione.
-	best_model = torch.load(
-		fold_model_path,
-		map_location=device,
-		weights_only=True,
-	)
-	model.load_state_dict(best_model)
-	del best_model
+    training_end_time = time.time()
+    best_score_str = \
+        f"{best_score:.4f}" \
+        if sc.training.monitored_metric == "val_loss" \
+        else f"{best_score:.4f}%"
 
-	print(
-		f"Migliore epoca: {best_epoch} | "
-		f"{sc.training.monitored_metric}: {best_score_str}"
-	)
+    print(
+        f"\nAddestramento {'interrotto' if interrupted else 'completato'}. \n"
+        f"Orario corrente: "
+        f"{datetime.fromtimestamp(training_end_time).strftime('%Y-%m-%d_%H:%M:%S')} \n"
+        f"Tempo di elaborazione: "
+        f"{convert(training_end_time - training_start_time)} \n"
+    )
 
-	return model, train_history_df, best_epoch, best_score
+    # Verifica se è stata completata almeno un'epoca di addestramento.
+    if best_epoch is None:
+        print("Non è stata completata alcuna epoca. Il test del fold sarà saltato.")
+        return model, train_history_df, None, None
 
-	# end
+    #	################################################################	#
+    #	Salvataggio dei risultati (se disponibile).
+
+    # Ricarica i pesi del modello in base al miglior punteggio ottenuto in addestramento.
+    best_model = torch.load(
+        fold_model_path,
+        map_location=device,
+        weights_only=True,
+    )
+    model.load_state_dict(best_model)
+    del best_model
+
+    print(
+        f"Migliore epoca: {best_epoch} | "
+        f"{sc.training.monitored_metric}: {best_score_str}"
+    )
+
+    return model, train_history_df, best_epoch, best_score
+
+    # end

@@ -423,8 +423,8 @@ class PreprocessingConfig:
 
 @dataclass(frozen=True)
 class TrafficFiltersConfig:
-	min_tps: int | None
-	""" Minimum duration of a session in seconds. Sessions shorter than this will be discarded. Default is 50 if not specified. """
+	min_duration: int | None
+	""" Minimum duration of a session in milliseconds. Sessions shorter than this will be discarded. Default is 50 if not specified. """
 	
 	min_packets: int | None
 	""" Minimum number of packets in a session. Sessions with fewer packets will be discarded. Default is 3 if not specified. """
@@ -435,7 +435,7 @@ class TrafficFiltersConfig:
 	@classmethod
 	def from_defaults(cls) -> "TrafficFiltersConfig":
 		return cls(
-			min_tps= None,
+			min_duration= None,
 			min_packets= None,
 			min_dim= None,
 		)
@@ -450,8 +450,8 @@ class TrafficFiltersConfig:
 		)
 
 	def __post_init__(self) -> None:
-		if self.min_tps is not None:
-			check_positive_int('min_tps', self.min_tps)
+		if self.min_duration is not None:
+			check_positive_int('min_duration', self.min_duration)
 		if self.min_packets is not None:
 			check_positive_int('min_packets', self.min_packets)
 		if self.min_dim is not None:
@@ -460,7 +460,7 @@ class TrafficFiltersConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"min_tps={self.min_tps}, min_packets={self.min_packets}, min_dim={self.min_dim}"
+		return f"min_duration={self.min_duration}, min_packets={self.min_packets}, min_dim={self.min_dim}"
 
 		# end
 
@@ -519,22 +519,22 @@ class TrafficConfig:
 @dataclass(frozen=True)
 class CrossValidationConfig:
 	train_ratio: float
-	""" Proportion of the dataset to be used for training. Default is 0.8. """
+	""" Proportion of the dataset not used for testing to be used for training. Default is 0.8. """
 	
 	val_ratio: float
-	""" Proportion of the dataset to be used for validation. Default is 0.2. """
+	""" Proportion of the dataset not used for testing to be used for validation. Default is 0.2. """
 	
 	test_folds: int
 	""" Number of folds for cross-validation. """
 	
 	test_ratio: float | None
-	""" Proportion of the dataset to be used for testing. Default is 0.2 if not specified. """
+	""" Proportion of the entire dataset to be used for testing. Default is 0.2 if not specified. """
 	
 	sub_sample_ratio: float
 	""" Ratio of the dataset to be used for sub-sampling. For example, 0.5 means using 50% of the dataset. Default should be 1.0, meaning the entire dataset is used. """
 
 	@classmethod
-	def from_defaults(cls, test_folds= 5) -> "CrossValidationConfig":
+	def from_defaults(cls) -> "CrossValidationConfig":
 		return cls(
 			train_ratio= 0.8,
 			val_ratio= 0.2,

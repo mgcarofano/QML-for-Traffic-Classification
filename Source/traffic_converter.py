@@ -49,7 +49,7 @@ def mirage_pickle_converter(
 	- DIR                       : Direzione del pacchetto (0.0 = upstream, 1.0 = downstream).
 	- PL (Packet Length)        : Dimensione del payload IP in byte
 	- WIN (TCP Window Size)     : Dimensione finestra TCP (0.0 per UDP).
-	- IAT (Inter-Arrival Time)  : Tempo tra pacchetti consecutivi in secondi.
+	- IAT (Inter-Arrival Time)  : Tempo tra pacchetti consecutivi in microsecondi.
 
 	Args:
 		sc (SessionConfig): Configurazione dei parametri di sessione per l'esperimento corrente.
@@ -99,7 +99,7 @@ def mirage_pickle_converter(
 		"insufficient_tps": 0
 	}
 
-	min_packets = min_dim = min_tps = None
+	min_packets = min_dim = min_duration = None
 	if sc.traffic.filters:
 		# Numero minimo di pacchetti che una finestra deve contenere per essere considerata valida.
 		min_packets = sc.traffic.filters.min_packets
@@ -107,14 +107,14 @@ def mirage_pickle_converter(
 		# Numero minimo di byte che una finestra deve contenere per essere considerata valida.
 		min_dim = sc.traffic.filters.min_dim
 
-		# Durata minima in secondi che una finestra deve coprire per essere considerata valida.
-		min_tps = sc.traffic.filters.min_tps
+		# Durata minima in millisecondi che una finestra deve coprire per essere considerata valida.
+		min_duration = sc.traffic.filters.min_duration
 
 	if debug:
 		print(f"[DEBUG] Parametri di filtro\n")
 		print(f"MIN_PACKETS: {min_packets}" if min_packets is not None else "")
 		print(f"MIN_DIM: {min_dim}" if min_dim is not None else "")
-		print(f"MIN_TPS: {min_tps}" if min_tps is not None else "")
+		print(f"MIN_DURATION: {min_duration}" if min_duration is not None else "")
 		print("\n")
 
 	#   ####################################################################    #
@@ -187,8 +187,8 @@ def mirage_pickle_converter(
 			#   ############################################################    #
 			#   Estrazione dei timestamp e delle dimensioni dei pacchetti
 
-			# Array dei timestamp di arrivo di ciascun pacchetto, espressi in secondi assoluti dall'inizio della cattura.
-			# Dato che i timestamp sono in millisecondi, si divide per 1000.0 per ottenere i secondi.
+			# Array dei timestamp di arrivo di ciascun pacchetto, espressi in millisecondi assoluti dall'inizio della cattura.
+			# Dato che i timestamp nel dataset grezzo sono in microsecondi, si divide per 1000.0 per ottenere i millisecondi.
 			ts = np.cumsum(real_rows[:, 3]) / 1000.0
 
 			# Array delle dimensioni in byte di ciascun pacchetto,
@@ -202,7 +202,13 @@ def mirage_pickle_converter(
 			#   ############################################################    #
 			#   Applicazione di filtri di qualità.
 
-			if not np.isfinite(ts).all() or np.any(np.diff(ts) < 0):
+			if (
+				# I valori dei timestamp devono essere finiti.
+				not np.isfinite(ts).all()
+
+				# I timestamp devono essere in ordine crescente.
+				or np.any(np.diff(ts) < 0)
+			):
 				counter["invalid_duration"] += 1
 				if debug_cycle:
 					print(f"[DEBUG] Flusso n.{i} scartato per durata non valida.")
@@ -224,12 +230,12 @@ def mirage_pickle_converter(
 						print(f"[DEBUG] Flusso n.{i} scartato per dimensione insufficiente ({filter_2} byte).")
 					continue
 
-			if min_tps:
+			if min_duration:
 				filter_3 = ts[-1] - ts[0]
-				if not(filter_3 > min_tps):
+				if not(filter_3 > min_duration):
 					counter["insufficient_tps"] += 1
 					if debug_cycle:
-						print(f"[DEBUG] Flusso n.{i} scartato per durata insufficiente ({filter_3:.2f} secondi).")
+						print(f"[DEBUG] Flusso n.{i} scartato per durata insufficiente ({filter_3:.4f} millisecondi).")
 					continue
 
 			#   ############################################################    #
@@ -249,7 +255,7 @@ def mirage_pickle_converter(
 			if debug_cycle:
 				print(f"[DEBUG] Pacchetti reali del flusso n.{i}:")
 				print(pd.DataFrame(real_rows, columns=['DIR', 'PL', 'TCPWIN', 'IAT']), "\n")
-			
+
 			hist = session_2d_histogram(
 				sizes, ts,
 				sc.traffic.mtu, sc.traffic.bin_size,
@@ -269,6 +275,7 @@ def mirage_pickle_converter(
 			counter["valid"] += 1
 
 			# end for (i, (flow, label))
+
 		# end open
 	
 	#   ####################################################################    #
@@ -319,18 +326,18 @@ def session_2d_histogram(
 
 	- L'asse X rappresenta il tempo normalizzato nell'intervallo [0, mtu].
 	- L'asse Y rappresenta la dimensione dei pacchetti in byte, da 0 a mtu.
-	- La cella H[i_size, i_time] è la frequenza relativa dei pacchetti nel bin spazio-temporale corrispondente. Per un istogramma non vuoto H.sum() == 1.
+	- La cella H[i_size, i_time] è la frequenza relativa dei pacchetti nel bin spazio-temporale corrispondente. Per un istogramma non vuoto, la somma degli elementi è 1.
 
 	Args:
 		sizes (numpy.ndarray): Array 1D delle dimensioni in byte dei pacchetti, allineato per indice con ts: cioè, sizes[i] è la dimensione del pacchetto ts[i]. Shape: (N,).
-		ts (numpy.ndarray): Array 1D dei timestamp di arrivo dei pacchetti, espressi in secondi relativi all'inizio della finestra. Shape: (N,).
+		ts (numpy.ndarray): Array 1D dei timestamp di arrivo dei pacchetti, espressi in millisecondi relativi all'inizio della finestra. Shape: (N,).
 		mtu (int): Maximum Transmission Unit (Ethernet).
 		bin_size (int): Ampiezza di ciascun bin: byte sull'asse Y, unità normalizzate sull'asse X dell'istogramma 2D.
 		plot (bool, optional): Se True, visualizza l'istogramma con matplotlib usando una colormap binaria (cioè, bianco se 0 pacchetti, nero se 1+ pacchetti). Defaults to False.
 		title (str, optional): Titolo della finestra di traffico, usato per il plot. Defaults to None.
 
 	Returns:
-		numpy.ndarray: Matrice 2D di shape (D, D) e dtype float32, dove H[y, x] è il numero di pacchetti con dimensione y byte arrivati al tempo normalizzato x. La dimensione D è calcolata in base ai parametri MTU e BIN_SIZE.
+		numpy.ndarray: Matrice 2D di shape (D, D) e dtype float32. La dimensione D è calcolata in base ai parametri MTU e BIN_SIZE.
 	"""
 
 	#   ####################################################################    #

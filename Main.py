@@ -16,7 +16,9 @@ from Source.configuration import \
 	parse_args, \
 	find_session_config
 from Source.utils import TerminalLog
-from Source.utils import atomic_dump
+from Source.utils import \
+	atomic_write, \
+	atomic_dump
 
 # Dataset loading and manipulation
 import numpy as np
@@ -297,7 +299,7 @@ def resolve_checkpoint_session(execution_config: ExecutionConfig) -> Path | None
 def load_dataset() -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
 	"""Carica il dataset dal file PICKLE specificato.
 
-	Se `USE_FLOWPIC_DATASET` è impostato su True nella configurazione della sessione,
+	Se il flag `is_flowpic` è impostato su True nella configurazione della sessione,
 	questa funzione dovrebbe caricare il dataset FlowPic precomputato dal file .npz corrispondente.
 
 	Returns:
@@ -389,7 +391,7 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
 		X_raw = histograms
 		y_raw = metadata["Label"].values
 
-	# end if USE_FLOWPIC_DATASET
+	# end if is_flowpic
 
 	#	################################################################	#
 	#	Verifica della correttezza dei dati e dei metadati.
@@ -430,7 +432,7 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
 		raise ValueError("Dati, etichette e metadati non sono allineati.")
 	if list(metadata["DatasetID"]) != list(range(len(metadata))):
 		raise ValueError("DatasetID non contiguo!")
-	
+
 	return X_raw, y_raw, metadata
 
 	# end
@@ -598,7 +600,7 @@ def split_dataset(X_raw, y_encoded) -> list:
 
 	# end
 
-def split_train_val(train_indices_temp, y_temp) -> tuple:
+def split_train_val(train_indices_temp, y_temp) -> tuple[np.ndarray, np.ndarray]:
 	"""Suddivide il dataset temporaneo per il training in Train e Validation in base ai parametri della sessione corrente.
 
 	Args:
@@ -619,6 +621,9 @@ def split_train_val(train_indices_temp, y_temp) -> tuple:
 		stratify=y_temp,
 		random_state=runtime_config.launch.random_seed
 	)
+
+	train_indices = np.asarray(train_indices, dtype=np.int64)
+	val_indices = np.asarray(val_indices, dtype=np.int64)
 
 	return train_indices, val_indices
 
@@ -652,7 +657,7 @@ def apply_data_preprocessing(X, scaler, lengths):
 #	Creazione dei percorsi dei file di output.
 
 def get_fold_directory(output_dir: Path, fold_index: int) -> Path:
-	"""Crea e restituisce il percorso della directory dei risultati per il fold selezionato in modalità di addestramento, altrimenti verifica che esista (in base alla directory di output fornita nel file di configurazione).
+	"""Crea e restituisce il percorso della directory dei risultati per il fold selezionato in modalità di addestramento.
 
 	Args:
 		output_dir (Path): Directory di output principale.
@@ -688,6 +693,74 @@ def get_fold_directory(output_dir: Path, fold_index: int) -> Path:
 
 #	####################################################################	#
 #	Configurazione dei componenti di addestramento.
+
+def build_scaler(X_train: np.ndarray, lengths_train: np.ndarray, fold_scaler_path: Path):
+	"""Costruisce e restituisce lo scaler per il training set.
+
+	Args:
+		X_train (np.ndarray): Array contenente i dati del training set.
+		lengths_train (np.ndarray): Array contenente le lunghezze valide per ciascun campione del training set.
+		fold_scaler_path (Path): Percorso del file in cui salvare o caricare lo scaler.
+
+	Raises:
+		FileNotFoundError: Se il file dello scaler non è disponibile in modalità di valutazione.
+		ValueError: Se lo scaler caricato non corrisponde alla strategia di preprocessing selezionata.
+		ValueError: Se lo scaler caricato non è compatibile con il numero di feature del training set.
+	
+	Returns:
+		Scaler adattato sui dati del training set.
+	"""
+
+	#	################################################################	#
+	#	Per la modalità di valutazione:
+	#	Recupera lo scaler dal checkpoint.
+
+	if not runtime_config.launch.exec_mode_train:
+
+		if not fold_scaler_path.is_file():
+			raise FileNotFoundError(
+				"Errore nel caricamento dello scaler: \n"
+				f"Scaler del checkpoint non disponibile: {fold_scaler_path} \n"
+				"Non è possibile garantire il preprocessing originale."
+			)
+
+		with fold_scaler_path.open("rb") as stream:
+			scaler = pickle.load(stream)
+
+		if session_config.preprocessing.strategy == "MinMax" and not isinstance(scaler, MinMaxScaler):
+			raise ValueError("Lo scaler caricato non corrisponde alla strategia di preprocessing MinMax.")
+
+		if scaler.n_features_in_ != X_train.shape[2]:
+			raise ValueError(
+				"Errore nel caricamento dello scaler: \n"
+				"Lo scaler caricato non è compatibile con il numero di feature del training set."
+			)
+
+	#	################################################################	#
+	#	Per la modalità di addestramento:
+	#	Crea e adatta lo scaler sui dati del training set corrente.
+
+	else:
+		if session_config.preprocessing.strategy == "MinMax":
+			scaler = MinMaxScaler(feature_range=(0, 1))
+		else:
+			# Controllo già eseguito in configuration.py
+			pass
+
+		valid_train = np.arange(X_train.shape[1])[None, :] < lengths_train[:, None]
+		scaler.fit(X_train[valid_train])
+
+		# Salvataggio dello scaler per il fold corrente.
+		atomic_write(
+			fold_scaler_path,
+			lambda stream: pickle.dump(scaler, stream)
+		)
+
+		# end if exec_mode_train
+
+	return scaler
+
+	# end
 
 def init_model(device, fold_index: int, num_classes: int) -> _BaseModel:
 	"""Inizializza e restituisce il modello selezionato.
@@ -1080,7 +1153,28 @@ def compute_soft_output(
 	print(f"Test Acc: {test_acc:.4f}%")
 
 	#	################################################################	#
-	#	Ritorno dei risultati.
+	#	Verifica e ritorno dei risultati.
+
+	if not (
+		len(metadata_test)
+		== y_true.numel()
+		== y_preds.numel()
+		== y_probs.shape[0]
+	):
+		raise ValueError(
+			"Errore nel calcolo del soft-output: \n"
+			"Disallineamento tra "
+			f"metadati ({len(metadata_test)}), "
+			f"etichette ({y_true.numel()}), "
+			f"predizioni ({y_preds.numel()}) e, "
+			f"probabilità ({y_probs.shape[0]})."
+		)
+
+	if torch.any((y_true < 0) | (y_true >= model.num_classes)):
+		raise ValueError(
+			"Errore nel calcolo del soft-output: \n"
+			f"Il test set contiene etichette fuori dall'intervallo [0, {model.num_classes})."
+		)
 
 	soft_output = [
 		";".join(f"{probability:.8f}" for probability in row)
@@ -1178,7 +1272,10 @@ def main(terminal_log: TerminalLog):
 
 	reference_labels_path = checkpoint_dir / "labels_map.json" if checkpoint_dir is not None else None
 	y_encoded, labels_map = encode_labels(X_raw, y_raw, labels_map_path, reference_labels_path)
+
 	num_classes = len(labels_map)
+	class_ids = np.arange(num_classes)
+	class_names = [labels_map[int(i)] for i in class_ids]
 
 	if num_classes <= 0:
 		raise EnvironmentError("Errore nel caricamento delle etichette delle classi.")
@@ -1190,20 +1287,6 @@ def main(terminal_log: TerminalLog):
 
 	print(f"\nNumero di classi: {num_classes}")
 	print(f"Etichette delle classi generate: {sorted(labels_map.values())}\n")
-
-	#	-----------------------------------------------------------------	#
-	#	Selezione della strategia di data preprocessing.
-
-	if runtime_config.flags.is_flowpic:
-		runtime_config.debug_print("La fase di preprocessing è disponibile solo per il dataset grezzo (Mirage).")
-
-	elif not runtime_config.flags.is_flowpic:
-		if session_config.preprocessing.strategy == "MinMax":
-			scaler = MinMaxScaler(feature_range=(0, 1))
-		else:
-			raise ValueError(f"Strategia di preprocessing non supportata: {session_config.preprocessing.strategy}")
-
-		# end if
 
 	#	-----------------------------------------------------------------	#
 	#	Implementazione della K-fold cross-validation.
@@ -1244,16 +1327,22 @@ def main(terminal_log: TerminalLog):
 		fold_results_dir = get_fold_directory(output_dir, fold_index)
 		print(f"Directory dei risultati per il fold selezionato: {fold_results_dir}")
 
-		fold_confusion_matrix_path = fold_results_dir / "confusion_matrix.png"
-		fold_history_path = fold_results_dir / "training_history.csv"
-		fold_plots_path = fold_results_dir / "train_val_plots.png"
-		fold_predictions_path = fold_results_dir / "predictions_test.csv"
-		fold_report_path = fold_results_dir / "classification_report.txt"
+		if runtime_config.launch.exec_mode_train:
 
-		fold_model_path = \
-			fold_results_dir / "model.pth" \
-			if runtime_config.launch.exec_mode_train \
-			else checkpoint_dir / f"fold{fold_index}" / "model.pth"
+			fold_confusion_matrix_path = fold_results_dir / "confusion_matrix.png"
+			fold_history_path = fold_results_dir / "training_history.csv"
+			fold_model_path = fold_results_dir / "model.pth"
+			fold_plots_path = fold_results_dir / "train_val_plots.png"
+			fold_predictions_path = fold_results_dir / "predictions_test.csv"
+			fold_report_path = fold_results_dir / "classification_report.txt"
+			fold_scaler_path = fold_results_dir / "scaler.pkl"
+			fold_splits_path = fold_results_dir / "split_indices.npz"
+
+		else:
+
+			fold_model_path = checkpoint_dir / f"fold{fold_index}" / "model.pth"
+			fold_scaler_path = checkpoint_dir / f"fold{fold_index}" / "scaler.pkl"
+			fold_splits_path = checkpoint_dir / f"fold{fold_index}" / "split_indices.npz"
 
 		#	-------------------------------------------------------------	#
 		#	Suddivisione del dataset in Train / Val / Test.
@@ -1265,20 +1354,50 @@ def main(terminal_log: TerminalLog):
 		X_val, y_val, metadata_val = extract_subset(val_indices)
 		X_test, y_test, metadata_test = extract_subset(test_indices)
 
+		current_indices = {
+			"train": train_indices,
+			"val": val_indices,
+			"test": test_indices
+		}
+
 		#	-------------------------------------------------------------	#
-		#	Verifica della correttezza degli split.
+		#	Verifica e salvataggio degli indici di split.
 
 		# Verifica della lunghezza dei set risultanti rispetto al dataset originale.
 		if len(X_train) + len(X_val) + len(X_test) != len(X_raw):
-			raise ValueError("La somma dei campioni Train, Val e Test non corrisponde al totale!")
+			raise ValueError(
+				"Errore nella verifica degli split: \n"
+				"La somma dei campioni Train, Val e Test non corrisponde al totale!"
+			)
 
+		# Verifica della copertura completa del dataset da parte degli split.
 		all_indices = np.arange(len(X_raw))
 		split_indices = np.concatenate([train_indices, val_indices, test_indices])
 		if not np.array_equal(np.sort(all_indices), np.sort(split_indices)):
-			raise ValueError("Gli split non coprono esattamente il dataset originale!")
+			raise ValueError(
+				"Errore nella verifica degli split: \n"
+				"Gli split non coprono esattamente il dataset originale!"
+			)
 
 		# Verifica dell'allineamento in ciascuno split.
 		# TODO: vedi notebook.
+
+		if runtime_config.launch.exec_mode_train:
+			atomic_write(
+				fold_splits_path,
+				lambda stream: np.savez_compressed(stream, **current_indices),
+			)
+
+		else:
+			with np.load(fold_splits_path, allow_pickle=False) as saved:
+				for name, curr in current_indices.items():
+					if not np.array_equal(saved[name], curr):
+						raise ValueError(
+							"Errore nel caricamento degli split: \n"
+							f"Lo split '{name}' in 'fold{fold_index}' non coincide con quello del checkpoint."
+						)
+
+		del current_indices
 
 		#	------------------------------------------------------------	#
 		#	Estrazione delle lunghezze reali dei flussi (solo per dataset Mirage).
@@ -1303,13 +1422,23 @@ def main(terminal_log: TerminalLog):
 		#	------------------------------------------------------------	#
 		#	Applicazione della strategia di data preprocessing (solo per dataset Mirage).
 
-		if not runtime_config.flags.is_flowpic:
-			valid_train = np.arange(X_train.shape[1])[None, :] < lengths_train[:, None]
-			scaler.fit(X_train[valid_train])
+		if runtime_config.flags.is_flowpic:
+			runtime_config.debug_print(
+				"La fase di preprocessing è disponibile "
+				"solo per il dataset grezzo (Mirage)."
+			)
+
+		else:
+
+			# Costruisce lo scaler utilizzando i dati di training e le lunghezze reali dei flussi.
+			# Recupera lo scaler associato al checkpoint del fold corrente, se disponibile.
+			scaler = build_scaler(X_train, lengths_train, fold_scaler_path)
 
 			X_train = apply_data_preprocessing(X_train, scaler, lengths_train)
 			X_val = apply_data_preprocessing(X_val, scaler, lengths_val)
 			X_test = apply_data_preprocessing(X_test, scaler, lengths_test)
+
+			# end if is_flowpic
 
 		#	------------------------------------------------------------	#
 		#	Stampa dei risultati.
@@ -1369,7 +1498,12 @@ def main(terminal_log: TerminalLog):
 
 		def check_loader_length(loader, name):
 			if len(loader) == 0:
-				raise ValueError(f"Il DataLoader per {name} è vuoto. Controllare la configurazione del dataset.")
+				raise ValueError(
+					f"Il DataLoader per {name} è vuoto. "
+					"Controllare la configurazione del dataset."
+				)
+
+			# end
 
 		check_loader_length(train_loader, "il training")
 		check_loader_length(val_loader, "la validazione")
@@ -1492,6 +1626,9 @@ def main(terminal_log: TerminalLog):
 			if best_epoch is None:
 
 				# Rimuove la directory dei risultati del fold se non è stato creato un checkpoint valido.
+				# Rimuove i file eventualmente già presenti nella directory del fold.
+				for path in [fold_model_path, fold_scaler_path, fold_splits_path]:
+					path.unlink(missing_ok=True)
 				fold_results_dir.rmdir()
 				print(f"Directory dei risultati del 'fold{fold_index}' rimossa.")
 
@@ -1609,9 +1746,11 @@ def main(terminal_log: TerminalLog):
 		#	Calcolo della matrice di confusione per il Test set.
 
 		if runtime_config.flags.save_output:
+
 			cm = confusion_matrix(
 				test_predictions_df["Actual"],
 				test_predictions_df["Predicted"],
+				labels=class_ids,
 				normalize='true'
 			)
 
@@ -1621,7 +1760,7 @@ def main(terminal_log: TerminalLog):
 			plt.ylabel('True Label')
 			plt.xlabel('Predicted Label')
 
-			draw_confusion_matrix(cm, labels_map.values())
+			draw_confusion_matrix(cm, class_names)
 			plt.savefig(fold_confusion_matrix_path, bbox_inches='tight')
 			print(f"\nMatrice di confusione salvata in {fold_confusion_matrix_path}")
 
@@ -1634,15 +1773,16 @@ def main(terminal_log: TerminalLog):
 		#	Report di classificazione completo.
 
 		if runtime_config.flags.save_output:
-			report_dict = classification_report(
+			report_text = classification_report(
 				test_predictions_df["Actual"], test_predictions_df["Predicted"],
-				target_names=labels_map.values(), labels=np.arange(num_classes),
+				target_names=class_names, labels=class_ids,
 				digits=4, zero_division=0
 			)
+
 			print(f"\nReport di classificazione salvato in {fold_report_path}")
 
 			with open(fold_report_path, "w") as f:
-				f.write(report_dict)
+				f.write(report_text)
 
 			# end save_output
 
@@ -1661,9 +1801,14 @@ def main(terminal_log: TerminalLog):
 		# end for fold_index, current_fold
 
 	#	-----------------------------------------------------------------	#
-	#	title
+	#	Valutazione finale della cross-validation.
 
 	# TODO: creare una tabella di confronto tra modelli su fold diverse con F1-score e accuracy, media e deviazione standard.
+	# ...
+
+	#	-----------------------------------------------------------------	#
+	#	Addestramento di un nuovo modello finale.
+
 	# ...
 
 	#	-----------------------------------------------------------------	#
@@ -1674,7 +1819,9 @@ def main(terminal_log: TerminalLog):
 	print(f"Orario d'inizio: {datetime.fromtimestamp(total_start_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Orario di fine: {datetime.fromtimestamp(total_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Tempo di elaborazione: {convert(total_end_time - total_start_time)}")
-	print(f"Fold senza checkpoint: {skipped_folds}")
+
+	if skipped_folds:
+		print(f"Fold senza checkpoint: {skipped_folds}")
 
 	return
 
