@@ -15,10 +15,8 @@ from Source.configuration import SessionConfig, RuntimeConfig, ExecutionConfig
 from Source.configuration import \
 	parse_args, \
 	find_session_config
-from Source.session_io import TerminalLog, FoldInterrupt, EpochInterrupted
-from Source.session_io import \
-	atomic_write, \
-	write_config
+from Source.utils import TerminalLog
+from Source.utils import atomic_dump
 
 # Dataset loading and manipulation
 import numpy as np
@@ -48,7 +46,7 @@ from Source.models import \
 	get_model_input_shape, \
 	select_model
 from Source.training_functions import \
-	train_epoch, \
+	train_model, \
 	evaluate
 
 # Visualization
@@ -58,52 +56,17 @@ from Source.visualization_functions import \
 	draw_train_val_plot, \
 	draw_confusion_matrix
 from sklearn.metrics import \
-	f1_score, \
 	confusion_matrix, \
 	classification_report
 
-# More libraries
+# More libraries and utilities
 from datetime import datetime
 import json
 import random
 import re
 import time
 import traceback
-
-#	####################################################################	#
-#	Funzioni di utilità
-
-def debug_print(message: str) -> None:
-	"""Stampa un messaggio di debug se la modalità di debug è abilitata.
-
-	Args:
-		message (str): Messaggio da stampare.
-	"""
-
-	if runtime_config.flags.debug:
-		print(f"\n[DEBUG] {message}")
-
-	# end
-
-def convert(seconds: float) -> str:
-	# Separa i secondi interi dalla parte decimale
-	sec_int = int(seconds)
-	milliseconds = int(round((seconds - sec_int) * 1000))
-
-	# Gestione dell'eventuale arrotondamento a 1000 ms
-	if milliseconds >= 1000:
-		sec_int += 1
-		milliseconds -= 1000
-
-	# Formatta ore, minuti e secondi con time.strftime usando l'orario UTC/epoch
-	time_str = time.strftime("%H:%M:%S", time.gmtime(sec_int))
-
-	return f"{time_str}.{milliseconds:03d}"
-
-def use_config_file() -> bool:
-	return runtime_config.launch.source_session_id is not None
-
-	# end
+from Source.utils import convert
 
 #	####################################################################	#
 #	Calcolo dei parametri di esecuzione.
@@ -149,7 +112,7 @@ def allocate_session(start_time: int, results_dir="Results") -> tuple[str, Path]
 	#	CASO 1: Uso del file di configurazione.
 	#	Trova il numero di versione successivo della stessa famiglia.
 
-	if use_config_file():
+	if runtime_config.use_config_file():
 		# Recupera la base del nome della sessione, rimuovendo il suffisso di versione (_vX)
 		base = re.sub(
 			pattern = r"(?:_v[0-9]+)+$",
@@ -529,7 +492,7 @@ def encode_labels(X_raw, y_raw, labels_map_path, reference_labels_path=None):
 	#	Verifica e ritorno delle etichette codificate.
 
 	if runtime_config.flags.save_output:
-		write_config(labels_map_path, labels_map)
+		atomic_dump(labels_map_path, labels_map)
 
 	if len(X_raw) != len(y_encoded):
 		raise ValueError("Disallineamento tra dati e etichette!")
@@ -689,7 +652,6 @@ def apply_data_preprocessing(X, scaler, lengths):
 #	Creazione dei percorsi dei file di output.
 
 def get_fold_directory(output_dir: Path, fold_index: int) -> Path:
-	# """Directory di sola destinazione, mai usata per individuare checkpoint sorgenti."""
 	"""Crea e restituisce il percorso della directory dei risultati per il fold selezionato in modalità di addestramento, altrimenti verifica che esista (in base alla directory di output fornita nel file di configurazione).
 
 	Args:
@@ -1072,243 +1034,6 @@ def load_source_history(checkpoint_dir, fold_index):
 	# end
 
 #	####################################################################	#
-#	Addestramento del modello.
-
-def train_model(
-		model, device,
-		train_loader, val_loader,
-		optimizer, lr_sched, criterion,
-		fold_model_path: str,
-	) -> tuple[torch.nn.Module, pd.DataFrame, int, float]:
-	"""Addestra il modello per un numero specificato di epoche. Si può interrompere anticipatamente l'addestramento con Ctrl+C scartando l'epoca incompleta.
-
-	## Funzionalità
-		- Monitora le metriche di addestramento e validazione.
-		- Implementa early stopping e aggiorna i pesi del modello in base alla metrica di valutazione selezionata.
-		- Supporta l'interruzione anticipata dell'addestramento con Ctrl+C, mantenendo i pesi aggiornati fino all'epoca migliore.
-
-	Args:
-		model: Il modello da addestrare.
-		device: Il dispositivo su cui eseguire l'addestramento.
-		train_loader: Il DataLoader per il set di addestramento.
-		val_loader: Il DataLoader per il set di validazione.
-		optimizer: L'ottimizzatore da utilizzare.
-		lr_sched: Il scheduler del learning rate.
-		criterion: La funzione di loss.
-		fold_model_path (str): Il percorso dove viene salvato il modello aggiornato.
-	
-	Returns:
-		tuple: il modello addestrato, il DataFrame contenente lo storico dell'addestramento, l'epoca migliore e il punteggio migliore.
-	"""
-
-	#	################################################################	#
-	#	Inizializzazione delle metriche da monitorare.
-
-	# Questo dizionario terrà traccia delle metriche di addestramento e validazione per ogni epoca.
-	train_history_df = pd.DataFrame(columns=[
-		"epoch", "time",
-		"train_loss", "train_accuracy",
-		"val_loss", "val_accuracy", "val_macrof1",
-	])
-
-	# Inizializza le variabili per il monitoraggio della metrica di valutazione selezionata.
-	minimize = session_config.training.monitored_metric == "val_loss"
-	best_score = float('inf') if minimize else -float('inf')
-	best_epoch = None
-	patience_counter = 0
-	interrupted = False
-
-	#	################################################################	#
-	#	Inizio del loop di addestramento.
-
-	training_start_time = time.time()
-	print(
-		f"Addestramento iniziato.\n"
-		"Orario corrente: "
-		f"{datetime.fromtimestamp(training_start_time).strftime('%Y-%m-%d_%H:%M:%S')}\n\n"
-
-		f"{repr(session_config)} \n"
-		f"[SAMPLES] Training: {len(train_loader.dataset)} in {len(train_loader)} batches"
-		f" | Validation: {len(val_loader.dataset)} in {len(val_loader)} batches"
-		f" | Classes: {model.num_classes} \n"
-	)
-
-	#	################################################################	#
-	#	Esecuzione del loop di addestramento.
-
-	with FoldInterrupt() as stop:
-		for epoch in range(1, session_config.training.epochs +1):
-
-			# Salva il timestamp di inizio epoca per calcolare la durata dell'epoca corrente.
-			epoch_start_time = time.time()
-
-			try:
-
-				stop.check()
-
-				print(f"\nEpoch {epoch}/{session_config.training.epochs}")
-
-				# Calcola la loss e l'accuratezza per il training set e il validation set.
-				train_loss, train_acc = train_epoch(
-					model, device,
-					train_loader,
-					criterion, optimizer, lr_sched,
-					stop=stop,
-				)
-
-				val_loss, val_acc, val_preds, val_true, _ = evaluate(
-					model, device,
-					val_loader,
-					criterion,
-					stop=stop,
-				)
-
-				val_macrof1 = f1_score(
-					val_true.detach().cpu().numpy(),
-					val_preds.detach().cpu().numpy(),
-					labels= np.arange(model.num_classes),
-					average= "macro",
-					zero_division= 0,
-				) * 100
-
-				metrics = {
-					"train_loss": float(train_loss),
-					"train_accuracy": float(train_acc),
-					"val_loss": float(val_loss),
-					"val_accuracy": float(val_acc),
-					"val_macrof1": float(val_macrof1),
-				}
-
-				invalid_metrics = [name for name, value in metrics.items() if not np.isfinite(value)]
-				if invalid_metrics:
-					raise RuntimeError("Errore nel calcolo delle metriche di addestramento: valori non finiti per [" + ", ".join(invalid_metrics) + "]")
-
-				stop.check()
-
-			except (EpochInterrupted, KeyboardInterrupt):
-				interrupted = True
-				print(f"\nTraining interrotto all'epoca {epoch}.")
-				break
-
-			# end try
-
-			# CHECK : se il punteggio calcolato migliora, salva il modello e resetta il contatore per la patience.
-			current_score = metrics[session_config.training.monitored_metric]
-
-			if best_epoch is None:
-				improved = True
-			elif minimize:
-				improved = current_score < (best_score - session_config.training.min_delta)
-			else:
-				improved = current_score > (best_score + session_config.training.min_delta)
-
-			if improved:
-				print(
-					f"  -> '{session_config.training.monitored_metric}' improved. \n"
-					f"     Model saved in {fold_model_path}."
-				)
-
-				atomic_write(fold_model_path, lambda stream: torch.save(model.state_dict(), stream))
-
-				best_score = current_score
-				best_epoch = epoch
-				patience_counter = 0
-
-			elif session_config.training.early_stopping:
-				patience_counter += 1
-				print(f"  -> No improvement on '{session_config.training.monitored_metric}'.")
-				print(f"     Patience: {patience_counter} of {session_config.training.patience}" if True else "")
-
-				# Se il contatore di patience raggiunge il limite si interrompe il training.
-				if patience_counter >= session_config.training.patience:
-					print("     Early stopping triggered.")
-					break
-
-			else:
-				print(
-					f"  -> No improvement on '{session_config.training.monitored_metric}'. \n" 
-					f"     Early stopping is disabled."
-				)
-
-			# Calcola la durata dell'epoca corrente e il tempo totale trascorso dall'inizio dell'addestramento.
-			epoch_end_time = time.time()
-			epoch_duration = epoch_end_time - epoch_start_time
-			elapsed_time = epoch_end_time - training_start_time
-
-			# Aggiorna lo storico delle metriche per l'epoca corrente.
-			train_history_df.loc[len(train_history_df)] = {
-				"epoch": epoch,
-				"time": epoch_duration,
-				**metrics
-			}
-
-			# Stampa in console le metriche dell'epoca corrente.
-			print(
-				f"\nTrain Loss: {train_loss:.4f} "
-				f"| Train Accuracy: {train_acc:.4f}%\n"
-
-				f"Val Loss: {val_loss:.4f} "
-				f"| Val Accuracy: {val_acc:.4f}% "
-				f"| Val Macro F1: {(val_macrof1):.4f}%\n"
-
-				f"Epoch time: {convert(epoch_duration)} "
-				f"| Elapsed time: {convert(elapsed_time)}"
-			)
-
-			if stop.requested:
-				interrupted = True
-				print("\nStop ricevuto durante la finalizzazione dell'epoca completa.")
-				break
-
-			# end for epoch
-
-		# end with stop
-
-	#	################################################################	#
-	#	Fine del loop di addestramento.
-
-	training_end_time = time.time()
-	best_score_str = \
-		f"{best_score:.4f}" \
-		if session_config.training.monitored_metric == "val_loss" \
-		else f"{best_score:.4f}%"
-
-	print(
-		f"\nAddestramento {'interrotto' if interrupted else 'completato'}. \n"
-		f"Orario corrente: "
-		f"{datetime.fromtimestamp(training_end_time).strftime('%Y-%m-%d_%H:%M:%S')} \n"
-		f"Tempo di elaborazione: "
-		f"{convert(training_end_time - training_start_time)} \n"
-	)
-
-	# Se non è stata completata alcuna epoca, interrompe il processo e segnala che il test del fold sarà saltato.
-	# Altrimenti prosegue con la stampa e il salvataggio delle informazioni sulla migliore epoca.
-	if best_epoch is None:
-		print("Non è stata completata alcuna epoca. Il test del fold sarà saltato.")
-		return model, train_history_df, None, None
-
-	#	################################################################	#
-	#	Salvataggio dei risultati.
-
-	# Ricarica i pesi del modello con la miglior loss di validazione.
-	best_model = torch.load(
-		fold_model_path,
-		map_location=device,
-		weights_only=True,
-	)
-	model.load_state_dict(best_model)
-	del best_model
-
-	print(
-		f"Migliore epoca: {best_epoch} | "
-		f"{session_config.training.monitored_metric}: {best_score_str}"
-	)
-
-	return model, train_history_df, best_epoch, best_score
-
-	# end
-
-#	####################################################################	#
 #	Costruzione del soft-output per il Test set.
 
 def compute_soft_output(
@@ -1417,12 +1142,12 @@ def main(terminal_log: TerminalLog):
 	#	Verifica e salvataggio dei parametri nel file di configurazione.
 
 	execution_config = ExecutionConfig.from_args(session_id, device.type, str(dtype))
-	if not runtime_config.launch.exec_mode_train and use_config_file():
+	if not runtime_config.launch.exec_mode_train and runtime_config.use_config_file():
 		checkpoint_dir = resolve_checkpoint_session(execution_config)
 	else:
 		checkpoint_dir = None
 
-	write_config(
+	atomic_dump(
 		config_path,
 		{
 			"execution": asdict(execution_config),
@@ -1470,7 +1195,7 @@ def main(terminal_log: TerminalLog):
 	#	Selezione della strategia di data preprocessing.
 
 	if runtime_config.flags.is_flowpic:
-		debug_print("La fase di preprocessing è disponibile solo per il dataset grezzo (Mirage).")
+		runtime_config.debug_print("La fase di preprocessing è disponibile solo per il dataset grezzo (Mirage).")
 
 	elif not runtime_config.flags.is_flowpic:
 		if session_config.preprocessing.strategy == "MinMax":
@@ -1658,7 +1383,7 @@ def main(terminal_log: TerminalLog):
 		# Stampa e salvataggio delle informazioni sul modello.
 		if fold_index == 0:
 			model_info = get_model_info(model)
-			debug_print(model_info)
+			runtime_config.debug_print(model_info)
 
 			if runtime_config.flags.save_output:
 				with open(model_info_path, "w", encoding="utf-8") as f:
@@ -1760,21 +1485,17 @@ def main(terminal_log: TerminalLog):
 				train_loader, val_loader,
 				optimizer, lr_sched, criterion,
 				fold_model_path,
+				session_config
 			)
 
-			# Se il fold corrente non ha prodotto un checkpoint valido, salva solo lo storico di addestramento e passa al fold successivo.
+			# Se il fold corrente non ha prodotto un checkpoint valido, salta direttamente al fold successivo.
 			if best_epoch is None:
+
+				# Rimuove la directory dei risultati del fold se non è stato creato un checkpoint valido.
+				fold_results_dir.rmdir()
+				print(f"Directory dei risultati del 'fold{fold_index}' rimossa.")
+
 				skipped_folds.append(fold_index)
-
-				if runtime_config.flags.save_output:
-					train_history_df.to_csv(
-						fold_history_path,
-						index=False,
-						lineterminator="\n",
-						float_format="%.8f"
-					)
-					print(f"\nStorico delle metriche salvato in {fold_history_path}")
-
 				plt.close("all")
 
 				fold_end_time = time.time()
@@ -1807,12 +1528,14 @@ def main(terminal_log: TerminalLog):
 			
 			# Salva lo storico delle metriche di addestramento e validazione in un file CSV.
 			if runtime_config.flags.save_output:
+
 				train_history_df.to_csv(
 					fold_history_path,
 					index=False,
 					lineterminator="\n",
 					float_format="%.8f"
 				)
+
 				print(f"\nStorico delle metriche salvato in {fold_history_path}")
 
 			# end exec_mode_train
@@ -1973,7 +1696,7 @@ if __name__ == "__main__":
 			runtime_config = RuntimeConfig.from_args(args)
 
 			# Stampa di debug dei parametri di configurazione.
-			debug_print(
+			runtime_config.debug_print(
 				f"Parametri di sessione in 'session_config':" \
 				f"\n{session_config}" \
 				"\n\n" \

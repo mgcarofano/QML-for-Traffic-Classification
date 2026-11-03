@@ -8,7 +8,7 @@
 #	####################################################################	#
 #	Librerie
 
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from argparse import ArgumentParser, Namespace, SUPPRESS, BooleanOptionalAction
 from typing import get_args, get_origin, get_type_hints
 
@@ -129,6 +129,13 @@ def parse_args(argv= None) -> Namespace:
 				"default": SUPPRESS,
 			}
 
+			if argument_name == "save_output":
+				options["help"] = (
+					"Salva anche gli output accessori. "
+					"I checkpoint sono elaborati e salvati solo durante il training. "
+					"File di configurazione e log da terminale sono sempre salvati."
+				)
+
 			# Booleani: --debug / --no-debug.
 			if value_type is bool:
 				parser.add_argument(
@@ -234,6 +241,67 @@ def find_session_config(
 
 	# end
 
+def _apply_cli(config, args: Namespace, prefix: str = ""):
+	"""Applica gli override della riga di comando a una configurazione già esistente, attraversandone anche le dataclass annidate. Non modifica direttamente l’oggetto sorgente, ma utilizza replace() per creare una nuova istanza aggiornata, verificandone i valori con l'implementazione di __post_init__(), se previsto.
+
+	Args:
+		config: Istanza della dataclass da aggiornare.
+		args (Namespace): Risultato del parsing della CLI, contenente gli override.
+		prefix (str, optional): Prefisso da utilizzare per i campi annidati. Defaults to "".
+
+	Raises:
+		TypeError: Se viene incontrata una sezione CLI non supportata.
+
+	Returns:
+		Any: La configurazione aggiornata con gli override della riga di comando.
+	"""
+
+	#	################################################################	#
+	#	Raccoglie gli argomenti della CLI da sovrascrivere nella configurazione esistente.
+
+	changes = _overrides(type(config), args, prefix)
+
+	#	################################################################	#
+	#	Visita tutti i campi della dataclass corrente.
+
+	for field in fields(config):
+
+		# Ignora i campi con init=False che non possono essere passati come modifiche a replace().
+		if not field.init:
+			continue
+
+		# Costruisce il nome completo del campo, includendo il prefisso se presente.
+		name = f"{prefix}.{field.name}" if prefix else field.name
+		value = getattr(config, field.name)
+
+		# Applica ricorsivamente gli override della CLI se il campo è una dataclass annidata.
+		if is_dataclass(value):
+			changes[field.name] = _apply_cli(value, args, name)
+
+		# Se il campo non è una dataclass, verifica se ci sono override della CLI per i suoi sotto-campi.
+		elif any(key.startswith(name + ".") for key in vars(args)):
+
+			# Se il sotto-campo non è una dataclass, solleva un errore.
+			# Utilizza la funzione get_type_hints() per trattare correttamente i campi con valore None.
+			field_type = get_type_hints(type(config))[field.name]
+			if not is_dataclass(field_type):
+				raise TypeError(f"Sezione CLI non supportata: {name}")
+
+			# Altrimenti, applica ricorsivamente gli override della CLI al sotto-campo.
+			base_section = field_type.from_defaults()
+			changes[field.name] = _apply_cli(base_section, args, name)
+
+			# end if
+		
+		# end for
+
+	#	################################################################	#
+	#	Restituisce la configurazione aggiornata con gli override della CLI applicati.
+
+	return replace(config, **changes)
+
+	# end
+
 def check_positive_int(name: str, value):
 	"""Verifica che il valore sia un intero positivo.
 
@@ -242,7 +310,7 @@ def check_positive_int(name: str, value):
 		value: Il valore da verificare.
 
 	Raises:
-		TypeError: Se il valore può essere convertito in un intero.
+		TypeError: Se il valore non può essere convertito in un intero.
 		ValueError: Se il valore non è un intero positivo.
 
 	Returns:
@@ -987,7 +1055,7 @@ class FlagsConfig:
 	""" Whether to use the FlowPic dataset or the original Mirage dataset. If True, generate the FlowPic dataset from raw data using the `traffic_converter` module. """
 	
 	save_output: bool
-	""" Whether to save the output of the notebook. """
+	""" Whether to save optional outputs. Config/log are always saved; training checkpoints too. """
 
 	@classmethod
 	def from_defaults(cls) -> "FlagsConfig":
@@ -1017,7 +1085,7 @@ class FlagsConfig:
 @dataclass(frozen=True)
 class LaunchConfig:
 	source_session_id: str | None
-	""" Identifier for the configuration JSON file to load. """
+	""" Identifier for the 'config.json' file to load. Successive evaluation will resolve checkpoint ancestry at runtime. """
 
 	exec_mode_train: bool
 	""" Whether to execute the training loop (True) or only run validation on a pre-saved model (False). """
@@ -1205,17 +1273,9 @@ class SessionConfig:
 		#	Scenario 3 (caricamento da sessione esistente)
 
 		elif source_session_id is not None:
-			section_names = {field.name for field in fields(cls)}
-			more_overrides = [name for name in vars(args) if name.split(".", 1)[0] in section_names]
+			base = cls.from_json(find_session_config(source_session_id))
+			return _apply_cli(base, args)
 
-			if more_overrides:
-				raise ValueError(
-					"Non è consentito combinare source_session_id con altri parametri di sessione.\n"
-					f"Parametri trovati: {sorted(more_overrides)}"
-				)
-
-			return cls.from_json(find_session_config(source_session_id))
-			
 		# end
 
 	@classmethod
@@ -1320,15 +1380,17 @@ class RuntimeConfig:
 	launch: LaunchConfig
 	""" Configuration of the launch parameters for the current session. """
 
-	environment: EnvironmentConfig
-	""" Configuration of the environment for the current session. """
+	environment: EnvironmentConfig = field(
+		init=False,
+		default_factory=EnvironmentConfig.from_environment,
+	)
+	""" Configuration of the environment detected for the current session. It cannot be overridden by command-line arguments or 'config.json' files. """
 
 	@classmethod
 	def from_defaults(cls) -> "RuntimeConfig":
 		return cls(
 			flags=FlagsConfig.from_defaults(),
 			launch=LaunchConfig.from_defaults(),
-			environment=EnvironmentConfig.from_environment(),
 		)
 
 		# end
@@ -1355,6 +1417,8 @@ class RuntimeConfig:
 		derived_inputs = {
 			field.name: runtime_types[field.name]
 			for field in fields(cls)
+
+			# La sezione 'environment' viene automaticamente esclusa dalle sezioni aggiornabili tramite override.
 			if field.init
 		}
 
@@ -1378,7 +1442,7 @@ class RuntimeConfig:
 			if not isinstance(runtime_dict, dict):
 				raise ValueError("La configurazione deve essere rappresentata da un oggetto JSON.")
 
-			required_sections = {"flags", "launch", "environment"}
+			required_sections = {"flags", "launch"}
 
 			missing_sections = required_sections - runtime_dict.keys()
 			if missing_sections:
@@ -1387,15 +1451,14 @@ class RuntimeConfig:
 					f"{sorted(missing_sections)}"
 				)
 
-			launch_dict = dict(runtime_dict["launch"])
-			flows_to_inspect = launch_dict.get("flows_to_inspect")
-			if flows_to_inspect is not None:
-				launch_dict["flows_to_inspect"] = tuple(flows_to_inspect)
-
 			try:
+				launch_dict = dict(runtime_dict["launch"])
+				flows_to_inspect = launch_dict.get("flows_to_inspect")
+				if flows_to_inspect is not None:
+					launch_dict["flows_to_inspect"] = tuple(flows_to_inspect)
+
 				flags = FlagsConfig(**runtime_dict["flags"])
 				launch = LaunchConfig(**launch_dict)
-				environment = EnvironmentConfig(**runtime_dict["environment"])
 
 			except KeyError as e:
 				raise ValueError(f"Chiave mancante nel file di configurazione: {e}") from e
@@ -1405,7 +1468,6 @@ class RuntimeConfig:
 			return cls(
 				flags=flags,
 				launch=launch,
-				environment=environment,
 			)
 
 			# end
@@ -1428,8 +1490,25 @@ class RuntimeConfig:
 
 		# end
 
+	def use_config_file(self) -> bool:
+		return self.launch.source_session_id is not None
+
+		# end
+
 	def print_exec_mode(self) -> None:
 		print(f"\nModalità di {'addestramento' if self.launch.exec_mode_train else 'valutazione'}.")
+
+	def debug_print(self, message: str) -> None:
+		"""Stampa un messaggio di debug se la modalità di debug è abilitata.
+
+		Args:
+			message (str): Messaggio da stampare.
+		"""
+
+		if self.flags.debug:
+			print(f"\n[DEBUG] {message}")
+
+		# end
 
 	def __repr__(self) -> str:
 		return f"\nRuntimeConfig(\n{repr(self.flags)}, \n{repr(self.launch)}, \n{repr(self.environment)}\n)"

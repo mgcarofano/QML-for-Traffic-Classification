@@ -12,7 +12,6 @@
 #   ########################################################################    #
 #   Librerie
 
-from tqdm import tqdm
 from typing import Tuple
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,6 +21,7 @@ from pathlib import Path
 
 from dataclasses import asdict
 from Source.configuration import SessionConfig, RuntimeConfig
+from Source.utils import custom_tqdm
 
 #   ########################################################################    #
 #   FUNZIONI di ANALISI del traffico
@@ -149,7 +149,7 @@ def mirage_pickle_converter(
 		#   ################################################################    #
 		#   Definizione della barra di avanzamento con tqdm.
 
-		progress = tqdm(
+		progress = custom_tqdm(
 			iterable,
 			total = total,
 			desc = "Elaborazione flussi",
