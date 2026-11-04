@@ -403,10 +403,10 @@ class PreprocessingConfig:
 		if not self.strategy:
 			raise ValueError("Strategia di preprocessing non definita.")
 
-		if self.strategy not in ["MinMax"]:
+		if self.strategy not in ["MinMax", "Log1p"]:
 			raise NotImplementedError(
 				f"Strategia di preprocessing non supportata: {self.strategy}\n"
-				"Strategie disponibili: ['MinMax']."
+				"Strategie disponibili: ['MinMax', 'Log1p']."
 			)
 
 		# end
@@ -1362,11 +1362,12 @@ class SessionConfig:
 	def __repr__(self) -> str:
 		return \
 			"[SESSION INFORMATION]\n" \
-			f"{self.dataset}\n" \
-			f"{self.kfold}\n" \
-			f"{self.training}\n" \
-			f"{self.optimizer} | {self.scheduler} | {self.loss}\n" \
-			f"{self.model}"
+			f"{self.dataset!r}\n" \
+			f"{self.preprocessing!r}\n" \
+			f"{self.kfold!r}\n" \
+			f"{self.training!r}\n" \
+			f"{self.optimizer!r} | {self.scheduler!r} | {self.loss!r}\n" \
+			f"{self.model!r}"
 
 		# end
 
@@ -1506,12 +1507,18 @@ class RuntimeConfig:
 		"""
 
 		if self.flags.debug:
-			print(f"\n[DEBUG] {message}")
+			print(
+				"\n[DEBUG]\n"
+				f"{message}"
+			)
 
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nRuntimeConfig(\n{repr(self.flags)}, \n{repr(self.launch)}, \n{repr(self.environment)}\n)"
+		return f"\n[RUNTIME INFORMATION]" \
+			f"\n{repr(self.flags)}, " \
+			f"\n{repr(self.launch)}, " \
+			f"\n{repr(self.environment)}"
 
 		# end
 

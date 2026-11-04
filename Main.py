@@ -34,7 +34,7 @@ from Source.classes import TrafficDataset
 from torch.utils.data import DataLoader
 
 # Preprocessing
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
+from sklearn.preprocessing import LabelEncoder, MinMaxScaler, FunctionTransformer
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import StratifiedKFold
 
@@ -49,7 +49,7 @@ from Source.models import \
 	select_model
 from Source.training_functions import \
 	train_model, \
-	evaluate
+	test_model
 
 # Visualization
 import matplotlib.pyplot as plt
@@ -628,32 +628,6 @@ def split_train_val(train_indices_temp, y_temp) -> tuple[np.ndarray, np.ndarray]
 	return train_indices, val_indices
 
 #	####################################################################	#
-#	Applicazione della strategia di data preprocessing.
-
-def apply_data_preprocessing(X, scaler, lengths):
-	"""Applica il preprocessing ai dati utilizzando lo scaler specificato, lavorando solo sulle lunghezze valide dei campioni. Valido solo per dataset di tipo Mirage (sequenze di pacchetti).
-
-	Args:
-		X (np.ndarray): Array contenente i dati da preprocessare.
-		scaler: Oggetto scaler utilizzato per normalizzare i dati.
-		lengths (np.ndarray): Array contenente le lunghezze valide per ciascun campione.
-
-	Returns:
-		np.ndarray: Array contenente i dati preprocessati.
-	"""
-
-	height, width = get_model_input_shape(session_config, runtime_config)
-	X_proc = X[:, :height, :].astype(np.float32, copy=True)
-	valid = np.arange(height)[None, :] < lengths[:, None]
-
-	X_proc = scaler.transform(X_proc.reshape(-1, width)).reshape(-1, height, width)
-	X_proc[~valid] = 0.0
-	
-	return X_proc.astype(np.float32, copy=False)
-
-	# end
-
-#	####################################################################	#
 #	Creazione dei percorsi dei file di output.
 
 def get_fold_directory(output_dir: Path, fold_index: int) -> Path:
@@ -692,7 +666,7 @@ def get_fold_directory(output_dir: Path, fold_index: int) -> Path:
 	# end
 
 #	####################################################################	#
-#	Configurazione dei componenti di addestramento.
+#	Applicazione della strategia di data preprocessing.
 
 def build_scaler(X_train: np.ndarray, lengths_train: np.ndarray, fold_scaler_path: Path):
 	"""Costruisce e restituisce lo scaler per il training set.
@@ -711,6 +685,17 @@ def build_scaler(X_train: np.ndarray, lengths_train: np.ndarray, fold_scaler_pat
 		Scaler adattato sui dati del training set.
 	"""
 
+	n_features = X_train.shape[-1]
+
+	check_minmax = lambda scaler: \
+		session_config.preprocessing.strategy == "MinMax" and \
+		not isinstance(scaler, MinMaxScaler)
+
+	check_log1p = lambda scaler: \
+		session_config.preprocessing.strategy == "Log1p" and \
+		not isinstance(scaler, FunctionTransformer) and \
+		scaler.func is not np.log1p
+
 	#	################################################################	#
 	#	Per la modalità di valutazione:
 	#	Recupera lo scaler dal checkpoint.
@@ -727,10 +712,12 @@ def build_scaler(X_train: np.ndarray, lengths_train: np.ndarray, fold_scaler_pat
 		with fold_scaler_path.open("rb") as stream:
 			scaler = pickle.load(stream)
 
-		if session_config.preprocessing.strategy == "MinMax" and not isinstance(scaler, MinMaxScaler):
+		if check_minmax(scaler):
 			raise ValueError("Lo scaler caricato non corrisponde alla strategia di preprocessing MinMax.")
+		if check_log1p(scaler):
+			raise ValueError("Lo scaler caricato non corrisponde alla strategia di preprocessing Log1p.")
 
-		if scaler.n_features_in_ != X_train.shape[2]:
+		if getattr(scaler, "n_features_in_", None) != n_features:
 			raise ValueError(
 				"Errore nel caricamento dello scaler: \n"
 				"Lo scaler caricato non è compatibile con il numero di feature del training set."
@@ -743,12 +730,22 @@ def build_scaler(X_train: np.ndarray, lengths_train: np.ndarray, fold_scaler_pat
 	else:
 		if session_config.preprocessing.strategy == "MinMax":
 			scaler = MinMaxScaler(feature_range=(0, 1))
+
+		if session_config.preprocessing.strategy == "Log1p":
+			# Esalta i bin con pochi pacchetti rispetto ai burst dominanti.
+			scaler = FunctionTransformer(func=np.log1p, validate=True)
+
 		else:
 			# Controllo già eseguito in configuration.py
 			pass
 
-		valid_train = np.arange(X_train.shape[1])[None, :] < lengths_train[:, None]
-		scaler.fit(X_train[valid_train])
+		if lengths_train is not None:
+			valid_train = np.arange(X_train.shape[1])[None, :] < lengths_train[:, None]
+			fit_data = X_train[valid_train]
+		else:
+			fit_data = X_train.reshape(-1, n_features)
+
+		scaler.fit(fit_data)
 
 		# Salvataggio dello scaler per il fold corrente.
 		atomic_write(
@@ -761,6 +758,54 @@ def build_scaler(X_train: np.ndarray, lengths_train: np.ndarray, fold_scaler_pat
 	return scaler
 
 	# end
+
+def apply_data_preprocessing(X, scaler, lengths):
+	"""Applica il preprocessing ai dati utilizzando lo scaler specificato, lavorando solo sulle lunghezze valide dei campioni. Valido solo per dataset di tipo Mirage (sequenze di pacchetti).
+
+	Args:
+		X (np.ndarray): Array contenente i dati da preprocessare.
+		scaler: Oggetto scaler utilizzato per normalizzare i dati.
+		lengths (np.ndarray): Array contenente le lunghezze valide per ciascun campione.
+
+	Returns:
+		np.ndarray: Array contenente i dati preprocessati.
+	"""
+
+	height, width = get_model_input_shape(session_config, runtime_config)
+
+	#	################################################################	#
+	#	Caso FlowPic: tensore 4D (N, 1, H, W) senza vettore lengths.
+
+	if runtime_config.flags.is_flowpic:
+		X_proc = X[:, :, :height, :width].astype(np.float32, copy=True)
+		X_shape = X_proc.shape
+
+		X_proc = X_proc.reshape(-1, width)
+		X_proc = scaler.transform(X_proc)
+		X_proc = X_proc.reshape(X_shape)
+
+	#	################################################################	#
+	#	Caso Mirage: tensore 3D (N, H, W) con mascheramento tramite lengths.
+
+	else:
+		X_proc = X[:, :height, :].astype(np.float32, copy=True)
+
+		X_proc = X_proc.reshape(-1, width)
+		X_proc = scaler.transform(X_proc)
+		X_proc = X_proc.reshape(-1, height, width)
+
+		# Applicazione della maschera per azzerare i valori non validi.
+		valid = np.arange(height)[None, :] < lengths[:, None]
+		X_proc[~valid] = 0.0
+
+	#	################################################################	#
+
+	return X_proc.astype(np.float32, copy=False)
+
+	# end
+
+#	####################################################################	#
+#	Configurazione dei componenti di addestramento.
 
 def init_model(device, fold_index: int, num_classes: int) -> _BaseModel:
 	"""Inizializza e restituisce il modello selezionato.
@@ -1107,92 +1152,6 @@ def load_source_history(checkpoint_dir, fold_index):
 	# end
 
 #	####################################################################	#
-#	Costruzione del soft-output per il Test set.
-
-def compute_soft_output(
-		model, device,
-		test_loader, metadata_test,
-		criterion,
-	):
-	"""Calcola il soft-output per il test set, restituendo un Dataframe contenente il FlowID, i risultati effettivi, le predizioni e il soft-output.
-
-	Args:
-		model: Il modello da valutare.
-		device: Il dispositivo su cui eseguire il calcolo.
-		test_loader: Il DataLoader per il test set.
-		metadata_test: Il DataFrame contenente i metadati del test set.
-		criterion (opzionale): La funzione di loss da utilizzare.
-
-	Returns:
-		pd.DataFrame: Contiene il FlowID, i risultati effettivi, le predizioni e il soft-output.
-	"""
-
-	runtime_config.print_exec_mode()
-	if not runtime_config.launch.exec_mode_train:
-		print("Non è stato eseguito alcun addestramento.\n"
-			"Il modello da valutare è stato caricato da un checkpoint salvato.\n")
-		test_loss, test_acc, y_preds, y_true, y_probs = evaluate(
-			model, device,
-			test_loader,
-		)
-
-	elif runtime_config.launch.exec_mode_train:
-		if criterion is None:
-			raise ValueError("Funzione di loss mancante!")
-
-		test_loss, test_acc, y_preds, y_true, y_probs = evaluate(
-			model, device,
-			test_loader,
-			criterion
-		)
-
-		# end if
-
-	# Calcola la loss e l'accuratezza per il test set, per valutare le prestazioni del modello su dati mai visti prima.
-	print(f"Test Loss: {test_loss:.4f} | " if test_loss is not None else "", end="")
-	print(f"Test Acc: {test_acc:.4f}%")
-
-	#	################################################################	#
-	#	Verifica e ritorno dei risultati.
-
-	if not (
-		len(metadata_test)
-		== y_true.numel()
-		== y_preds.numel()
-		== y_probs.shape[0]
-	):
-		raise ValueError(
-			"Errore nel calcolo del soft-output: \n"
-			"Disallineamento tra "
-			f"metadati ({len(metadata_test)}), "
-			f"etichette ({y_true.numel()}), "
-			f"predizioni ({y_preds.numel()}) e, "
-			f"probabilità ({y_probs.shape[0]})."
-		)
-
-	if torch.any((y_true < 0) | (y_true >= model.num_classes)):
-		raise ValueError(
-			"Errore nel calcolo del soft-output: \n"
-			f"Il test set contiene etichette fuori dall'intervallo [0, {model.num_classes})."
-		)
-
-	soft_output = [
-		";".join(f"{probability:.8f}" for probability in row)
-		for row in y_probs.tolist()
-	]
-
-	ret = pd.DataFrame({
-		"FlowID": metadata_test["FlowID"].tolist(),
-		"Actual": y_true.tolist(),
-		"Predicted": y_preds.tolist(),
-		"Soft-output": soft_output,
-	})
-
-	return ret
-
-	# end
-
-#	####################################################################	#
 #	Main
 
 def main(terminal_log: TerminalLog):
@@ -1423,25 +1382,15 @@ def main(terminal_log: TerminalLog):
 			lengths_test = lengths[test_indices]
 
 		#	------------------------------------------------------------	#
-		#	Applicazione della strategia di data preprocessing (solo per dataset Mirage).
+		#	Applicazione della strategia di data preprocessing.
 
-		if runtime_config.flags.is_flowpic:
-			runtime_config.debug_print(
-				"La fase di preprocessing è disponibile "
-				"solo per il dataset grezzo (Mirage)."
-			)
+		# Costruisce lo scaler utilizzando i dati di training e le lunghezze reali dei flussi.
+		# Recupera lo scaler associato al checkpoint del fold corrente, se disponibile.
+		scaler = build_scaler(X_train, lengths_train, fold_scaler_path)
 
-		else:
-
-			# Costruisce lo scaler utilizzando i dati di training e le lunghezze reali dei flussi.
-			# Recupera lo scaler associato al checkpoint del fold corrente, se disponibile.
-			scaler = build_scaler(X_train, lengths_train, fold_scaler_path)
-
-			X_train = apply_data_preprocessing(X_train, scaler, lengths_train)
-			X_val = apply_data_preprocessing(X_val, scaler, lengths_val)
-			X_test = apply_data_preprocessing(X_test, scaler, lengths_test)
-
-			# end if is_flowpic
+		X_train = apply_data_preprocessing(X_train, scaler, lengths_train)
+		X_val = apply_data_preprocessing(X_val, scaler, lengths_val)
+		X_test = apply_data_preprocessing(X_test, scaler, lengths_test)
 
 		#	------------------------------------------------------------	#
 		#	Stampa dei risultati.
@@ -1558,9 +1507,8 @@ def main(terminal_log: TerminalLog):
 		#	------------------------------------------------------------	#
 		#	Valutazione del modello.
 
-		runtime_config.print_exec_mode()
 		if not runtime_config.launch.exec_mode_train:
-			print(f"Caricamento modello per la valutazione da: {fold_model_path}")
+			print(f"Caricamento pesi per il modello per la valutazione da: {fold_model_path}")
 			print("Il modello non verrà addestrato, ma solo valutato sul test set.")
 
 			# Si caricano i pesi salvati del modello dalla directory di output specificata.
@@ -1572,7 +1520,7 @@ def main(terminal_log: TerminalLog):
 			# Carica i pesi nel modello corrente e stampa l'esito del caricamento.
 			load_result = model.load_state_dict(weights)
 			print(f"\nEsito caricamento: {load_result}")
-			print("Modello caricato correttamente.\n")
+			print("Pesi del modello caricati correttamente.\n")
 
 			# Si imposta il modello in modalità di valutazione.
 			# Vedi training_functions.py per ulteriori dettagli.
@@ -1618,16 +1566,63 @@ def main(terminal_log: TerminalLog):
 			#	--------------------------------------------------------	#
 			#	Esecuzione del loop di addestramento.
 
-			model, train_history_df, best_epoch, best_score = train_model(
-				model, device,
-				train_loader, val_loader,
-				optimizer, lr_sched, criterion,
-				fold_model_path,
-				session_config
+			# Stampa la configurazione della sessione solo per il primo fold.
+			if fold_index == 0:
+				print(f"\n{repr(session_config)}")
+
+			print(f"\n#  {'+'*10}  #")
+
+			training_start_time = time.time()
+			print(
+				f"\nAddestramento iniziato.\n"
+				"Orario corrente: "
+				f"{datetime.fromtimestamp(training_start_time).strftime('%Y-%m-%d_%H:%M:%S')}\n"
+				f"[SAMPLES] Training: {len(train_loader.dataset)} in {len(train_loader)} batches"
+				f" | Validation: {len(val_loader.dataset)} in {len(val_loader)} batches"
+				f" | Classes: {model.num_classes}"
 			)
 
+			try:
+				model, train_history_df, \
+				best_epoch, best_score, interrupted = train_model(
+					model, device,
+					train_loader, val_loader,
+					optimizer, lr_sched, criterion,
+					fold_model_path,
+					session_config
+				)
+
+			except Exception as e:
+				interrupted = True
+				best_epoch = None
+				best_score = None
+
+				print(
+					"Errore durante l'addestramento: \n"
+					f"{traceback.format_exc()}"
+				)
+
+				# end try-except
+
+			training_end_time = time.time()
+			print(
+				f"\nAddestramento {'interrotto' if interrupted else 'completato'}. \n"
+				f"Orario corrente: "
+				f"{datetime.fromtimestamp(training_end_time).strftime('%Y-%m-%d_%H:%M:%S')} \n"
+				f"Tempo di elaborazione: "
+				f"{convert(training_end_time - training_start_time)} \n"
+			)
+
+			print(f"\n#  {'+'*10}  # \n")
+
+			#	--------------------------------------------------------	#
+			#	Verifica dei risultati del fold corrente.
+
 			# Se il fold corrente non ha prodotto un checkpoint valido, salta direttamente al fold successivo.
+			# In caso contrario, continua l'esecuzione del fold corrente.
 			if best_epoch is None:
+
+				print("Non è stata completata alcuna epoca. Il test del fold sarà saltato.")
 
 				# Rimuove la directory dei risultati del fold se non è stato creato un checkpoint valido.
 				# Rimuove i file eventualmente già presenti nella directory del fold.
@@ -1666,6 +1661,16 @@ def main(terminal_log: TerminalLog):
 					f"Il punteggio nello storico ({history_score:.2f}) "
 					f"non corrisponde al miglior punteggio ({best_score:.2f})."
 				)
+
+			best_score_str = \
+				f"{best_score:.4f}" \
+				if session_config.training.monitored_metric == "val_loss" \
+				else f"{best_score:.4f}%"
+
+			print(
+				f"Migliore epoca: {best_epoch} | "
+				f"{session_config.training.monitored_metric}: {best_score_str}"
+			)
 			
 			# Salva lo storico delle metriche di addestramento e validazione in un file CSV.
 			if runtime_config.flags.save_output:
@@ -1680,6 +1685,26 @@ def main(terminal_log: TerminalLog):
 				print(f"\nStorico delle metriche salvato in {fold_history_path}")
 
 			# end exec_mode_train
+
+		#	------------------------------------------------------------	#
+		#	Costruzione del soft-output per il Test set.
+
+		# Keys: [FlowID, Actual, Predicted, Soft-output]
+		print("\nCalcolo delle predizioni sul Test set:")
+		test_predictions_df = test_model(
+			model, device,
+			test_loader, metadata_test,
+			criterion
+		)
+
+		if runtime_config.flags.save_output:
+			test_predictions_df.to_csv(
+				fold_predictions_path,
+				index=False,
+				lineterminator="\n",
+				float_format="%.8f"
+			)
+			print(f"\nPredizioni salvate in {fold_predictions_path}")
 
 		#	------------------------------------------------------------	#
 		#	Disegno dei grafici di loss / accuracy su Train / Val.
@@ -1726,25 +1751,6 @@ def main(terminal_log: TerminalLog):
 				plt.show()
 
 			# end save_output
-
-		#	------------------------------------------------------------	#
-		#	Costruzione del soft-output per il Test set.
-
-		# Keys: [FlowID, Actual, Predicted, Soft-output]
-		test_predictions_df = compute_soft_output(
-			model, device,
-			test_loader, metadata_test,
-			criterion,
-		)
-
-		if runtime_config.flags.save_output:
-			test_predictions_df.to_csv(
-				fold_predictions_path,
-				index=False,
-				lineterminator="\n",
-				float_format="%.8f"
-			)
-			print(f"\nPredizioni salvate in {fold_predictions_path}")
 
 		#	------------------------------------------------------------	#
 		#	Calcolo della matrice di confusione per il Test set.
@@ -1806,8 +1812,21 @@ def main(terminal_log: TerminalLog):
 
 	#	-----------------------------------------------------------------	#
 	#	Valutazione finale della cross-validation.
+	#	Metriche aggregate su tutti i fold.
 
 	# TODO: creare una tabella di confronto tra modelli su fold diverse con F1-score e accuracy, media e deviazione standard.
+	# ...
+
+	#	-----------------------------------------------------------------	#
+	#	Valutazione finale della cross-validation.
+	#	Predizioni out-of-fold.
+
+	# ...
+
+	#	-----------------------------------------------------------------	#
+	#	Valutazione finale della cross-validation.
+	#	Verifica dell'intera procedura.
+
 	# ...
 
 	#	-----------------------------------------------------------------	#
@@ -1848,10 +1867,11 @@ if __name__ == "__main__":
 
 			# Stampa di debug dei parametri di configurazione.
 			runtime_config.debug_print(
-				f"Parametri di sessione in 'session_config':" \
-				f"\n{session_config}" \
-				"\n\n" \
-				f"Parametri di runtime in 'runtime_config':" \
+				f"Parametri di sessione in 'session_config':"
+				f"\n{session_config}"
+			)
+			runtime_config.debug_print(
+				f"Parametri di runtime in 'runtime_config':"
 				f"\n{runtime_config}"
 			)
 

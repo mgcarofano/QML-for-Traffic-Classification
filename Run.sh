@@ -46,7 +46,8 @@ shift
 LOCAL=(
     --kfold.sub_sample_ratio 0.01 --kfold.test_folds 1 --kfold.test_ratio 0.2
     --training.epochs 3 --training.batch_size 50
-    --no-training.early_stopping --training.monitored_metric val_macrof1
+    --no-training.early_stopping --training.monitored_metric val_loss
+    --loss.name CrossEntropy
 )
 
 PAPER_2025=(
@@ -72,7 +73,7 @@ PAPER_2026=(
 
 case "$PRESET" in
     mirage-test) ARGS=("${LOCAL[@]}" --model.name baseline) ;;
-    flowpic-test) ARGS=("${LOCAL[@]}" --model.name resnet --is_flowpic) ;;
+    flowpic-test) ARGS=("${LOCAL[@]}" --model.name resnet --is_flowpic --preprocessing.strategy Log1p) ;;
     quantum-test) ARGS=("${LOCAL[@]}" --requested_device cpu --model.name ampe_fixed_probs) ;;
     paper2025) ARGS=("${QML_PAPER_2025[@]}") ;;
     baseline-paper2026) ARGS=("${PAPER_2026[@]}" --model.name baseline) ;;

@@ -19,7 +19,6 @@ from Source.utils import \
     atomic_write, \
     custom_tqdm
 
-from datetime import datetime
 import time
 import signal
 import threading
@@ -93,7 +92,7 @@ class FoldInterrupt:
     # end class
 
 #   ####################################################################    #
-#   Funzioni principali
+#   Funzioni di addestramento e valutazione
 
 def train_epoch(
         model, device, loader,
@@ -290,10 +289,9 @@ def evaluate(
                     f"Ricevuto {tuple(outputs.shape)}."
                 )
 
-            ignore_idx = criterion.ignore_index if criterion is not None else None
             valid_mask = \
-                (labels != ignore_idx) \
-                if ignore_idx is not None \
+                (labels != criterion.ignore_index) \
+                if criterion is not None \
                 else torch.ones_like(labels, dtype=torch.bool)
             valid_labels = labels[valid_mask]
             n_valid = valid_labels.numel()
@@ -383,6 +381,9 @@ def evaluate(
 
     # end
 
+#   ####################################################################    #
+#   Funzioni principali
+
 def train_model(
         model, device,
         train_loader, val_loader,
@@ -429,23 +430,10 @@ def train_model(
     patience_counter = 0
     interrupted = False
 
-    #	################################################################	#
-    #	Inizio del loop di addestramento.
-
-    training_start_time = time.time()
-    print(
-        f"Addestramento iniziato.\n"
-        "Orario corrente: "
-        f"{datetime.fromtimestamp(training_start_time).strftime('%Y-%m-%d_%H:%M:%S')}\n\n"
-
-        f"{repr(sc)} \n"
-        f"[SAMPLES] Training: {len(train_loader.dataset)} in {len(train_loader)} batches"
-        f" | Validation: {len(val_loader.dataset)} in {len(val_loader)} batches"
-        f" | Classes: {model.num_classes} \n"
-    )
+    elapsed_time = 0.0
 
     #	################################################################	#
-    #	Esecuzione del loop di addestramento.
+    #	Avvio del loop di addestramento.
 
     with FoldInterrupt() as stop:
         for epoch in range(1, sc.training.epochs +1):
@@ -554,7 +542,7 @@ def train_model(
             # Calcola la durata dell'epoca corrente e il tempo totale trascorso dall'inizio dell'addestramento.
             epoch_end_time = time.time()
             epoch_duration = epoch_end_time - epoch_start_time
-            elapsed_time = epoch_end_time - training_start_time
+            elapsed_time += epoch_duration
 
             # Aggiorna lo storico delle metriche per l'epoca corrente.
             train_history_df.loc[len(train_history_df)] = {
@@ -594,42 +582,95 @@ def train_model(
     #	################################################################	#
     #	Fine del loop di addestramento.
 
-    training_end_time = time.time()
-    best_score_str = \
-        f"{best_score:.4f}" \
-        if sc.training.monitored_metric == "val_loss" \
-        else f"{best_score:.4f}%"
+    if best_epoch is not None:
+        # Ricarica i pesi del modello in base al miglior punteggio di validazione sulla metrica monitorata.
+        model.load_state_dict(torch.load(
+            fold_model_path,
+            map_location=device,
+            weights_only=True,
+        ))
 
-    print(
-        f"\nAddestramento {'interrotto' if interrupted else 'completato'}. \n"
-        f"Orario corrente: "
-        f"{datetime.fromtimestamp(training_end_time).strftime('%Y-%m-%d_%H:%M:%S')} \n"
-        f"Tempo di elaborazione: "
-        f"{convert(training_end_time - training_start_time)} \n"
+    return model, train_history_df, best_epoch, best_score, interrupted
+
+    # end
+
+def test_model(
+        model, device,
+        test_loader, metadata_test,
+        criterion=None,
+    ):
+    """Calcola il soft-output per il test set, restituendo un Dataframe contenente il FlowID, i risultati effettivi, le predizioni e il soft-output.
+
+    Args:
+        model: Il modello da valutare.
+        device: Il dispositivo su cui eseguire il calcolo.
+        test_loader: Il DataLoader per il test set.
+        metadata_test: Il DataFrame contenente i metadati del test set.
+        criterion (opzionale): La funzione di loss da utilizzare. Default è None.
+
+    Returns:
+        pd.DataFrame: Contiene il FlowID, i risultati effettivi, le predizioni e il soft-output.
+    """
+
+    test_loss, test_acc, y_preds, y_true, y_probs = evaluate(
+        model, device,
+        test_loader,
+        criterion
     )
 
-    # Verifica se è stata completata almeno un'epoca di addestramento.
-    if best_epoch is None:
-        print("Non è stata completata alcuna epoca. Il test del fold sarà saltato.")
-        return model, train_history_df, None, None
+    valid_mask = \
+        y_true != criterion.ignore_index \
+        if criterion is not None \
+        else torch.ones_like(y_true, dtype=torch.bool)
+
+    val_macrof1 = f1_score(
+        y_true[valid_mask].numpy(),
+        y_preds[valid_mask].numpy(),
+        labels= np.arange(model.num_classes),
+        average= "macro",
+        zero_division= 0,
+    ) * 100
+
+    # Stampa le metriche di valutazione del modello su dati mai visti prima.
+    print(f"Test Loss: {test_loss:.4f} | " if test_loss is not None else "", end="")
+    print(f"Test Acc: {test_acc:.4f}%" + f" | Test Macro F1: {val_macrof1:.4f}%")
 
     #	################################################################	#
-    #	Salvataggio dei risultati (se disponibile).
+    #	Verifica e ritorno dei risultati.
 
-    # Ricarica i pesi del modello in base al miglior punteggio di validazione sulla metrica monitorata.
-    best_model = torch.load(
-        fold_model_path,
-        map_location=device,
-        weights_only=True,
-    )
-    model.load_state_dict(best_model)
-    del best_model
+    if not (
+        len(metadata_test)
+        == y_true.numel()
+        == y_preds.numel()
+        == y_probs.shape[0]
+    ):
+        raise ValueError(
+            "Errore nel calcolo del soft-output: \n"
+            "Disallineamento tra "
+            f"metadati ({len(metadata_test)}), "
+            f"etichette ({y_true.numel()}), "
+            f"predizioni ({y_preds.numel()}) e, "
+            f"probabilità ({y_probs.shape[0]})."
+        )
 
-    print(
-        f"Migliore epoca: {best_epoch} | "
-        f"{sc.training.monitored_metric}: {best_score_str}"
-    )
+    if torch.any((y_true < 0) | (y_true >= model.num_classes)):
+        raise ValueError(
+            "Errore nel calcolo del soft-output: \n"
+            f"Il test set contiene etichette fuori dall'intervallo [0, {model.num_classes})."
+        )
 
-    return model, train_history_df, best_epoch, best_score
+    soft_output = [
+        ";".join(f"{probability:.8f}" for probability in row)
+        for row in y_probs.tolist()
+    ]
+
+    ret = pd.DataFrame({
+        "FlowID": metadata_test["FlowID"].tolist(),
+        "Actual": y_true.tolist(),
+        "Predicted": y_preds.tolist(),
+        "Soft-output": soft_output,
+    })
+
+    return ret
 
     # end
