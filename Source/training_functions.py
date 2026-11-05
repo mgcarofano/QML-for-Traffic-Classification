@@ -11,17 +11,18 @@
 import torch
 import numpy as np
 import pandas as pd
-from sklearn.metrics import f1_score
+from sklearn.metrics import accuracy_score, f1_score
 
 from Source.configuration import SessionConfig
 from Source.utils import \
-    convert, \
+    parse_seconds, \
     atomic_write, \
     custom_tqdm
 
-import time
+from dataclasses import dataclass
 import signal
 import threading
+import time
 
 #   ####################################################################    #
 #   Classi e eccezioni personalizzate
@@ -88,6 +89,18 @@ class FoldInterrupt:
         signal.signal(signal.SIGINT, self.previous)
 
         # end
+
+    # end class
+
+@dataclass(frozen=True)
+class TestResult:
+    """ Raggruppa predizioni e metriche di un singolo test. L'assegnazione dei campi è bloccata da frozen=True, ma DataFrame e dizionario restano modificabili. """
+
+    predictions: pd.DataFrame
+    """ Una riga per campione, nello stesso ordine del test_loader, con le colonne 'FlowID', 'Actual', 'Predicted' e 'Soft-output'. Quest'ultima contiene le probabilità delle classi, formattate con otto cifre decimali e separate da punto e virgola. """
+
+    metrics: dict[str, float | None]
+    """ Metriche numeriche del test. Le chiavi test_accuracy, test_macro_f1 e test_weighted_f1 contengono valori percentuali nell'intervallo [0, 100]. La chiave test_loss contiene la loss media, oppure None se criterion non è stato fornito. """
 
     # end class
 
@@ -363,7 +376,12 @@ def evaluate(
                 "denominatore nullo."
             )
 
-        avg_loss = loss_num / loss_den
+        avg_loss = float(loss_num / loss_den)
+        if not np.isfinite(avg_loss):
+            raise ValueError(
+                "Errore nel calcolo della loss media finale: \n"
+                "valore non finito."
+            )
 
     if total <= 0:
         raise ValueError(
@@ -371,13 +389,76 @@ def evaluate(
             "nessun campione valido trovato."
         )
 
+    total_accuracy = float(100.0 * correct / total)
+    if not np.isfinite(total_accuracy):
+        raise ValueError(
+            "Errore nel calcolo dell'accuracy finale: \n"
+            "valore non finito."
+        )
+
+    if not (len(all_preds) == len(all_labels) == len(all_probs)):
+        raise ValueError(
+            "Errore nel calcolo del soft-output: \n"
+            "Disallineamento tra "
+            f"predizioni ({len(all_preds)}), "
+            f"etichette ({len(all_labels)}), e "
+            f"probabilità ({len(all_probs)})."
+        )
+
     return (
         avg_loss,
-        100.0 * correct / total,
+        total_accuracy,
         torch.cat(all_preds),
         torch.cat(all_labels),
         torch.cat(all_probs)
     )
+
+    # end
+
+def compute_test_metrics(y_true, y_preds, num_classes: int) -> dict[str, float]:
+    """Calcola accuracy, macro-F1 e weighted-F1 in percentuale.
+
+    Args:
+        y_true: Vettore 1D di etichette vere, codificate come interi da 0 a num_classes (escluso).
+        y_preds: Vettore 1D di predizioni del modello.
+        num_classes (int): Numero di classi del problema.
+
+    Raises:
+        ValueError: Se etichette o predizioni non rispettano il contratto.
+
+    Returns:
+        dict[str, float]: Dizionario con le metriche test_accuracy, test_macro_f1 e test_weighted_f1, espresse in percentuale. Le due F1 includono tutte le classi con zero_division=0.
+    """
+
+    # Verifica etichette e predizioni senza modificarne l'ordine.
+    for values in (np.asarray(y_true), np.asarray(y_preds)):
+        if values.ndim != 1 or values.size == 0 or values.dtype.kind not in "iu":
+            raise ValueError(
+                "Errore nel calcolo delle metriche del Test set: \n"
+                "Etichette e predizioni devono essere vettori interi non vuoti."
+            )
+        if np.any(values < 0) or np.any(values >= num_classes):
+            raise ValueError(
+                "Errore nel calcolo delle metriche del Test set: \n"
+                "Etichette e predizioni fuori dall'intervallo delle classi."
+            )
+
+    labels = np.arange(num_classes)
+    metrics = {
+        "test_accuracy": float(100.0 * accuracy_score(y_true, y_preds)),
+        "test_macro_f1": float(100.0 * f1_score(
+            y_true, y_preds, labels=labels,
+            average="macro",
+            zero_division=0
+        )),
+        "test_weighted_f1": float(100.0 * f1_score(
+            y_true, y_preds, labels=labels,
+            average="weighted",
+            zero_division=0
+        )),
+    }
+
+    return metrics
 
     # end
 
@@ -390,7 +471,7 @@ def train_model(
         optimizer, lr_sched, criterion,
         fold_model_path: str,
         sc: SessionConfig,
-    ) -> tuple[torch.nn.Module, pd.DataFrame, int | None, float | None]:
+    ) -> tuple[torch.nn.Module, pd.DataFrame, int | None, float | None, bool]:
     """Addestra il modello per un numero specificato di epoche. Si può interrompere anticipatamente l'addestramento con Ctrl+C scartando l'epoca incompleta.
 
     ## Funzionalità
@@ -410,7 +491,7 @@ def train_model(
         sc (SessionConfig): Configurazione dei parametri di sessione per l'esperimento corrente.
     
     Returns:
-        tuple: il modello addestrato, il DataFrame contenente lo storico dell'addestramento, l'epoca e il punteggio migliore (o None se non disponibili).
+        tuple: il modello addestrato, il DataFrame contenente lo storico dell'addestramento, l'epoca e il punteggio del checkpoint (o None se nessuna epoca è stata completata), e il valore del flag di interruzione.
     """
 
     #	################################################################	#
@@ -560,8 +641,8 @@ def train_model(
                 f"| Val Accuracy: {val_acc:.4f}% "
                 f"| Val Macro F1: {(val_macrof1):.4f}%\n"
 
-                f"Epoch time: {convert(epoch_duration)} "
-                f"| Elapsed time: {convert(elapsed_time)}"
+                f"Epoch time: {parse_seconds(epoch_duration)} "
+                f"| Elapsed time: {parse_seconds(elapsed_time)}"
             )
 
             # Controlla se è stato richiesta l'interruzione del training.
@@ -590,7 +671,13 @@ def train_model(
             weights_only=True,
         ))
 
-    return model, train_history_df, best_epoch, best_score, interrupted
+    return (
+        model,
+        train_history_df,
+        best_epoch,
+        best_score if best_epoch is not None else None,
+        interrupted
+    )
 
     # end
 
@@ -598,8 +685,10 @@ def test_model(
         model, device,
         test_loader, metadata_test,
         criterion=None,
-    ):
-    """Calcola il soft-output per il test set, restituendo un Dataframe contenente il FlowID, i risultati effettivi, le predizioni e il soft-output.
+    ) -> TestResult:
+    """Valuta il Test set utilizzando il modello fornito e ne restituisce i risultati in uno oggetto TestResult.
+
+    Si richiede un'etichetta valida per ogni campione, cioè compresa nell'intervallo [0, num_classes). Non sono implementati filtri per ignorare campioni specifici. Il 'criterion', se presente, non esclude alcun target presente nel test set.
 
     Args:
         model: Il modello da valutare.
@@ -608,8 +697,11 @@ def test_model(
         metadata_test: Il DataFrame contenente i metadati del test set.
         criterion (opzionale): La funzione di loss da utilizzare. Default è None.
 
+    Raises:
+        ValueError: Se output/metadati non sono allineati, le etichette non sono valide o le metriche non sono finite.
+
     Returns:
-        pd.DataFrame: Contiene il FlowID, i risultati effettivi, le predizioni e il soft-output.
+        TestResult: Un oggetto contenente le predizioni e le metriche numeriche sul test set.
     """
 
     test_loss, test_acc, y_preds, y_true, y_probs = evaluate(
@@ -618,59 +710,45 @@ def test_model(
         criterion
     )
 
-    valid_mask = \
-        y_true != criterion.ignore_index \
-        if criterion is not None \
-        else torch.ones_like(y_true, dtype=torch.bool)
-
-    val_macrof1 = f1_score(
-        y_true[valid_mask].numpy(),
-        y_preds[valid_mask].numpy(),
-        labels= np.arange(model.num_classes),
-        average= "macro",
-        zero_division= 0,
-    ) * 100
-
-    # Stampa le metriche di valutazione del modello su dati mai visti prima.
-    print(f"Test Loss: {test_loss:.4f} | " if test_loss is not None else "", end="")
-    print(f"Test Acc: {test_acc:.4f}%" + f" | Test Macro F1: {val_macrof1:.4f}%")
-
-    #	################################################################	#
-    #	Verifica e ritorno dei risultati.
-
     if not (
         len(metadata_test)
-        == y_true.numel()
         == y_preds.numel()
-        == y_probs.shape[0]
     ):
         raise ValueError(
             "Errore nel calcolo del soft-output: \n"
             "Disallineamento tra "
-            f"metadati ({len(metadata_test)}), "
-            f"etichette ({y_true.numel()}), "
-            f"predizioni ({y_preds.numel()}) e, "
-            f"probabilità ({y_probs.shape[0]})."
+            f"metadati ({len(metadata_test)}) e "
+            f"predizioni ({y_preds.numel()}) "
         )
 
-    if torch.any((y_true < 0) | (y_true >= model.num_classes)):
+    metrics = compute_test_metrics(y_true, y_preds, model.num_classes)
+    metrics["test_loss"] = test_loss
+
+    if not np.isclose(test_acc, metrics["test_accuracy"], rtol=0, atol=1e-9):
         raise ValueError(
             "Errore nel calcolo del soft-output: \n"
-            f"Il test set contiene etichette fuori dall'intervallo [0, {model.num_classes})."
+            "Il valore di accuracy non è coerente con le predizioni."
         )
+
+    parse = lambda key, value: \
+        f"{key}: {value:4f}%" \
+        if key in ("test_accuracy", "test_macro_f1", "test_weighted_f1") \
+        else f"{key}: {value:4f}"
+
+    print(" | ".join(parse(key, value) for key, value in metrics.items()))
 
     soft_output = [
         ";".join(f"{probability:.8f}" for probability in row)
         for row in y_probs.tolist()
     ]
 
-    ret = pd.DataFrame({
+    predictions = pd.DataFrame({
         "FlowID": metadata_test["FlowID"].tolist(),
         "Actual": y_true.tolist(),
         "Predicted": y_preds.tolist(),
         "Soft-output": soft_output,
     })
 
-    return ret
+    return TestResult(predictions, metrics)
 
     # end

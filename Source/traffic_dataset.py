@@ -1,5 +1,5 @@
 """
-	classes.py \n
+	traffic_dataset.py \n
 	by Mario Gabriele Carofano
 
 	Il modulo fornisce la classe `TrafficDataset`, che verifica gli array di feature e etichette, li converte in tensori mantenuti sulla CPU e applica, se indicata, una trasformazione a ciascun campione. La creazione dei batch e il trasferimento dei dati sul dispositivo sono demandati rispettivamente al `DataLoader` e al loop di esecuzione.

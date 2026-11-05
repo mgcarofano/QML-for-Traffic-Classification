@@ -18,7 +18,7 @@ from Source.configuration import \
 from Source.utils import TerminalLog
 from Source.utils import \
 	atomic_write, \
-	atomic_dump
+	atomic_dump_json
 
 # Dataset loading and manipulation
 import numpy as np
@@ -30,7 +30,7 @@ from Source.traffic_converter import \
 	get_flowpic_dir, \
 	mirage_pickle_converter, \
 	remove_padding
-from Source.classes import TrafficDataset
+from Source.traffic_dataset import TrafficDataset
 from torch.utils.data import DataLoader
 
 # Preprocessing
@@ -41,6 +41,7 @@ from sklearn.model_selection import StratifiedKFold
 # Machine Learning and Quantum ML
 import torch
 import torch.nn as nn
+from Source.cross_validation_report import CrossValidationReport
 from Source.models import _BaseModel
 from Source.models import \
 	weight_init, \
@@ -68,7 +69,10 @@ import random
 import re
 import time
 import traceback
-from Source.utils import convert
+from Source.utils import \
+	parse_seconds, \
+	check_positive_int, \
+	check_integer_array
 
 #	####################################################################	#
 #	Calcolo dei parametri di esecuzione.
@@ -428,11 +432,6 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
 
 		# end if
 
-	if len(X_raw) != len(y_raw) or len(X_raw) != len(metadata):
-		raise ValueError("Dati, etichette e metadati non sono allineati.")
-	if list(metadata["DatasetID"]) != list(range(len(metadata))):
-		raise ValueError("DatasetID non contiguo!")
-
 	return X_raw, y_raw, metadata
 
 	# end
@@ -494,7 +493,7 @@ def encode_labels(X_raw, y_raw, labels_map_path, reference_labels_path=None):
 	#	Verifica e ritorno delle etichette codificate.
 
 	if runtime_config.launch.exec_mode_train or runtime_config.flags.save_output:
-		atomic_dump(labels_map_path, labels_map)
+		atomic_dump_json(labels_map_path, labels_map)
 
 	if len(X_raw) != len(y_encoded):
 		raise ValueError("Disallineamento tra dati e etichette!")
@@ -554,8 +553,6 @@ def split_dataset(X_raw, y_encoded) -> list:
 	#	################################################################	#
 	#	Verifica dei parametri
 
-	if session_config.kfold.test_folds <= 0:
-		raise ValueError("Il numero di folds deve essere maggiore di 0!")
 	if session_config.kfold.test_folds > len(X_raw):
 		raise ValueError("Il numero di folds non può superare il numero di campioni nel dataset!")
 
@@ -586,17 +583,7 @@ def split_dataset(X_raw, y_encoded) -> list:
 		random_state = runtime_config.launch.random_seed
 	)
 
-	folds = list(skf.split(X_raw, y_encoded))
-
-	#	################################################################	#
-	#	Verifica e ritorno dei risultati.
-
-	if len(folds) == 0:
-		raise ValueError("Nessun fold generato da StratifiedKFold!")
-	if len(folds) != session_config.kfold.test_folds:
-		raise ValueError("Il numero di folds generati non corrisponde al numero di test_folds specificato!")
-	
-	return folds
+	return list(skf.split(X_raw, y_encoded))
 
 	# end
 
@@ -1096,7 +1083,7 @@ def load_source_history(checkpoint_dir, fold_index):
 		ValueError: Se le epoche non sono consecutive.
 
 	Returns:
-		tuple[pd.DataFrame, int, float, str]: Una tupla contenente lo storico dell'addestramento come DataFrame, l'epoca migliore, il punteggio migliore e la metrica monitorata.
+		tuple[pd.DataFrame | None, int | None, float | None, str]: Una tupla contenente lo storico dell'addestramento come DataFrame, l'epoca e il punteggio migliori, e la metrica monitorata. Se il CSV non esiste, i primi tre valori sono None.
 	"""
 
 	#	################################################################	#
@@ -1194,20 +1181,22 @@ def main(terminal_log: TerminalLog):
 	#	-----------------------------------------------------------------	#
 	#	Verifica e salvataggio dei parametri nel file di configurazione.
 
-	execution_config = ExecutionConfig.from_args(session_id, device.type, str(dtype))
-	if not runtime_config.launch.exec_mode_train and runtime_config.use_config_file():
-		checkpoint_dir = resolve_checkpoint_session(execution_config)
-	else:
-		checkpoint_dir = None
+	with ExecutionConfig.from_args(session_id, device.type, str(dtype)) as execution_config:
+		if not runtime_config.launch.exec_mode_train and runtime_config.use_config_file():
+			checkpoint_dir = resolve_checkpoint_session(execution_config)
+		else:
+			checkpoint_dir = None
 
-	atomic_dump(
-		config_path,
-		{
-			"execution": asdict(execution_config),
-			**asdict(runtime_config),
-			**asdict(session_config),
-		}
-	)
+		atomic_dump_json(
+			config_path,
+			{
+				"execution": asdict(execution_config),
+				**asdict(runtime_config),
+				**asdict(session_config),
+			}
+		)
+
+		# end with execution_config
 
 	print(f"Directory dei risultati per la sessione corrente: {output_dir}")
 	print(f"Percorso del file di configurazione per la sessione corrente: {config_path}")
@@ -1215,13 +1204,45 @@ def main(terminal_log: TerminalLog):
 	if checkpoint_dir is not None:
 		print(f"Directory dei checkpoint della sessione di origine: {checkpoint_dir}")
 
-	del execution_config
-
 	#	-----------------------------------------------------------------	#
 	#	Caricamento o generazione (opzionale) del dataset.
 
 	print("\nLoading dataset...")
 	X_raw, y_raw, metadata = load_dataset()
+
+	# Verifica della correttezza dei dati caricati.
+	if X_raw is None or y_raw is None:
+		raise ValueError(
+			"Errore nella generazione del dataset: "
+			"Dati o etichette mancanti."
+		)
+
+	if len(X_raw) != len(y_raw):
+		raise ValueError(
+			"Errore nella generazione del dataset: "
+			"Dati e etichette non sono allineati."
+		)
+
+	# Verifica della correttezza dei metadati.
+	if metadata is None or not isinstance(metadata, pd.DataFrame):
+		raise ValueError(
+			"Errore nella generazione del dataset: "
+			"Metadati mancanti o non validi."
+		)
+
+	if list(metadata["DatasetID"]) != list(range(len(metadata))):
+		raise ValueError(
+			"Errore nella generazione del dataset: "
+			"DatasetID non contiguo!"
+		)
+
+	if len(metadata) != y_raw.size or not {"FlowID", "DatasetID"}.issubset(metadata):
+		raise ValueError(
+			"Errore nella generazione del dataset: "
+			"Metadati incompleti o non allineati. \n"
+			f"Atteso: {y_raw.size} righe con colonne 'FlowID' e 'DatasetID'. \n"
+			f"Ricevuto: {len(metadata)} righe con colonne {list(metadata.columns)}."
+		)
 
 	#	-----------------------------------------------------------------	#
 	#	Generazione delle etichette per le classi del dataset.
@@ -1232,17 +1253,17 @@ def main(terminal_log: TerminalLog):
 	reference_labels_path = checkpoint_dir / "labels_map.json" if checkpoint_dir is not None else None
 	y_encoded, labels_map = encode_labels(X_raw, y_raw, labels_map_path, reference_labels_path)
 
-	num_classes = len(labels_map)
-	class_ids = np.arange(num_classes)
-	class_names = [labels_map[int(i)] for i in class_ids]
+	num_classes = check_positive_int(len(labels_map), "num_classes")
+	y_encoded = check_integer_array(y_encoded, num_classes, "y_encoded", allow_duplicates=True)
 
-	if num_classes <= 0:
-		raise EnvironmentError("Errore nel caricamento delle etichette delle classi.")
-	if y_encoded.min() < 0 or y_encoded.max() >= num_classes:
+	if set(labels_map) != set(range(num_classes)):
 		raise ValueError(
 			"Errore nel caricamento delle etichette delle classi: \n"
-			"Ci sono etichette non valide nel vettore 'y_encoded'."
+			"Chiavi non consecutive in 'labels_map'."
 		)
+
+	class_ids = np.arange(num_classes)
+	class_names = [labels_map[int(i)] for i in class_ids]
 
 	print(f"\nNumero di classi: {num_classes}")
 	print(f"Etichette delle classi generate: {sorted(labels_map.values())}\n")
@@ -1255,6 +1276,31 @@ def main(terminal_log: TerminalLog):
 
 	# Suddivisione del dataset.
 	folds = split_dataset(X_raw, y_encoded)
+
+	if not folds:
+		raise ValueError(
+			"Errore nella generazione dei folds: "
+			"Indici dei folds mancanti."
+		)
+
+	if len(folds) != session_config.kfold.test_folds:
+		raise ValueError(
+			"Errore nella generazione dei folds: \n"
+			"Il numero di folds generati non corrisponde al numero di test_folds specificato!"
+		)
+
+	for fold_index, (non_test, test) in enumerate(folds):
+		non_test = check_integer_array(non_test, y_encoded.size, "non-test")
+		test = check_integer_array(test, y_encoded.size, "test")
+		joined = np.concatenate((non_test, test))
+
+		if not np.array_equal(np.sort(joined), np.arange(y_encoded.size)):
+			raise ValueError(
+				"Errore nella generazione dei folds: \n"
+				f"Split esterno non disgiunto o incompleto nel 'fold{fold_index}'."
+			)
+
+	print(f"\nNumero di fold pianificati: {len(folds)}")
 
 	#	-----------------------------------------------------------------	#
 	#	Inizio del training / testing loop per ogni fold del dataset.
@@ -1273,6 +1319,12 @@ def main(terminal_log: TerminalLog):
 	print(f"\n#  {'-'*20}  #")
 
 	skipped_folds = []
+
+	# Crea un rapporto completo della cross-validation solo se save_output=True.
+	cv_report = \
+		CrossValidationReport(y_encoded, metadata, folds, class_names) \
+		if runtime_config.flags.save_output \
+		else None
 
 	for fold_index, current_fold in enumerate(folds):
 
@@ -1312,15 +1364,27 @@ def main(terminal_log: TerminalLog):
 		temp_indices, test_indices = current_fold
 		train_indices, val_indices = split_train_val(temp_indices, y_encoded[temp_indices])
 
+		train_indices = check_integer_array(train_indices, y_encoded.size, "train")
+		val_indices = check_integer_array(val_indices, y_encoded.size, "validation")
+		test_indices = check_integer_array(test_indices, y_encoded.size, "test")
+
+		with np.sort(np.concatenate((train_indices, val_indices, test_indices))) as joined:
+			if not np.array_equal(joined, np.arange(y_encoded.size)):
+				raise ValueError(
+					"Errore nella verifica degli split: \n"
+					"Train / Validation / Test non disgiunti o incompleti."
+				)
+
+		if cv_report is not None:
+			cv_report.start_fold(fold_index, train_indices, val_indices, test_indices)
+
+		fold_training_seconds = None
+		fold_training_interrupted = None
+		fold_skip_reason = "no_completed_epoch"
+
 		X_train, y_train, metadata_train = extract_subset(train_indices)
 		X_val, y_val, metadata_val = extract_subset(val_indices)
 		X_test, y_test, metadata_test = extract_subset(test_indices)
-
-		current_indices = {
-			"train": train_indices,
-			"val": val_indices,
-			"test": test_indices
-		}
 
 		#	-------------------------------------------------------------	#
 		#	Verifica e salvataggio degli indici di split.
@@ -1344,22 +1408,28 @@ def main(terminal_log: TerminalLog):
 		# Verifica dell'allineamento in ciascuno split.
 		# TODO: vedi notebook.
 
-		if runtime_config.launch.exec_mode_train:
-			atomic_write(
-				fold_splits_path,
-				lambda stream: np.savez_compressed(stream, **current_indices),
-			)
+		with {
+			"train": train_indices,
+			"val": val_indices,
+			"test": test_indices
+		} as current_indices:
 
-		else:
-			with np.load(fold_splits_path, allow_pickle=False) as saved:
-				for name, curr in current_indices.items():
-					if not np.array_equal(saved[name], curr):
-						raise ValueError(
-							"Errore nel caricamento degli split: \n"
-							f"Lo split '{name}' in 'fold{fold_index}' non coincide con quello del checkpoint."
-						)
+			if runtime_config.launch.exec_mode_train:
+				atomic_write(
+					fold_splits_path,
+					lambda stream: np.savez_compressed(stream, **current_indices),
+				)
 
-		del current_indices
+			else:
+				with np.load(fold_splits_path, allow_pickle=False) as saved:
+					for name, curr in current_indices.items():
+						if not np.array_equal(saved[name], curr):
+							raise ValueError(
+								"Errore nel caricamento degli split: \n"
+								f"Lo split '{name}' in 'fold{fold_index}' non coincide con quello del checkpoint."
+							)
+
+			# end with current_indices
 
 		#	------------------------------------------------------------	#
 		#	Estrazione delle lunghezze reali dei flussi (solo per dataset Mirage).
@@ -1582,6 +1652,7 @@ def main(terminal_log: TerminalLog):
 				f" | Classes: {model.num_classes}"
 			)
 
+			cv_training_start = time.perf_counter()
 			try:
 				model, train_history_df, \
 				best_epoch, best_score, interrupted = train_model(
@@ -1601,6 +1672,9 @@ def main(terminal_log: TerminalLog):
 					"Errore durante l'addestramento: \n"
 					f"{traceback.format_exc()}"
 				)
+				fold_skip_reason = "training_error"
+			fold_training_seconds = time.perf_counter() - cv_training_start
+			fold_training_interrupted = bool(interrupted)
 
 				# end try-except
 
@@ -1610,7 +1684,7 @@ def main(terminal_log: TerminalLog):
 				f"Orario corrente: "
 				f"{datetime.fromtimestamp(training_end_time).strftime('%Y-%m-%d_%H:%M:%S')} \n"
 				f"Tempo di elaborazione: "
-				f"{convert(training_end_time - training_start_time)} \n"
+				f"{parse_seconds(training_end_time - training_start_time)} \n"
 			)
 
 			print(f"\n#  {'+'*10}  # \n")
@@ -1631,13 +1705,20 @@ def main(terminal_log: TerminalLog):
 				fold_results_dir.rmdir()
 				print(f"Directory dei risultati del 'fold{fold_index}' rimossa.")
 
+				if cv_report is not None:
+					cv_report.skip_fold(
+						fold_index, fold_skip_reason,
+						training_time_seconds=fold_training_seconds,
+						fold_time_seconds=time.time() - fold_start_time,
+						training_interrupted=fold_training_interrupted,
+					)
 				skipped_folds.append(fold_index)
 				plt.close("all")
 
 				fold_end_time = time.time()
 				print(f"\nFine elaborazione del fold {fold_index + 1}/{len(folds)}")
 				print(f"Orario corrente: {datetime.fromtimestamp(fold_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
-				print(f"Tempo di elaborazione: {convert(fold_end_time - fold_start_time)}")
+				print(f"Tempo di elaborazione: {parse_seconds(fold_end_time - fold_start_time)}")
 
 				print(f"\n#  {'-'*20}  #")
 
@@ -1691,19 +1772,21 @@ def main(terminal_log: TerminalLog):
 
 		# Keys: [FlowID, Actual, Predicted, Soft-output]
 		print("\nCalcolo delle predizioni sul Test set:")
-		test_predictions_df = test_model(
+		test_output = test_model(
 			model, device,
 			test_loader, metadata_test,
 			criterion
 		)
 
 		if runtime_config.flags.save_output:
-			test_predictions_df.to_csv(
+
+			test_output.predictions.to_csv(
 				fold_predictions_path,
 				index=False,
 				lineterminator="\n",
 				float_format="%.8f"
 			)
+
 			print(f"\nPredizioni salvate in {fold_predictions_path}")
 
 		#	------------------------------------------------------------	#
@@ -1758,8 +1841,8 @@ def main(terminal_log: TerminalLog):
 		if runtime_config.flags.save_output:
 
 			cm = confusion_matrix(
-				test_predictions_df["Actual"],
-				test_predictions_df["Predicted"],
+				test_output.predictions["Actual"],
+				test_output.predictions["Predicted"],
 				labels=class_ids,
 				normalize='true'
 			)
@@ -1784,7 +1867,7 @@ def main(terminal_log: TerminalLog):
 
 		if runtime_config.flags.save_output:
 			report_text = classification_report(
-				test_predictions_df["Actual"], test_predictions_df["Predicted"],
+				test_output.predictions["Actual"], test_output.predictions["Predicted"],
 				target_names=class_names, labels=class_ids,
 				digits=4, zero_division=0
 			)
@@ -1802,13 +1885,30 @@ def main(terminal_log: TerminalLog):
 		plt.close("all")
 
 		fold_end_time = time.time()
+		if cv_report is not None:
+			cv_report.add_result(
+				fold_index, test_output,
+				best_epoch=best_epoch,
+				monitored_metric=checkpoint_metric,
+				best_validation_score=best_score,
+				training_interrupted=fold_training_interrupted,
+				training_time_seconds=fold_training_seconds,
+				fold_time_seconds=fold_end_time - fold_start_time,
+			)
+
 		print(f"\nFine elaborazione del fold {fold_index + 1}/{len(folds)}")
 		print(f"Orario corrente: {datetime.fromtimestamp(fold_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
-		print(f"Tempo di elaborazione: {convert(fold_end_time - fold_start_time)}")
+		print(f"Tempo di elaborazione: {parse_seconds(fold_end_time - fold_start_time)}")
 
 		print(f"\n#  {'-'*20}  #")
 
 		# end for fold_index, current_fold
+	
+	if cv_report is not None:
+		cv_report.finalize(
+			output_dir, save_output=True,
+			draw_matrix=draw_confusion_matrix,
+		)
 
 	#	-----------------------------------------------------------------	#
 	#	Valutazione finale della cross-validation.
@@ -1841,7 +1941,7 @@ def main(terminal_log: TerminalLog):
 	print(f"\nElaborazione completata.")
 	print(f"Orario d'inizio: {datetime.fromtimestamp(total_start_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Orario di fine: {datetime.fromtimestamp(total_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
-	print(f"Tempo di elaborazione: {convert(total_end_time - total_start_time)}")
+	print(f"Tempo di elaborazione: {parse_seconds(total_end_time - total_start_time)}")
 
 	if skipped_folds:
 		print(f"Fold senza checkpoint: {skipped_folds}")

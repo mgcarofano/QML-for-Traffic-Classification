@@ -10,8 +10,10 @@
 
 from pathlib import Path
 from tqdm import tqdm
+
 import io
 import json
+import numpy as np
 import os
 import sys
 import tempfile
@@ -20,22 +22,171 @@ import time
 import traceback
 
 #	####################################################################	#
-#	Funzioni
+#	Funzioni di conversione / verifica dei dati
 
-def convert(seconds: float) -> str:
-	# Separa i secondi interi dalla parte decimale
-	sec_int = int(seconds)
-	milliseconds = int(round((seconds - sec_int) * 1000))
+def parse_seconds(seconds: float) -> str:
+    # Separa i secondi interi dalla parte decimale
+    sec_int = int(seconds)
+    milliseconds = int(round((seconds - sec_int) * 1000))
 
-	# Gestione dell'eventuale arrotondamento a 1000 ms
-	if milliseconds >= 1000:
-		sec_int += 1
-		milliseconds -= 1000
+    # Gestione dell'eventuale arrotondamento a 1000 ms
+    if milliseconds >= 1000:
+        sec_int += 1
+        milliseconds -= 1000
 
-	# Formatta ore, minuti e secondi con time.strftime usando l'orario UTC/epoch
-	time_str = time.strftime("%H:%M:%S", time.gmtime(sec_int))
+    # Formatta ore, minuti e secondi con time.strftime usando l'orario UTC/epoch
+    time_str = time.strftime("%H:%M:%S", time.gmtime(sec_int))
 
-	return f"{time_str}.{milliseconds:03d}"
+    return f"{time_str}.{milliseconds:03d}"
+
+    # end
+
+def check_seconds(value, name: str) -> float | None:
+    """Verifica che il valore rappresenti una durata in secondi non negativa e finita.
+
+    Args:
+        value: Valore da verificare.
+        name (str): Nome del parametro o contesto per i messaggi di errore.
+
+    Raises:
+        ValueError: Se il valore non rappresenta una durata valida in secondi.
+
+    Returns:
+        float | None: Durata in secondi, oppure None se il valore era None.
+    """
+
+    if value is None:
+        return None
+
+    value = float(value)
+
+    if not np.isfinite(value) or value < 0:
+        raise ValueError(
+            f"Errore nella validazione del tempo ({name}): \n"
+            f"Durata non finita o negativa."
+        )
+
+    return value
+
+    # end
+
+def check_positive_int(
+        value, name: str,
+        maximum: int = None,
+        allow_zero: bool = False,
+        allow_none: bool = False
+    ) -> int | None:
+    """Verifica che il valore sia un intero positivo. Può opzionalmente consentire 0 o None.
+
+    Args:
+        value: Valore da verificare.
+        name (str): Nome del parametro o contesto per i messaggi di errore.
+        maximum (int, optional): Valore massimo consentito. Defaults to None.
+        allow_zero (bool, optional): Se True, consente anche il valore 0. Defaults to False.
+        allow_none (bool, optional): Se True, consente anche il valore None. Defaults to False.
+
+    Raises:
+        TypeError: Se il valore non può essere convertito in un intero.
+        ValueError: Se il valore non è un intero positivo.
+        ValueError: Se il valore è negativo e allow_zero è True.
+        ValueError: Se il valore è None e allow_none è False.
+        ValueError: Se il valore supera il massimo consentito (maximum).
+    
+    Returns:
+        int | None: Valore intero validato.
+    """
+
+    if value is None:
+        if allow_none:
+            return None
+
+        raise ValueError(
+            f"Errore nella validazione del valore '{name}': \n"
+            f"Ricevuto valore None."
+        )
+
+    if isinstance(value, bool):
+        raise TypeError(
+            f"Errore nella validazione del valore '{name}': \n"
+            f"Ricevuto valore non intero."
+        )
+
+    try:
+        value = int(value)
+        maximum = int(maximum) if maximum is not None else None
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            f"Errore nella validazione del valore '{name}': \n"
+            f"Impossibile convertire il valore in intero."
+        ) from exc
+    
+    if not allow_zero and value <= 0:
+        raise ValueError(
+            f"Errore nella validazione del valore '{name}': \n"
+            f"Ricevuto valore non positivo."
+        )
+
+    elif allow_zero and value < 0:
+        raise ValueError(
+            f"Errore nella validazione del valore '{name}': \n"
+            f"Ricevuto valore negativo."
+        )
+
+    if maximum is not None and value > maximum:
+        raise ValueError(
+            f"Errore nella validazione del valore '{name}': \n"
+            f"Ricevuto valore maggiore del massimo consentito ({maximum})."
+        )
+
+    return value
+
+    # end
+
+def check_integer_array(values, size: int, name: str, allow_duplicates: bool = False) -> np.ndarray:
+    """Valida vettori 1D di interi compresi nell'intervallo [0, size) e, opzionalmente, senza duplicati.
+
+    Args:
+        values: Vettore 1D da validare.
+        size (int): Dimensione massima consentita nel vettore (esclusa).
+        name (str): Nome del vettore o del contesto per i messaggi di errore.
+        allow_duplicates (bool, optional): Se True, consente interi duplicati. Defaults to False.
+
+    Raises:
+        ValueError: Se il vettore non è 1D, è vuoto o contiene valori non interi.
+        ValueError: Se il vettore contiene valori fuori dall'intervallo [0, size).
+        ValueError: Se il vettore contiene duplicati e allow_duplicates è False.
+
+    Returns:
+        np.ndarray: Restituisce una copia validata int64 del vettore di input, mantenendone l'ordine.
+    """
+
+    values = np.asarray(values)
+
+    if values.ndim != 1 or values.size == 0 or values.dtype.kind not in "iu":
+        raise ValueError(
+            f"Errore nella validazione degli indici ({name}): \n"
+            "Atteso: vettore 1D non vuoto di interi. \n"
+            f"Ricevuto: ndim = {values.ndim} | size = {values.size} | dtype = {values.dtype}"
+        )
+
+    if np.any(values < 0) or np.any(values >= size):
+        raise ValueError(
+            f"Errore nella validazione degli indici ({name}): \n"
+            f"Ricevuti indici fuori dal dataset."
+        )
+
+    if not allow_duplicates and np.unique(values).size != values.size:
+        raise ValueError(
+            f"Errore nella validazione degli indici ({name}): \n"
+            f"Ricevuti indici duplicati."
+        )
+
+    return values.astype(np.int64, copy=True)
+
+    # end
+
+#	####################################################################	#
+#	Funzioni di utilità per la scrittura atomica
 
 def atomic_write(path, writer):
     """Crea un file temporaneo nella stessa directory della destinazione, delega la scrittura del contenuto alla funzione writer e, dopo aver sincronizzato il file, lo sposta sul percorso finale tramite os.replace.
@@ -85,7 +236,7 @@ def atomic_write(path, writer):
 
     # end
 
-def atomic_dump(path, obj):
+def atomic_dump_json(path, obj):
     """Serializza un oggetto in JSON UTF-8 e lo salva in modo atomico, delegando la scrittura alla funzione atomic_write().
 
     Args:
@@ -103,6 +254,23 @@ def atomic_dump(path, obj):
     atomic_write(path, lambda stream: stream.write(payload))
 
     # end
+
+def atomic_dump_text(path: Path, text: str) -> None:
+    """Salva uno stream di testo in modo atomico, delegando la scrittura alla funzione atomic_write().
+
+    Args:
+        path: Percorso del file di destinazione.
+        text: Testo da salvare nel file.
+    """
+
+    payload = text.encode("utf-8")
+
+    atomic_write(path, lambda stream: stream.write(payload))
+
+    # end
+
+#	####################################################################	#
+#	Funzioni di utilità per la barra di avanzamento personalizzata
 
 def custom_tqdm(*args, **kwargs):
     """ Crea una barra di avanzamento tqdm personalizzata che bypassa il duplicatore degli stream. Utile per visualizzare correttamente le barre di avanzamento nei terminali che utilizzano ProxyStream. """

@@ -13,6 +13,7 @@ from argparse import ArgumentParser, Namespace, SUPPRESS, BooleanOptionalAction
 from typing import get_args, get_origin, get_type_hints
 
 from Source.models import MODEL_REGISTRY
+from Source.utils import check_positive_int
 
 from pathlib import Path
 import json
@@ -131,7 +132,7 @@ def parse_args(argv= None) -> Namespace:
 
 			if argument_name == "save_output":
 				options["help"] = (
-					"Salva anche gli output accessori. "
+					"Salva gli output accessori e stampa il riepilogo CV/holdout. "
 					"I checkpoint sono elaborati e salvati solo durante il training. "
 					"File di configurazione e log da terminale sono sempre salvati."
 				)
@@ -302,28 +303,6 @@ def _apply_cli(config, args: Namespace, prefix: str = ""):
 
 	# end
 
-def check_positive_int(name: str, value):
-	"""Verifica che il valore sia un intero positivo.
-
-	Args:
-		name (str): Il nome del parametro.
-		value: Il valore da verificare.
-
-	Raises:
-		TypeError: Se il valore non può essere convertito in un intero.
-		ValueError: Se il valore non è un intero positivo.
-	"""
-	
-	from numbers import Integral
-
-	if isinstance(value, bool) or not isinstance(value, Integral):
-		raise TypeError(f"Il valore '{name}' non può essere convertito in un intero.")
-	
-	if value <= 0:
-		raise ValueError(f"Il valore '{name}' deve essere positivo.")
-
-	# end
-
 #	####################################################################	#
 #	Configurazione dei parametri di sessione.
 
@@ -360,8 +339,8 @@ class DatasetConfig:
 		)
 
 	def __post_init__(self) -> None:
-		check_positive_int('n_packets', self.n_packets)
-		check_positive_int('n_features', self.n_features)
+		self.n_packets = check_positive_int(self.n_packets, 'n_packets')
+		self.n_features = check_positive_int(self.n_features, 'n_features')
 
 		if not self.path:
 			raise ValueError("Percorso del dataset non definito.")
@@ -447,12 +426,9 @@ class TrafficFiltersConfig:
 		)
 
 	def __post_init__(self) -> None:
-		if self.min_duration is not None:
-			check_positive_int('min_duration', self.min_duration)
-		if self.min_packets is not None:
-			check_positive_int('min_packets', self.min_packets)
-		if self.min_dim is not None:
-			check_positive_int('min_dim', self.min_dim)
+		self.min_duration = check_positive_int(self.min_duration, 'min_duration', allow_none=True)
+		self.min_packets = check_positive_int(self.min_packets, 'min_packets', allow_none=True)
+		self.min_dim = check_positive_int(self.min_dim, 'min_dim', allow_none=True)
 
 		# end
 
@@ -495,8 +471,8 @@ class TrafficConfig:
 		)
 
 	def __post_init__(self) -> None:
-		check_positive_int('mtu', self.mtu)
-		check_positive_int('bin_size', self.bin_size)
+		self.mtu = check_positive_int(self.mtu, 'mtu')
+		self.bin_size = check_positive_int(self.bin_size, 'bin_size')
 
 		if self.bin_size > self.mtu:
 			raise ValueError("La dimensione dei bin non può essere maggiore di MTU.")
@@ -574,7 +550,7 @@ class CrossValidationConfig:
 				f"Total: {(self.train_ratio + self.val_ratio):.4f}"
 			)
 
-		check_positive_int('test_folds', self.test_folds)
+		self.test_folds = check_positive_int(self.test_folds, 'test_folds')
 
 		if self.test_folds == 1:
 			if self.test_ratio is None or not 0 < self.test_ratio < 1:
@@ -659,9 +635,14 @@ class TrainingConfig:
 	def __post_init__(self) -> None:
 		import numpy as np
 
-		check_positive_int('epochs', self.epochs)
-		check_positive_int('batch_size', self.batch_size)
-		check_positive_int('patience', self.patience)
+		self.epochs = check_positive_int(self.epochs, 'epochs')
+		self.batch_size = check_positive_int(self.batch_size, 'batch_size')
+
+		self.patience = check_positive_int(
+			self.patience, 'patience',
+			allow_none= not self.early_stopping,
+			allow_zero= not self.early_stopping
+		)
 
 		if self.monitored_metric not in ["val_loss", "val_accuracy", "val_macrof1"]:
 			raise ValueError(
@@ -818,7 +799,11 @@ class SchedulerConfig:
 		if self.start_factor <= 0 or self.start_factor > 1:
 			raise ValueError("Il valore di start_factor deve essere compreso tra 0 e 1.")
 
-		check_positive_int('step_size', self.step_size)
+		self.step_size = check_positive_int(
+			self.step_size,'step_size',
+			allow_none= self.name != "StepSched",
+			allow_zero= self.name != "StepSched"
+		)
 
 		if self.gamma <= 0 or self.gamma > 1:
 			raise ValueError("Il valore di gamma deve essere compreso tra 0 e 1.")
@@ -939,8 +924,8 @@ class QuantumConfig:
 				"Simulatori disponibili: ['default.qubit']."
 			)
 
-		check_positive_int('n_qubits', self.n_qubits)
-		check_positive_int('q_layers', self.q_layers)
+		self.n_qubits = check_positive_int(self.n_qubits, 'n_qubits')
+		self.q_layers = check_positive_int(self.q_layers, 'q_layers')
 
 		if self.n_shots is not None:
 			raise NotImplementedError(
@@ -1055,7 +1040,7 @@ class FlagsConfig:
 	""" Whether to use the FlowPic dataset or the original Mirage dataset. If True, generate the FlowPic dataset from raw data using the `traffic_converter` module. """
 	
 	save_output: bool
-	""" Whether to save optional outputs. Config/log are always saved; training checkpoints too. """
+	""" Whether to save optional outputs and the final CV/holdout summary. Config/log and training checkpoint artifacts remain independent of this flag. """
 
 	@classmethod
 	def from_defaults(cls) -> "FlagsConfig":
