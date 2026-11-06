@@ -664,6 +664,15 @@ def train_model(
     #	Fine del loop di addestramento.
 
     if best_epoch is not None:
+
+        # Verifica il valore del miglior punteggio di validazione.
+        best_score = float(best_score)
+        if not np.isfinite(best_score):
+            raise ValueError(
+                "Errore nel calcolo del miglior punteggio di validazione: "
+                "Ricevuto valore non finito."
+            )
+
         # Ricarica i pesi del modello in base al miglior punteggio di validazione sulla metrica monitorata.
         model.load_state_dict(torch.load(
             fold_model_path,
@@ -671,11 +680,14 @@ def train_model(
             weights_only=True,
         ))
 
+    else:
+        best_score = None
+
     return (
         model,
         train_history_df,
         best_epoch,
-        best_score if best_epoch is not None else None,
+        best_score,
         interrupted
     )
 
@@ -704,21 +716,19 @@ def test_model(
         TestResult: Un oggetto contenente le predizioni e le metriche numeriche sul test set.
     """
 
+    #   ####################################################################    #
+    #   Valutazione del modello sul Test set e verifica dei risultati.
+
     test_loss, test_acc, y_preds, y_true, y_probs = evaluate(
         model, device,
         test_loader,
         criterion
     )
 
-    if not (
-        len(metadata_test)
-        == y_preds.numel()
-    ):
+    if len(metadata_test) != y_preds.numel():
         raise ValueError(
             "Errore nel calcolo del soft-output: \n"
-            "Disallineamento tra "
-            f"metadati ({len(metadata_test)}) e "
-            f"predizioni ({y_preds.numel()}) "
+            f"Disallineamento tra metadati ({len(metadata_test)}) e predizioni ({y_preds.numel()})"
         )
 
     metrics = compute_test_metrics(y_true, y_preds, model.num_classes)
@@ -730,12 +740,22 @@ def test_model(
             "Il valore di accuracy non è coerente con le predizioni."
         )
 
-    parse = lambda key, value: \
-        f"{key}: {value:4f}%" \
-        if key in ("test_accuracy", "test_macro_f1", "test_weighted_f1") \
-        else f"{key}: {value:4f}"
+    #   ####################################################################    #
+    #   Stampa delle metriche ottenute.
 
-    print(" | ".join(parse(key, value) for key, value in metrics.items()))
+    metric_text = []
+
+    for name, value in metrics.items():
+        if value is None:
+            metric_text.append(f"{name}: N/D")
+        else:
+            unit = "" if name == "test_loss" else "%"
+            metric_text.append(f"{name}: {value:.6f}{unit}")
+
+    print(" | ".join(metric_text))
+
+    #   ####################################################################    #
+    #   Ritorno dei risultati.
 
     soft_output = [
         ";".join(f"{probability:.8f}" for probability in row)

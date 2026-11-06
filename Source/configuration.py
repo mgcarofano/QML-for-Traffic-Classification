@@ -339,8 +339,8 @@ class DatasetConfig:
 		)
 
 	def __post_init__(self) -> None:
-		self.n_packets = check_positive_int(self.n_packets, 'n_packets')
-		self.n_features = check_positive_int(self.n_features, 'n_features')
+		object.__setattr__(self, "n_packets", check_positive_int(self.n_packets, "n_packets"))
+		object.__setattr__(self, "n_features", check_positive_int(self.n_features, "n_features"))
 
 		if not self.path:
 			raise ValueError("Percorso del dataset non definito.")
@@ -426,9 +426,9 @@ class TrafficFiltersConfig:
 		)
 
 	def __post_init__(self) -> None:
-		self.min_duration = check_positive_int(self.min_duration, 'min_duration', allow_none=True)
-		self.min_packets = check_positive_int(self.min_packets, 'min_packets', allow_none=True)
-		self.min_dim = check_positive_int(self.min_dim, 'min_dim', allow_none=True)
+		object.__setattr__(self, "min_duration", check_positive_int(self.min_duration, 'min_duration', allow_none=True))
+		object.__setattr__(self, "min_packets", check_positive_int(self.min_packets, 'min_packets', allow_none=True))
+		object.__setattr__(self, "min_dim", check_positive_int(self.min_dim, 'min_dim', allow_none=True))
 
 		# end
 
@@ -471,8 +471,8 @@ class TrafficConfig:
 		)
 
 	def __post_init__(self) -> None:
-		self.mtu = check_positive_int(self.mtu, 'mtu')
-		self.bin_size = check_positive_int(self.bin_size, 'bin_size')
+		object.__setattr__(self, "mtu", check_positive_int(self.mtu, 'mtu'))
+		object.__setattr__(self, "bin_size", check_positive_int(self.bin_size, 'bin_size'))
 
 		if self.bin_size > self.mtu:
 			raise ValueError("La dimensione dei bin non può essere maggiore di MTU.")
@@ -550,7 +550,7 @@ class CrossValidationConfig:
 				f"Total: {(self.train_ratio + self.val_ratio):.4f}"
 			)
 
-		self.test_folds = check_positive_int(self.test_folds, 'test_folds')
+		object.__setattr__(self, "test_folds", check_positive_int(self.test_folds, 'test_folds'))
 
 		if self.test_folds == 1:
 			if self.test_ratio is None or not 0 < self.test_ratio < 1:
@@ -635,14 +635,14 @@ class TrainingConfig:
 	def __post_init__(self) -> None:
 		import numpy as np
 
-		self.epochs = check_positive_int(self.epochs, 'epochs')
-		self.batch_size = check_positive_int(self.batch_size, 'batch_size')
+		object.__setattr__(self, "epochs", check_positive_int(self.epochs, 'epochs'))
+		object.__setattr__(self, "batch_size", check_positive_int(self.batch_size, 'batch_size'))
 
-		self.patience = check_positive_int(
+		object.__setattr__(self, "patience", check_positive_int(
 			self.patience, 'patience',
 			allow_none= not self.early_stopping,
 			allow_zero= not self.early_stopping
-		)
+		))
 
 		if self.monitored_metric not in ["val_loss", "val_accuracy", "val_macrof1"]:
 			raise ValueError(
@@ -799,11 +799,11 @@ class SchedulerConfig:
 		if self.start_factor <= 0 or self.start_factor > 1:
 			raise ValueError("Il valore di start_factor deve essere compreso tra 0 e 1.")
 
-		self.step_size = check_positive_int(
+		object.__setattr__(self, "step_size", check_positive_int(
 			self.step_size,'step_size',
 			allow_none= self.name != "StepSched",
 			allow_zero= self.name != "StepSched"
-		)
+		))
 
 		if self.gamma <= 0 or self.gamma > 1:
 			raise ValueError("Il valore di gamma deve essere compreso tra 0 e 1.")
@@ -924,8 +924,8 @@ class QuantumConfig:
 				"Simulatori disponibili: ['default.qubit']."
 			)
 
-		self.n_qubits = check_positive_int(self.n_qubits, 'n_qubits')
-		self.q_layers = check_positive_int(self.q_layers, 'q_layers')
+		object.__setattr__(self, "n_qubits", check_positive_int(self.n_qubits, 'n_qubits'))
+		object.__setattr__(self, "q_layers", check_positive_int(self.q_layers, 'q_layers'))
 
 		if self.n_shots is not None:
 			raise NotImplementedError(

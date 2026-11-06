@@ -72,7 +72,8 @@ import traceback
 from Source.utils import \
 	parse_seconds, \
 	check_positive_int, \
-	check_integer_array
+	check_integer_array, \
+	check_seconds
 
 #	####################################################################	#
 #	Calcolo dei parametri di esecuzione.
@@ -1154,7 +1155,7 @@ def main(terminal_log: TerminalLog):
 	# 	Calcolo e salvataggio dei parametri di esecuzione.
 
 	# Identificatore della sessione corrente e directory di output corrispondente.
-	session_id, output_dir = allocate_session(total_start_time, results_dir="Results")
+	session_id, output_dir = allocate_session(total_start_time)
 	print(f"Identificatore della sessione selezionato: {session_id}")
 
 	# Percorso per il log del terminale.
@@ -1167,6 +1168,9 @@ def main(terminal_log: TerminalLog):
 
 	# Percorso per il file di configurazione.
 	config_path = output_dir / "config.json"
+
+	# Percorso per il report della cross-validation.
+	report_dir = output_dir / "cv_report"
 
 	# Dispositivo utilizzato per il calcolo.
 	device = resolve_device(runtime_config.launch.requested_device)
@@ -1181,25 +1185,29 @@ def main(terminal_log: TerminalLog):
 	#	-----------------------------------------------------------------	#
 	#	Verifica e salvataggio dei parametri nel file di configurazione.
 
-	with ExecutionConfig.from_args(session_id, device.type, str(dtype)) as execution_config:
-		if not runtime_config.launch.exec_mode_train and runtime_config.use_config_file():
-			checkpoint_dir = resolve_checkpoint_session(execution_config)
-		else:
-			checkpoint_dir = None
+	execution_config = ExecutionConfig.from_args(session_id, device.type, str(dtype))
+	if not runtime_config.launch.exec_mode_train and runtime_config.use_config_file():
+		checkpoint_dir = resolve_checkpoint_session(execution_config)
+	else:
+		checkpoint_dir = None
 
-		atomic_dump_json(
-			config_path,
-			{
-				"execution": asdict(execution_config),
-				**asdict(runtime_config),
-				**asdict(session_config),
-			}
-		)
+	atomic_dump_json(
+		config_path,
+		{
+			"execution": asdict(execution_config),
+			**asdict(runtime_config),
+			**asdict(session_config),
+		}
+	)
 
-		# end with execution_config
+	del execution_config
 
 	print(f"Directory dei risultati per la sessione corrente: {output_dir}")
 	print(f"Percorso del file di configurazione per la sessione corrente: {config_path}")
+
+	if runtime_config.flags.save_output:
+		report_dir.mkdir(parents=True, exist_ok=True)
+		print(f"Directory del report finale della cross-validation: {report_dir}")
 
 	if checkpoint_dir is not None:
 		print(f"Directory dei checkpoint della sessione di origine: {checkpoint_dir}")
@@ -1368,12 +1376,12 @@ def main(terminal_log: TerminalLog):
 		val_indices = check_integer_array(val_indices, y_encoded.size, "validation")
 		test_indices = check_integer_array(test_indices, y_encoded.size, "test")
 
-		with np.sort(np.concatenate((train_indices, val_indices, test_indices))) as joined:
-			if not np.array_equal(joined, np.arange(y_encoded.size)):
-				raise ValueError(
-					"Errore nella verifica degli split: \n"
-					"Train / Validation / Test non disgiunti o incompleti."
-				)
+		joined = np.sort(np.concatenate((train_indices, val_indices, test_indices)))
+		if not np.array_equal(joined, np.arange(y_encoded.size)):
+			raise ValueError(
+				"Errore nella verifica degli split: \n"
+				"Train / Validation / Test non disgiunti o incompleti."
+			)
 
 		if cv_report is not None:
 			cv_report.start_fold(fold_index, train_indices, val_indices, test_indices)
@@ -1408,28 +1416,28 @@ def main(terminal_log: TerminalLog):
 		# Verifica dell'allineamento in ciascuno split.
 		# TODO: vedi notebook.
 
-		with {
+		current_indices ={
 			"train": train_indices,
 			"val": val_indices,
 			"test": test_indices
-		} as current_indices:
+		}
 
-			if runtime_config.launch.exec_mode_train:
-				atomic_write(
-					fold_splits_path,
-					lambda stream: np.savez_compressed(stream, **current_indices),
-				)
+		if runtime_config.launch.exec_mode_train:
+			atomic_write(
+				fold_splits_path,
+				lambda stream: np.savez_compressed(stream, **current_indices),
+			)
 
-			else:
-				with np.load(fold_splits_path, allow_pickle=False) as saved:
-					for name, curr in current_indices.items():
-						if not np.array_equal(saved[name], curr):
-							raise ValueError(
-								"Errore nel caricamento degli split: \n"
-								f"Lo split '{name}' in 'fold{fold_index}' non coincide con quello del checkpoint."
-							)
+		else:
+			with np.load(fold_splits_path, allow_pickle=False) as saved:
+				for name, curr in current_indices.items():
+					if not np.array_equal(saved[name], curr):
+						raise ValueError(
+							"Errore nel caricamento degli split: \n"
+							f"Lo split '{name}' in 'fold{fold_index}' non coincide con quello del checkpoint."
+						)
 
-			# end with current_indices
+		del current_indices
 
 		#	------------------------------------------------------------	#
 		#	Estrazione delle lunghezze reali dei flussi (solo per dataset Mirage).
@@ -1653,6 +1661,7 @@ def main(terminal_log: TerminalLog):
 			)
 
 			cv_training_start = time.perf_counter()
+
 			try:
 				model, train_history_df, \
 				best_epoch, best_score, interrupted = train_model(
@@ -1673,10 +1682,11 @@ def main(terminal_log: TerminalLog):
 					f"{traceback.format_exc()}"
 				)
 				fold_skip_reason = "training_error"
-			fold_training_seconds = time.perf_counter() - cv_training_start
-			fold_training_interrupted = bool(interrupted)
 
 				# end try-except
+
+			fold_training_seconds = check_seconds(time.perf_counter() - cv_training_start, "training")
+			fold_training_interrupted = bool(interrupted)
 
 			training_end_time = time.time()
 			print(
@@ -1696,6 +1706,9 @@ def main(terminal_log: TerminalLog):
 			# In caso contrario, continua l'esecuzione del fold corrente.
 			if best_epoch is None:
 
+				fold_end_time = time.time()
+				fold_duration = check_seconds(fold_end_time - fold_start_time, "fold")
+
 				print("Non è stata completata alcuna epoca. Il test del fold sarà saltato.")
 
 				# Rimuove la directory dei risultati del fold se non è stato creato un checkpoint valido.
@@ -1709,16 +1722,16 @@ def main(terminal_log: TerminalLog):
 					cv_report.skip_fold(
 						fold_index, fold_skip_reason,
 						training_time_seconds=fold_training_seconds,
-						fold_time_seconds=time.time() - fold_start_time,
+						fold_time_seconds=fold_duration,
 						training_interrupted=fold_training_interrupted,
 					)
+
 				skipped_folds.append(fold_index)
 				plt.close("all")
 
-				fold_end_time = time.time()
 				print(f"\nFine elaborazione del fold {fold_index + 1}/{len(folds)}")
 				print(f"Orario corrente: {datetime.fromtimestamp(fold_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
-				print(f"Tempo di elaborazione: {parse_seconds(fold_end_time - fold_start_time)}")
+				print(f"Tempo di elaborazione: {parse_seconds(fold_duration)}")
 
 				print(f"\n#  {'-'*20}  #")
 
@@ -1777,6 +1790,20 @@ def main(terminal_log: TerminalLog):
 			test_loader, metadata_test,
 			criterion
 		)
+
+		if not {"Actual", "Predicted", "FlowID"}.issubset(test_output.predictions):
+			raise RuntimeError(
+				f"Errore nel calcolo delle predizioni sul Test set per il 'fold{fold_index}': "
+				"colonne richieste mancanti. \n"
+				"Atteso: ['Actual', 'Predicted', 'FlowID'] \n"
+				"Ricevuto: " + ", ".join(test_output.predictions.columns)
+			)
+
+		if not np.array_equal(test_output.predictions["Actual"].to_numpy(), y_encoded[test_indices]):
+			raise ValueError(
+				f"Errore nel calcolo delle predizioni sul Test set per il 'fold{fold_index}': "
+				"Le etichette del Test set non corrispondono a quelle originali."
+			)
 
 		if runtime_config.flags.save_output:
 
@@ -1885,49 +1912,48 @@ def main(terminal_log: TerminalLog):
 		plt.close("all")
 
 		fold_end_time = time.time()
+		fold_duration = check_seconds(fold_end_time - fold_start_time, "fold")
+
 		if cv_report is not None:
 			cv_report.add_result(
 				fold_index, test_output,
-				best_epoch=best_epoch,
-				monitored_metric=checkpoint_metric,
-				best_validation_score=best_score,
-				training_interrupted=fold_training_interrupted,
-				training_time_seconds=fold_training_seconds,
-				fold_time_seconds=fold_end_time - fold_start_time,
+				best_epoch= check_positive_int(best_epoch, "best_epoch", allow_none=True),
+				monitored_metric= checkpoint_metric,
+				best_validation_score= best_score,
+				training_interrupted= fold_training_interrupted,
+				training_time_seconds= fold_training_seconds,
+				fold_time_seconds= fold_duration,
 			)
 
 		print(f"\nFine elaborazione del fold {fold_index + 1}/{len(folds)}")
 		print(f"Orario corrente: {datetime.fromtimestamp(fold_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
-		print(f"Tempo di elaborazione: {parse_seconds(fold_end_time - fold_start_time)}")
+		print(f"Tempo di elaborazione: {parse_seconds(fold_duration)}")
 
 		print(f"\n#  {'-'*20}  #")
 
 		# end for fold_index, current_fold
+
+	#	-----------------------------------------------------------------	#
+	#	Terminazione dell'elaborazione dei fold.
+	
 	
 	if cv_report is not None:
-		cv_report.finalize(
-			output_dir, save_output=True,
-			draw_matrix=draw_confusion_matrix,
-		)
 
-	#	-----------------------------------------------------------------	#
-	#	Valutazione finale della cross-validation.
-	#	Metriche aggregate su tutti i fold.
+		if len(skipped_folds) == len(folds):
 
-	# TODO: creare una tabella di confronto tra modelli su fold diverse con F1-score e accuracy, media e deviazione standard.
-	# ...
+			print(f"\nTutti i fold sono stati saltati.")
 
-	#	-----------------------------------------------------------------	#
-	#	Valutazione finale della cross-validation.
-	#	Predizioni out-of-fold.
+			# Rimuove la directory del report per la cross-validation se tutti i fold sono stati saltati.
+			# Rimuove i file eventualmente già presenti nella directory.
+			for path in report_dir.iterdir():
+				path.unlink(missing_ok=True)
+			report_dir.rmdir()
+			print(f"Directory del report per la cross-validation rimossa.")
 
-	# ...
+		else:
+			cv_report.finalize(report_dir)
 
-	#	-----------------------------------------------------------------	#
-	#	Valutazione finale della cross-validation.
-	#	Verifica dell'intera procedura.
-
-	# ...
+			# end if
 
 	#	-----------------------------------------------------------------	#
 	#	Addestramento di un nuovo modello finale.
@@ -1935,10 +1961,10 @@ def main(terminal_log: TerminalLog):
 	# ...
 
 	#	-----------------------------------------------------------------	#
-	#	Terminazione dell'elaborazione.
+	#	Terminazione dell'elaborazione principale.
 
 	total_end_time = time.time()
-	print(f"\nElaborazione completata.")
+	print(f"\nEsperimento '{session_id}' completato.")
 	print(f"Orario d'inizio: {datetime.fromtimestamp(total_start_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Orario di fine: {datetime.fromtimestamp(total_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Tempo di elaborazione: {parse_seconds(total_end_time - total_start_time)}")
