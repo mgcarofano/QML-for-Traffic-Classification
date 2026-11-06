@@ -358,7 +358,7 @@ class CrossValidationReport:
             "coverage": {
                 "n_samples": int(self.y_true.size),
                 "planned_test_samples": self.planned_samples,
-                "evaluated_test_samples": covered,
+                "evaluated_test_samples": int(covered),
                 "dataset_coverage": covered / int(self.y_true.size),
                 "planned_test_coverage": covered / self.planned_samples,
             },
@@ -392,11 +392,11 @@ class CrossValidationReport:
             # Normalizza i valori float, gestendo NaN e infiniti.
             if isinstance(value, float):
                 if math.isnan(value):
-                    print(f"Valore NaN nel report: {path} -> convertito in None")
+                    print(f"\nValore NaN nel report: {path} -> convertito in None")
                     return None
 
                 if not math.isfinite(value):
-                    print(f"Valore INF nel report: {path} -> convertito in None")
+                    print(f"\nValore INF nel report: {path} -> convertito in None")
                     return None
 
             return value
@@ -509,7 +509,7 @@ class CrossValidationReport:
         # Inizializzazione delle righe di riepilogo (statistiche aggregate)
         pooled_row = {column: None for column in columns}
         pooled_row["fold_index"] = "Aggregate"
-        pooled_row["n_test"] = cov['evaluated_test_samples']
+        pooled_row["n_test"] = int(cov['evaluated_test_samples'])
 
         pooled_metrics = summary.get("pooled_metrics")
         if pooled_metrics is not None:

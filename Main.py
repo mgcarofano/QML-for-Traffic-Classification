@@ -688,14 +688,14 @@ def build_scaler(X_train: np.ndarray, lengths_train: np.ndarray, fold_scaler_pat
 	#	Per la modalità di valutazione:
 	#	Recupera lo scaler dal checkpoint.
 
-	if not runtime_config.launch.exec_mode_train:
+	if not runtime_config.launch.exec_mode_train and not fold_scaler_path.is_file():
+		print(
+			"\nErrore nel caricamento dello scaler: \n"
+			f"Scaler del checkpoint non disponibile: '{fold_scaler_path}' \n"
+			"Non è possibile garantire il preprocessing originale."
+		)
 
-		if not fold_scaler_path.is_file():
-			raise FileNotFoundError(
-				"Errore nel caricamento dello scaler: \n"
-				f"Scaler del checkpoint non disponibile: {fold_scaler_path} \n"
-				"Non è possibile garantire il preprocessing originale."
-			)
+	if not runtime_config.launch.exec_mode_train and fold_scaler_path.is_file():
 
 		with fold_scaler_path.open("rb") as stream:
 			scaler = pickle.load(stream)
@@ -1429,13 +1429,20 @@ def main(terminal_log: TerminalLog):
 			)
 
 		else:
-			with np.load(fold_splits_path, allow_pickle=False) as saved:
+			try:
+				saved_indices = np.load(fold_splits_path, allow_pickle=False)
 				for name, curr in current_indices.items():
-					if not np.array_equal(saved[name], curr):
+					if not np.array_equal(saved_indices[name], curr):
 						raise ValueError(
 							"Errore nel caricamento degli split: \n"
 							f"Lo split '{name}' in 'fold{fold_index}' non coincide con quello del checkpoint."
 						)
+			except FileNotFoundError:
+				print(
+					"\nErrore nel caricamento degli split: \n"
+					f"File degli split non disponibile: '{fold_splits_path}'. \n"
+					"Non è possibile garantire gli split dell'esperimento originale."
+				)
 
 		del current_indices
 
