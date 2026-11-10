@@ -1,9 +1,14 @@
 """
-	Main.py \n
-	by Mario Gabriele Carofano
+	## Main.py \n
+	*di Mario Gabriele Carofano*
 
-	Questo script rappresenta il punto di ingresso principale per l'esecuzione
-	delle varie funzionalità del progetto QML-for-Traffic-Classification.
+	---
+
+	Modulo principale per l'esecuzione delle funzionalità implementate per il progetto QML-for-Traffic-Classification.
+	
+	Costituisce il punto di ingresso dell'applicazione e coordina le diverse fasi degli esperimenti di classificazione del traffico mediante modelli di machine learning classico e quantistico: dalla configurazione della sessione e dalla preparazione e selezione dei dati, fino all'addestramento e alla valutazione dei modelli.
+	
+	Gestisce inoltre l'esecuzione dei protocolli di cross-validation e holdout, l'utilizzo di checkpoint pre-addestrati e il salvataggio di risultati, report e artefatti nella directory dell'esperimento.
 """
 
 #	####################################################################	#
@@ -1202,11 +1207,10 @@ def main(terminal_log: TerminalLog):
 
 	del execution_config
 
-	print(f"Directory dei risultati per la sessione corrente: {output_dir}")
+	print(f"\nDirectory dei risultati per la sessione corrente: {output_dir}")
 	print(f"Percorso del file di configurazione per la sessione corrente: {config_path}")
 
 	if runtime_config.flags.save_output:
-		report_dir.mkdir(parents=True, exist_ok=True)
 		print(f"Directory del report finale della cross-validation: {report_dir}")
 
 	if checkpoint_dir is not None:
@@ -1329,10 +1333,10 @@ def main(terminal_log: TerminalLog):
 	skipped_folds = []
 
 	# Crea un rapporto completo della cross-validation solo se save_output=True.
-	cv_report = \
-		CrossValidationReport(y_encoded, metadata, folds, class_names) \
-		if runtime_config.flags.save_output \
-		else None
+	cv_report = CrossValidationReport(
+		y_encoded, metadata, folds, class_names,
+		activated=runtime_config.flags.save_output
+	)
 
 	for fold_index, current_fold in enumerate(folds):
 
@@ -1383,8 +1387,10 @@ def main(terminal_log: TerminalLog):
 				"Train / Validation / Test non disgiunti o incompleti."
 			)
 
-		if cv_report is not None:
-			cv_report.start_fold(fold_index, train_indices, val_indices, test_indices)
+		cv_report.start_fold(
+			fold_index, train_indices, val_indices, test_indices,
+			activated=runtime_config.flags.save_output
+		)
 
 		fold_training_seconds = None
 		fold_training_interrupted = None
@@ -1725,13 +1731,13 @@ def main(terminal_log: TerminalLog):
 				fold_results_dir.rmdir()
 				print(f"Directory dei risultati del 'fold{fold_index}' rimossa.")
 
-				if cv_report is not None:
-					cv_report.skip_fold(
-						fold_index, fold_skip_reason,
-						training_time_seconds=fold_training_seconds,
-						fold_time_seconds=fold_duration,
-						training_interrupted=fold_training_interrupted,
-					)
+				cv_report.skip_fold(
+					fold_index, fold_skip_reason,
+					training_time_seconds=fold_training_seconds,
+					fold_time_seconds=fold_duration,
+					training_interrupted=fold_training_interrupted,
+					activated=runtime_config.flags.save_output
+				)
 
 				skipped_folds.append(fold_index)
 				plt.close("all")
@@ -1921,16 +1927,16 @@ def main(terminal_log: TerminalLog):
 		fold_end_time = time.time()
 		fold_duration = check_seconds(fold_end_time - fold_start_time, "fold")
 
-		if cv_report is not None:
-			cv_report.add_result(
-				fold_index, test_output,
-				best_epoch= check_positive_int(best_epoch, "best_epoch", allow_none=True),
-				monitored_metric= checkpoint_metric,
-				best_validation_score= best_score,
-				training_interrupted= fold_training_interrupted,
-				training_time_seconds= fold_training_seconds,
-				fold_time_seconds= fold_duration,
-			)
+		cv_report.add_result(
+			fold_index, test_output,
+			best_epoch= check_positive_int(best_epoch, "best_epoch", allow_none=True),
+			monitored_metric= checkpoint_metric,
+			best_validation_score= best_score,
+			training_interrupted= fold_training_interrupted,
+			training_time_seconds= fold_training_seconds,
+			fold_time_seconds= fold_duration,
+			activated=runtime_config.flags.save_output
+		)
 
 		print(f"\nFine elaborazione del fold {fold_index + 1}/{len(folds)}")
 		print(f"Orario corrente: {datetime.fromtimestamp(fold_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
@@ -1939,28 +1945,13 @@ def main(terminal_log: TerminalLog):
 		print(f"\n#  {'-'*20}  #")
 
 		# end for fold_index, current_fold
-
-	#	-----------------------------------------------------------------	#
-	#	Terminazione dell'elaborazione dei fold.
 	
-	
-	if cv_report is not None:
-
-		if len(skipped_folds) == len(folds):
-
-			print(f"\nTutti i fold sono stati saltati.")
-
-			# Rimuove la directory del report per la cross-validation se tutti i fold sono stati saltati.
-			# Rimuove i file eventualmente già presenti nella directory.
-			for path in report_dir.iterdir():
-				path.unlink(missing_ok=True)
-			report_dir.rmdir()
-			print(f"Directory del report per la cross-validation rimossa.")
-
-		else:
-			cv_report.finalize(report_dir)
-
-			# end if
+	if runtime_config.flags.save_output:
+		report_dir.mkdir(parents=True, exist_ok=True)
+		cv_report.finalize(
+			report_dir,
+			activated=runtime_config.flags.save_output
+		)
 
 	#	-----------------------------------------------------------------	#
 	#	Addestramento di un nuovo modello finale.

@@ -1,21 +1,10 @@
 """
-    cross_validation_report.py
-    di Mario Gabriele Carofano
+    ## cross_validation_report.py \n
+    *di Mario Gabriele Carofano*
 
-    Modulo per il tracciamento e l'aggregazione statistica dei risultati degli esperimenti di K-fold cross-validation stratificata / holdout singolo.
+    ---
 
-    Funzionalità:
-    - Registrazione del ciclo di vita dei fold (avvio, esecuzione, interruzione o skip).
-    - Raccolta e allineamento delle predizioni individuali con i metadati di dataset.
-    - Calcolo delle statistiche descrittive per fold (medie e deviazioni standard campionarie).
-    - Aggregazione complessiva delle predizioni (pooled / out-of-fold) e calcolo delle metriche globali.
-    - Stampa a terminale del consuntivo di sessione con tabelle e dettagli di copertura.
-    - Esportazione degli artefatti su disco:
-        - cv_report.json (riepilogo strutturato);
-        - fold_metrics.csv (tabella analitica di metriche e durate);
-        - predictions_{oof|holdout}.csv (predizioni aggregate complete);
-        - classification_report_{oof|holdout}.txt (report dettagliato di classificazione per classe);
-        - confusion_matrix_{oof|holdout}.png (matrice di confusione normalizzata).
+    Modulo per la gestione dei report degli esperimenti di cross-validation e holdout.
 """
 
 #   ####################################################################    #
@@ -47,26 +36,48 @@ METRIC_NAMES = ("test_loss", "test_accuracy", "test_macro_f1", "test_weighted_f1
 #   ####################################################################    #
 
 class CrossValidationReport:
-    """Raccoglie risultati e verifica il protocollo pianificato ed eseguito. I dati devono essere già validati e preprocessati dal chiamante.
+    """Gestisce il tracciamento e l'aggregazione statistica dei risultati degli esperimenti di K-fold cross-validation stratificata / holdout singolo.
+
+    ## Note
+    - I dati devono essere già validati e preprocessati dal chiamante. La classe verifica specifici vincoli del protocollo e dello stato dei fold, ma non esegue una validazione completa degli input.
+    - Con un solo fold si identifica il protocollo holdout, per il quale non è richiesta la copertura dell'intero dataset. Con più fold, invece, i test pianificati devono coprire ogni campione esattamente una volta.
+    - La finalizzazione distingue tra report completo, parziale e vuoto. Se nessun fold è stato valutato, non viene esportato alcun artefatto.
+
+    ## Funzionalità
+    - Registrazione dello stato di un fold nel suo ciclo di vita (avvio, esecuzione, interruzione o skip).
+    - Registrazione delle metriche di test, delle informazioni di addestramento e dei tempi di esecuzione.
+    - Raccolta e allineamento delle predizioni individuali con i metadati di dataset.
+    - Calcolo delle statistiche descrittive per fold (medie e deviazioni standard campionarie).
+    - Aggregazione complessiva delle predizioni (pooled / out-of-fold) e calcolo delle metriche globali.
+    - Stampa a terminale del consuntivo di sessione con tabelle e dettagli di copertura.
+    - Esportazione degli artefatti su disco:
+        - cv_report.json (riepilogo strutturato);
+        - fold_metrics.csv (tabella analitica di metriche e durate);
+        - predictions_{oof|holdout}.csv (predizioni aggregate complete);
+        - classification_report_{oof|holdout}.txt (report dettagliato di classificazione per classe);
+        - confusion_matrix_{oof|holdout}.png (matrice di confusione normalizzata).
 
     Args:
-        y_true: Etichette codificate del dataset dopo il sottocampionamento.
-        metadata: Metadati allineati; richiede FlowID e DatasetID.
-        folds: Lista degli split esterni (indici non-test, indici test).
-        labels_map: Mappa completa da interi consecutivi a nomi delle classi.
-
-    Per K>1, i test pianificati devono coprire ogni campione esattamente una
-    volta. Per K=1 si tratta di holdout: non si pretende copertura totale.
-    Gli errori di integrità sollevano ValueError, non diventano fold saltati.
-    Le eccezioni fatali non intercettate dal programma restano fatali:
-    finalize() è richiamata solo se main raggiunge la fine del ciclo.
+        y_true (np.ndarray): Etichette reali codificate del dataset utilizzato nell'esperimento, dopo eventuali operazioni di sottocampionamento.
+        metadata (pd.DataFrame): Metadati dei campioni, allineati per posizione a y_true. Deve contenere le colonne "FlowID" e "DatasetID".
+        folds (list[tuple]): Split esterni pianificati. Ogni tupla contiene gli indici dei campioni non destinati al test e gli indici dei campioni di test, riferiti alle posizioni in y_true e metadata.
+        class_names (list[str]): Nomi delle classi, ordinati secondo la codifica numerica delle etichette.
+        activated (bool, optional): Indica se la raccolta dei risultati e la generazione del report sono abilitate. Defaults to True.
+    
+    Raises:
+        ValueError: Durante l'inizializzazione, se sono previsti più fold e i test pianificati non coprono ogni campione esattamente una volta.
     """
 
-    def __init__(self, y_true, metadata, folds, class_names):
+    def __init__(self, y_true, metadata, folds, class_names, activated: bool = True):
 
         #	############################################################	#
         #   Inizializzazione degli attributi interni.
         #   I dati devono essere già validati e preprocessati dal chiamante.
+
+        # Se non è richiesta l'attivazione del report, l'inizializzazione viene interrotta.
+        self.activated = activated
+        if not activated:
+            return
 
         self.y_true = y_true
 
@@ -129,7 +140,11 @@ class CrossValidationReport:
 
         # end
 
-    def start_fold(self, fold_index: int, train_indices, val_indices, test_indices) -> None:
+    def start_fold(
+            self,
+            fold_index: int,
+            train_indices, val_indices, test_indices,
+            activated: bool = True) -> None:
         """Aggiorna il report della sessione per il fold specificato registrando le lunghezze dei dati di train e validation. I dati devono essere già validati e preprocessati dal chiamante.
 
         Args:
@@ -137,11 +152,22 @@ class CrossValidationReport:
             train_indices (np.ndarray): Indici dei campioni di training.
             val_indices (np.ndarray): Indici dei campioni di validation.
             test_indices (np.ndarray): Indici dei campioni di test.
+            activated (bool, optional): Indica se il report è attivato. Defaults to True.
 
         Raises:
             ValueError: Se il fold è già avviato o finalizzato.
             ValueError: Se gli indici dei campioni di test non corrispondono a quelli pianificati.
         """
+
+        if activated != self.activated:
+            raise ValueError(
+                f"Errore nell'aggiornamento del report per il 'fold{fold_index}': \n"
+                "Lo stato di attivazione del report non corrisponde a quello previsto."
+            )
+
+        # Se il report non è stato attivato, termina l'esecuzione della funzione.
+        if not activated:
+            return
 
         row = self._row(fold_index)
         if (row["n_train"] is not None or row["n_val"] is not None) or row["status"] != "not_evaluated":
@@ -169,6 +195,7 @@ class CrossValidationReport:
             self, fold_index: int, reason: str,
             training_time_seconds=None, fold_time_seconds=None,
             training_interrupted=None,
+            activated: bool = True,
         ) -> None:
         """Aggiorna il report della sessione registrando il fold come saltato. I dati devono essere già validati e preprocessati dal chiamante.
 
@@ -178,10 +205,21 @@ class CrossValidationReport:
             training_time_seconds (float, optional): Tempo di training trascorso prima di saltare il fold. Defaults to None.
             fold_time_seconds (float, optional): Tempo di elaborazione del fold prima di saltarlo. Defaults to None.
             training_interrupted (bool, optional): Indica se il training è stato interrotto. Defaults to None.
+            activated (bool, optional): Indica se il report è attivato. Defaults to True.
 
         Raises:
             ValueError: Se il fold è già avviato o finalizzato.
         """
+
+        if activated != self.activated:
+            raise ValueError(
+                f"Errore nell'aggiornamento del report per il 'fold{fold_index}': \n"
+                "Lo stato di attivazione del report non corrisponde a quello previsto."
+            )
+
+        # Se il report non è stato attivato, termina l'esecuzione della funzione.
+        if not activated:
+            return
 
         row = self._row(fold_index)
         if row["status"] != "started":
@@ -205,6 +243,7 @@ class CrossValidationReport:
             best_epoch=None, monitored_metric=None, best_validation_score=None,
             training_interrupted=None,
             training_time_seconds=None, fold_time_seconds=None,
+            activated: bool = True,
         ) -> None:
         """Aggiorna il report della sessione registrando i risultati del fold. I dati devono essere già validati e preprocessati dal chiamante. Inoltre, accumula una copia delle predizioni associandole agli indici di test pianificati e ai relativi metadati, in modo da calcolare le vere metriche aggregate (pooled/out-of-fold metrics).
 
@@ -217,12 +256,23 @@ class CrossValidationReport:
             training_interrupted (bool, optional): Indica se l'addestramento è stato interrotto. Defaults to None.
             training_time_seconds (float, optional): Tempo di addestramento in secondi. Defaults to None.
             fold_time_seconds (float, optional): Tempo totale del fold in secondi. Defaults to None.
+            activated (bool, optional): Indica se il report è attivato. Defaults to True.
 
         Raises:
             ValueError: Se il fold è già stato valutato o se le predizioni non sono allineate con gli indici di test.
             TypeError: Se il risultato del test non è un'istanza di TestResult.
             ValueError: Se le predizioni del fold sono incomplete o non allineate con gli indici di test.
         """
+
+        if activated != self.activated:
+            raise ValueError(
+                f"Errore nell'aggiornamento del report per il 'fold{fold_index}': \n"
+                "Lo stato di attivazione del report non corrisponde a quello previsto."
+            )
+
+        # Se il report non è stato attivato, termina l'esecuzione della funzione.
+        if not activated:
+            return
 
         row = self._row(fold_index)
         if row["status"] != "started":
@@ -267,16 +317,27 @@ class CrossValidationReport:
 
         # end
 
-    def finalize(self, report_dir):
+    def finalize(self, report_dir, activated: bool = True):
         """Finalizza il report della cross-validation. Salva i file di report nella directory specificata. Controlla la coerenza delle predizioni aggregate e dei fold completati.
 
         Args:
             report_dir: Directory in cui salvare i file di report della cross-validation.
+            activated (bool, optional): Indica se il report è attivato. Defaults to True.
 
         Raises:
             ValueError: Se ci sono predizioni duplicate per lo stesso indice del dataset.
             ValueError: Se il numero di predizioni aggregate non corrisponde alla copertura pianificata.
         """
+
+        if activated != self.activated:
+            raise ValueError(
+                f"Errore nella finalizzazione del report: \n"
+                "Lo stato di attivazione del report non corrisponde a quello previsto."
+            )
+
+        # Se il report non è stato attivato, termina l'esecuzione della funzione.
+        if not activated:
+            return
 
         #   ############################################################    #
         #   Preparazione dei percorsi per i file di report.

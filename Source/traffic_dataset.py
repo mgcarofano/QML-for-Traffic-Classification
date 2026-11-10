@@ -1,8 +1,10 @@
 """
-	traffic_dataset.py \n
-	by Mario Gabriele Carofano
+	## traffic_dataset.py \n
+	*di Mario Gabriele Carofano*
 
-	Il modulo fornisce la classe `TrafficDataset`, che verifica gli array di feature e etichette, li converte in tensori mantenuti sulla CPU e applica, se indicata, una trasformazione a ciascun campione. La creazione dei batch e il trasferimento dei dati sul dispositivo sono demandati rispettivamente al `DataLoader` e al loop di esecuzione.
+	---
+
+	Modulo per l'implementazione e gestione del dataset di traffico mobile.
 """
 
 import torch
@@ -10,10 +12,22 @@ from torch.utils.data import Dataset
 import numpy as np
 
 class TrafficDataset(Dataset):
-	"""Dataset di traffico con feature ed etichette memorizzate in CPU.
+	"""Dataset di traffico mobile con feature ed etichette memorizzate in CPU. Verifica gli array di feature e etichette, li converte in tensori mantenuti sulla CPU e applica, se indicata, una trasformazione a ciascun campione.
 	
-	**Nota:** \n
-	Il trasferimento sul device viene gestito nel loop di esecuzione. Inoltre, si lascia al DataLoader la costruzione dei batch e la gestione del memory pinning, ottimizzando così le prestazioni complessive.
+	## Note \n
+	- Il trasferimento sul device viene gestito nel loop di esecuzione. Inoltre, si lascia al `DataLoader` la costruzione dei batch e la gestione del memory pinning, ottimizzando così le prestazioni complessive.
+
+	Args:
+		X_raw (np.ndarray): Array delle feature dei campioni.
+		y_raw (np.ndarray): Array delle etichette corrispondenti ai campioni.
+		lengths (np.ndarray | None): Array delle lunghezze dei campioni, se applicabile.
+		num_classes (int): Numero di classi presenti nel dataset.
+		dtype (torch.dtype): Tipo di dato dei tensori delle feature.
+		transform (callable, optional): Funzione di trasformazione da applicare ai campioni.
+
+	Raises:
+		TypeError: Se i parametri di input non sono del tipo corretto.
+		ValueError: Se i vettori in input non sono compatibili tra loro.
 	"""
 
 	def __init__(
@@ -34,11 +48,24 @@ class TrafficDataset(Dataset):
 		if not isinstance(y_raw, np.ndarray):
 			raise TypeError("Il vettore di etichette deve essere un array NumPy.")
 
+		if X_raw.ndim != 2 or not np.issubdtype(X_raw.dtype, np.floating):
+			raise TypeError(
+				"Errore nel caricamento dell'array delle feature: \n"
+				"Atteso: array 2D di float. "
+				f"Ricevuto: shape {X_raw.shape}, dtype {X_raw.dtype}"
+			)
+
 		if y_raw.ndim != 1 or not np.issubdtype(y_raw.dtype, np.integer):
 			raise TypeError(
 				"Errore nel caricamento del vettore delle etichette: \n"
 				"Atteso: vettore 1D di interi. "
 				f"Ricevuto: shape {y_raw.shape}, dtype {y_raw.dtype}"
+			)
+
+		if len(X_raw) != len(y_raw):
+			raise ValueError(
+				"Il numero di campioni e il numero di etichette devono corrispondere. "
+				f"Ricevuto: len(X_raw)={len(X_raw)}, len(y_raw)={len(y_raw)}"
 			)
 
 		if dtype not in (torch.float32, torch.float64):
@@ -63,13 +90,16 @@ class TrafficDataset(Dataset):
 				)
 			if len(lengths) != len(y_raw):
 				raise ValueError(
-					"Il vettore delle lunghezze deve avere la stessa lunghezza del vettore delle etichette. "
+					"Il vettore delle lunghezze non è compatibile con il vettore delle etichette. "
 					f"Ricevuto: len(lengths)={len(lengths)}, len(y_raw)={len(y_raw)}"
 				)
 
-		#   ############################################################    #
+		self.num_classes = num_classes
+		self.transform = transform
 
-		# Normalizza la disposizione in memoria e converte in tensori CPU.
+		#   ############################################################    #
+		#	Normalizza la disposizione in memoria e converte in tensori CPU.
+
 		self.X = torch.as_tensor(
 			np.ascontiguousarray(X_raw),
 			dtype=dtype,
@@ -87,9 +117,6 @@ class TrafficDataset(Dataset):
 			dtype=torch.long,
 			device="cpu",
 		) if lengths is not None else None
-
-		self.num_classes = num_classes
-		self.transform = transform
 
 		# end
 	

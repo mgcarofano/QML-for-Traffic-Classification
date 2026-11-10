@@ -1,6 +1,8 @@
 """
-    utils.py
-    di Mario Gabriele Carofano
+    ## utils.py \n
+    *di Mario Gabriele Carofano*
+
+    ---
 
     Questo modulo contiene diverse funzioni di utilità per la gestione dell'esecuzione degli esperimenti.
 """

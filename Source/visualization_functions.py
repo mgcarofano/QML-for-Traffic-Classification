@@ -1,11 +1,10 @@
 """
-    visualization_functions.py \n
-    di Mario Gabriele Carofano
+    ## visualization_functions.py \n
+    *di Mario Gabriele Carofano*
 
-    Questo modulo contiene funzioni per la visualizzazione dei risultati
-	di training e validazione dei modelli ML, in particolare per la
-	generazione di grafici che mostrano l'andamento di loss e accuracy
-	in funzione delle epoche di training.
+    ---
+
+    Modulo dedicato alle funzioni di visualizzazione grafica.
 """
 
 #   ####################################################################    #
@@ -34,14 +33,10 @@ def configure_metric_y_ticks(
 	) -> None:
 	"""Configura i tick Y preservando minimo, massimo e checkpoint.
 
-	I tick intermedi troppo vicini a quelli già selezionati
-	vengono esclusi.
-
-	Se due tick obbligatori sono vicini, le loro etichette
-	vengono allineate in direzioni opposte per ridurre
-	la sovrapposizione.
-
-	I valori coincidenti sono rappresentati da un solo tick.
+	## Note \n
+	- I tick intermedi troppo vicini a quelli già selezionati vengono esclusi.
+	- Se due tick obbligatori sono vicini, le loro etichette vengono allineate in direzioni opposte per ridurre la sovrapposizione.
+	- I valori coincidenti sono rappresentati da un solo tick.
 	"""
 
 	values = np.asarray(
@@ -192,7 +187,7 @@ def draw_train_val_plot(
 		val_values: list[float],
 		best_epoch: int
 	) -> None:
-	"""Disegna le metriche di loss e accuracy per la fase di addestramento e validazione del modello ed evidenzia la migliore epoca del checkpoint in base al valore della metrica di valutazione selezionata.
+	"""Visualizza l'andamento delle metriche di loss e accuracy per la fase di addestramento e validazione del modello e ne evidenzia la migliore epoca in base al valore della metrica di valutazione selezionata.
 
 	Il checkpoint viene evidenziato con:
 	- Una linea verticale all'epoca migliore;
@@ -286,7 +281,13 @@ def draw_train_val_plot(
 
 	# end
 
-def draw_confusion_matrix(cm, labels): 
+def draw_confusion_matrix(cm, labels):
+	"""Visualizza la matrice di confusione come heatmap.
+
+	Args:
+		cm (np.ndarray): Matrice di confusione da visualizzare.
+		labels (list[str]): Etichette delle classi corrispondenti alle righe e colonne della matrice.
+	"""
 
 	ax = sns.heatmap(
 		cm,

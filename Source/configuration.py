@@ -1,6 +1,8 @@
 """
-	configuration.py
-	by Mario Gabriele Carofano
+	## configuration.py \n
+	*di Mario Gabriele Carofano*
+
+	---
 
 	Questo modulo definisce le classi di configurazione dove vengono centralizzati tutti i parametri di sessione. Tali parametri contengono le impostazioni specifiche per una sessione di esecuzione del progetto. Sono presenti funzioni di salvataggio e caricamento in file JSON, in modo da poter riprodurre gli esperimenti e confrontare i risultati.
 """

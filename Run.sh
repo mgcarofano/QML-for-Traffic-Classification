@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
 #   ####################################################################    #
-#   Opzioni di BASH
+#   Opzioni di BASH.
 
-# Interrompe lo script quando un comando restituisce un codice di uscita diverso da zero
+# Interrompe lo script quando un comando restituisce un codice di uscita diverso da zero.
 set -e
 
 # Considera un errore l’utilizzo di una variabile non definita.
@@ -13,7 +13,7 @@ set -u
 set -o pipefail
 
 #   ####################################################################    #
-#   Funzioni di utilità
+#   Funzioni di utilità.
 
 help() {
     cat <<'HELP'

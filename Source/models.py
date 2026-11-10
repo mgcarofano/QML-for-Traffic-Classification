@@ -1,6 +1,8 @@
 """
-	models.py
-	di Mario Gabriele Carofano
+	## models.py \n
+	*di Mario Gabriele Carofano*
+
+	---
 
 	Questo modulo centralizza la definizione, la costruzione e la selezione dei modelli utilizzati per l'addestramento e la valutazione dei dataset di traffico di rete. Riunisce le architetture classiche e le reti quantistiche (e ibride), insieme alle funzioni di utilità per la gestione e selezione dei modelli.
 

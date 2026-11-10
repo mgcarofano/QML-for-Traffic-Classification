@@ -1,6 +1,8 @@
 """
-    training_functions.py
-    di Mario Gabriele Carofano
+    ## training_functions.py \n
+    *di Mario Gabriele Carofano*
+
+    ---
 
     Questo modulo contiene le funzioni per l'addestramento e la valutazione dei modelli.
 """
