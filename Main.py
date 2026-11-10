@@ -267,21 +267,45 @@ def resolve_checkpoint_session(execution_config: ExecutionConfig) -> Path | None
 		Path: Percorso della directory contenente i checkpoint della sessione di training, o None se non applicabile.
 	"""
 
+	checkpoint_dir = find_session_config(runtime_config.launch.source_session_id).parent
+	fold_metrics_path = checkpoint_dir / "cv_report" / "fold_metrics.csv"
+
+	#	############################################################	#
+	#	Recupera l'insieme dei fold saltati dal report dei fold della sessione originale di training.
+
+	skipped_folds = set()
+
+	if fold_metrics_path.is_file():
+		report_df = pd.read_csv(
+			fold_metrics_path,
+			usecols=["fold_index", "status"],
+		)
+
+		skipped_folds = set(
+			report_df.loc[
+				report_df["status"] == "skipped",
+				"fold_index",
+			]
+		)
+
+		# end if
+
 	#	############################################################	#
 	#	Verifica la presenza dei checkpoint per ciascun fold del dataset.
 
-	checkpoint_dir = find_session_config(runtime_config.launch.source_session_id).parent
-
-	missing = [
+	missing_indices = [
 		checkpoint_dir / f"fold{i}" / "model.pth"
 		for i in range(session_config.kfold.test_folds)
-		if not (checkpoint_dir / f"fold{i}" / "model.pth").is_file()
+		if (
+			not (checkpoint_dir / f"fold{i}" / "model.pth").is_file()
+			and i not in skipped_folds
+		)
 	]
 
-	if missing:
+	if missing_indices:
 		raise FileNotFoundError(
 			"Checkpoint mancanti nella sessione di training: \n"
-			+ "\n".join(f"{i+1}: \t{str(m)}" for i, m in enumerate(missing))
+			+ "\n".join(f"{i+1}: \t{str(m)}" for i, m in enumerate(missing_indices))
 		)
 	
 	#	############################################################	#
@@ -299,7 +323,7 @@ def resolve_checkpoint_session(execution_config: ExecutionConfig) -> Path | None
 		)
 
 	# Restituisce la directory dei checkpoint se i controlli precedenti sono stati superati.
-	return checkpoint_dir
+	return checkpoint_dir, skipped_folds
 
 	# end
 
@@ -1192,9 +1216,10 @@ def main(terminal_log: TerminalLog):
 
 	execution_config = ExecutionConfig.from_args(session_id, device.type, str(dtype))
 	if not runtime_config.launch.exec_mode_train and runtime_config.use_config_file():
-		checkpoint_dir = resolve_checkpoint_session(execution_config)
+		checkpoint_dir, skipped_folds = resolve_checkpoint_session(execution_config)
 	else:
 		checkpoint_dir = None
+		skipped_folds = set()
 
 	atomic_dump_json(
 		config_path,
@@ -1330,8 +1355,6 @@ def main(terminal_log: TerminalLog):
 
 	print(f"\n#  {'-'*20}  #")
 
-	skipped_folds = []
-
 	# Crea un rapporto completo della cross-validation solo se save_output=True.
 	cv_report = CrossValidationReport(
 		y_encoded, metadata, folds, class_names,
@@ -1339,6 +1362,23 @@ def main(terminal_log: TerminalLog):
 	)
 
 	for fold_index, current_fold in enumerate(folds):
+
+		#	-------------------------------------------------------------	#
+		#	Verifica se il fold corrente deve essere saltato.
+
+		if fold_index in skipped_folds:
+			print(f"\nLo stato del 'fold{fold_index}' dal report originale è 'skipped'.")
+
+			cv_report.skip_fold(
+				fold_index, "skipped_in_source_session",
+				activated=runtime_config.flags.save_output
+			)
+			
+			print(f"\n#  {'-'*20}  #")
+
+			continue
+
+			# end if
 
 		fold_start_time = time.time()
 		print(f"\nInizio elaborazione del fold {fold_index + 1}/{len(folds)}")
@@ -1797,11 +1837,10 @@ def main(terminal_log: TerminalLog):
 		#	Costruzione del soft-output per il Test set.
 
 		# Keys: [FlowID, Actual, Predicted, Soft-output]
-		print("\nCalcolo delle predizioni sul Test set:")
 		test_output = test_model(
 			model, device,
 			test_loader, metadata_test,
-			criterion
+			criterion,
 		)
 
 		if not {"Actual", "Predicted", "FlowID"}.issubset(test_output.predictions):
@@ -1927,7 +1966,7 @@ def main(terminal_log: TerminalLog):
 		fold_end_time = time.time()
 		fold_duration = check_seconds(fold_end_time - fold_start_time, "fold")
 
-		cv_report.add_result(
+		cv_report.finalize_fold(
 			fold_index, test_output,
 			best_epoch= check_positive_int(best_epoch, "best_epoch", allow_none=True),
 			monitored_metric= checkpoint_metric,
@@ -1948,7 +1987,7 @@ def main(terminal_log: TerminalLog):
 	
 	if runtime_config.flags.save_output:
 		report_dir.mkdir(parents=True, exist_ok=True)
-		cv_report.finalize(
+		cv_report.finalize_report(
 			report_dir,
 			activated=runtime_config.flags.save_output
 		)
@@ -1966,9 +2005,6 @@ def main(terminal_log: TerminalLog):
 	print(f"Orario d'inizio: {datetime.fromtimestamp(total_start_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Orario di fine: {datetime.fromtimestamp(total_end_time).strftime('%Y-%m-%d_%H:%M:%S')}")
 	print(f"Tempo di elaborazione: {parse_seconds(total_end_time - total_start_time)}")
-
-	if skipped_folds:
-		print(f"Fold senza checkpoint: {skipped_folds}")
 
 	return
 

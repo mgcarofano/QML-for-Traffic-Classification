@@ -34,6 +34,21 @@ from Source.utils import \
 METRIC_NAMES = ("test_loss", "test_accuracy", "test_macro_f1", "test_weighted_f1")
 
 #   ####################################################################    #
+#   Funzioni di utilità
+
+def print_metrics_table(table):
+    """Stampa le metriche di test formattando il numero dei campioni in valori interi e i valori numerici in formato decimale con quattro cifre dopo la virgola."""
+
+    print(table.to_string(
+        index=False,
+        float_format=lambda value: f"{value:g}",
+        justify="right",
+    ))
+
+    # end
+
+#   ####################################################################    #
+#   Definizione della classe CrossValidationReport
 
 class CrossValidationReport:
     """Gestisce il tracciamento e l'aggregazione statistica dei risultati degli esperimenti di K-fold cross-validation stratificata / holdout singolo.
@@ -67,6 +82,9 @@ class CrossValidationReport:
     Raises:
         ValueError: Durante l'inizializzazione, se sono previsti più fold e i test pianificati non coprono ogni campione esattamente una volta.
     """
+
+    #   ################################################################    #
+    #   Inizializzazione e funzioni ausiliarie.
 
     def __init__(self, y_true, metadata, folds, class_names, activated: bool = True):
 
@@ -139,6 +157,33 @@ class CrossValidationReport:
         return self.rows[int(fold_index)]
 
         # end
+
+    def _print_progress(self, report_status):
+        """Stampa lo stato dei fold, i contatori e le coperture del dataset allo stato corrente dell'elaborazione."""
+
+        def print_fold_details(status, label):
+            indices = [row["fold_index"] for row in self.rows if row["status"] == status]
+            details = f" {indices}" if indices else ""
+            print(f"{label}: {len(indices)} / {len(self.rows)}{details}")
+
+            # end
+
+        print(f"\nRiepilogo {self.protocol}: {report_status}")
+        print_fold_details("evaluated", "Fold valutati")
+        print_fold_details("skipped", "Fold saltati")
+        print_fold_details("not_evaluated", "Fold non valutati")
+
+        covered = int(np.count_nonzero(self.test_counts))
+        print(
+            f"Copertura dataset: {covered} / {self.y_true.size} "
+            f"({100.0 * covered / self.y_true.size:.2f}%)\n"
+            f"Copertura test pianificati: {100.0 * covered / self.planned_samples:.2f}%"
+        )
+
+        # end
+
+    #   ####################################################################    #
+    #   Funzioni principali.
 
     def start_fold(
             self,
@@ -222,10 +267,10 @@ class CrossValidationReport:
             return
 
         row = self._row(fold_index)
-        if row["status"] != "started":
+        if row["status"] == "evaluated":
             raise ValueError(
                 f"Errore nell'aggiornamento del report per il 'fold{fold_index}': \n"
-                "Fold non avviato o già finalizzato."
+                "Atteso: fold inizializzato. Ricevuto: 'evaluated'"
             )
 
         row.update(
@@ -238,7 +283,7 @@ class CrossValidationReport:
 
         # end
 
-    def add_result(
+    def finalize_fold(
             self, fold_index: int, result: TestResult,
             best_epoch=None, monitored_metric=None, best_validation_score=None,
             training_interrupted=None,
@@ -264,16 +309,45 @@ class CrossValidationReport:
             ValueError: Se le predizioni del fold sono incomplete o non allineate con gli indici di test.
         """
 
+        #   ############################################################    #
+        #   Verifica degli input.
+
         if activated != self.activated:
             raise ValueError(
                 f"Errore nell'aggiornamento del report per il 'fold{fold_index}': \n"
                 "Lo stato di attivazione del report non corrisponde a quello previsto."
             )
 
-        # Se il report non è stato attivato, termina l'esecuzione della funzione.
+        if result is not None and not isinstance(result, TestResult):
+            raise TypeError(
+                f"Errore nell'aggiornamento del report per il 'fold{fold_index}': \n"
+                "Ricevuti risultati del test non strutturati."
+            )
+
+        #   ############################################################    #
+        #   CASO 1: Report non attivo
+        #   Stampa secondo la formattazione del report le metriche di test ottenute e poi ritorna.
+
         if not activated:
+
+            if result is None:
+                return
+
+            table = pd.DataFrame([{
+                "n_test": len(result.predictions),
+                **{name: result.metrics.get(name) for name in METRIC_NAMES},
+            }], columns=["n_test", *METRIC_NAMES])
+
+            if not table.empty:
+                print("\nMetriche del Test set:")
+                print_metrics_table(table)
+
             return
 
+        #   ############################################################    #
+        #   CASO 2: Report attivo
+
+        # Recupera e verifica la riga corrispondente al fold corrente.
         row = self._row(fold_index)
         if row["status"] != "started":
             raise ValueError(
@@ -281,12 +355,7 @@ class CrossValidationReport:
                 "Fold non avviato o già finalizzato."
             )
 
-        if not isinstance(result, TestResult):
-            raise TypeError(
-                f"Errore nell'aggiornamento del report per il 'fold{fold_index}': \n"
-                "Ricevuti risultati del test non strutturati."
-            )
-
+        # Estrae e verifica gli indici dei test e le predizioni corrispondenti per il fold corrente.
         test_indices = self.expected_tests[fold_index]
         test_predictions = result.predictions
         if len(test_predictions) != test_indices.size:
@@ -295,19 +364,18 @@ class CrossValidationReport:
                 "Predizioni del fold incomplete o non allineate."
             )
 
-        expected_metadata = self.metadata.iloc[test_indices]
-        expected_dataset_ids = expected_metadata["DatasetID"].to_numpy()
-
+        # Prepara le predizioni del test con le informazioni aggiuntive: Fold, SampleIndex e DatasetID.
         pooled = test_predictions.reset_index(drop=True).copy()
-        pooled.insert(0, "DatasetID", expected_dataset_ids)
+        pooled.insert(0, "DatasetID", self.metadata["DatasetID"].iloc[test_indices].to_numpy())
         pooled.insert(0, "Fold", int(fold_index))
         pooled.insert(0, "SampleIndex", test_indices)
         self.predictions.append(pooled)
         self.test_counts[test_indices] += 1
 
+        # Aggiornamento dello stato del fold corrente con i risultati del test.
         row.update(
             status="evaluated",
-            best_epoch= best_epoch, monitored_metric= monitored_metric,
+            best_epoch= int(best_epoch), monitored_metric= str(monitored_metric),
             best_validation_score= best_validation_score,
             training_interrupted= None if training_interrupted is None else bool(training_interrupted),
             **result.metrics,
@@ -315,9 +383,31 @@ class CrossValidationReport:
             fold_time_seconds= fold_time_seconds,
         )
 
+        #   ############################################################    #
+        #   Stampa il progresso parziale.
+        #   Stampa la tabella riepilogativa di tutti i fold finora valutati.
+
+        self._print_progress("partial")
+        table = pd.DataFrame([{
+                "fold_index": row["fold_index"],
+                "status": row["status"],
+                "n_test": row["n_test"],
+                **{name: row.get(name) for name in METRIC_NAMES},
+            }
+            for row in self.rows
+            if row["status"] == "evaluated"
+        ], columns=["fold_index", "status", "n_test", *METRIC_NAMES])
+
+        if not table.empty:
+            print("\nTabella riepilogativa dei fold: ")
+            print_metrics_table(table)
+
+        for name in METRIC_NAMES:
+            table[name] = pd.to_numeric(table[name], errors="coerce")
+
         # end
 
-    def finalize(self, report_dir, activated: bool = True):
+    def finalize_report(self, report_dir, activated: bool = True):
         """Finalizza il report della cross-validation. Salva i file di report nella directory specificata. Controlla la coerenza delle predizioni aggregate e dei fold completati.
 
         Args:
@@ -358,9 +448,10 @@ class CrossValidationReport:
         #   Concatena le predizioni out-of-fold / holdout ordinate per indice del campione.
         #   Verifica la validità delle predizioni aggregate.
 
-        columns = ["fold_index", "status", "n_test", *METRIC_NAMES]
-        rows_df = pd.DataFrame(self.rows)
-        summary_df = rows_df.loc[:, columns].copy()
+        summary_columns = ["fold_index", "status", "n_test", *METRIC_NAMES]
+        integer_columns = ["fold_index", "n_train", "n_val", "n_test", "best_epoch"]
+        rows_df = pd.DataFrame(self.rows).astype({col: "Int64" for col in integer_columns})
+        summary_df = rows_df.loc[:, summary_columns].copy()
 
         evaluated = rows_df[rows_df["status"] == "evaluated"].to_dict(orient="records")
         count = len(evaluated)
@@ -528,25 +619,7 @@ class CrossValidationReport:
         #   Stampa a terminale del riepilogo della sessione.
 
         cov = summary["coverage"]
-        folds_info = summary["folds"]
-
-        percentage_coverage_str = f"{100.0 * cov['dataset_coverage']:.2f}%"
-        planned_coverage_str = f"{100.0 * cov['planned_test_coverage']:.2f}%"
-
-        # Informazioni sui fold valutati e la copertura del dataset.
-        print(
-            f"\nRiepilogo {self.protocol}: {summary['status']} \n"
-            f"Fold valutati: {folds_info['evaluated_folds']} / {len(self.rows)} \n"
-            f"Copertura dataset: {cov['evaluated_test_samples']} / {cov['n_samples']} ({percentage_coverage_str}) \n"
-            f"Copertura test pianificati: {planned_coverage_str}"
-        )
-
-        # Informazioni sui fold saltati e non valutati.
-        if folds_info["skipped_folds"] or folds_info["not_evaluated_folds"]:
-            print(
-                f"\nFold saltati: {folds_info['skipped_folds']} \n"
-                f"Fold non valutati: {folds_info['not_evaluated_folds']}"
-            )
+        self._print_progress(summary["status"])
 
         #   ############################################################    #
         #   Stampa a terminale una tabella riepilogativa dei fold.
@@ -556,10 +629,10 @@ class CrossValidationReport:
 
         # Inizializzazione delle righe di riepilogo (media, std)
         # Inserisce tutte celle vuote, che verranno poi popolate con le statistiche dei fold.
-        mean_row = {column: None for column in columns}
+        mean_row = {column: None for column in summary_columns}
         mean_row["fold_index"] = "Media"
 
-        std_row = {column: None for column in columns}
+        std_row = {column: None for column in summary_columns}
         std_row["fold_index"] = "STD campionaria"
 
         for name in METRIC_NAMES:
@@ -568,7 +641,7 @@ class CrossValidationReport:
             std_row[name] = stats.get("std")
         
         # Inizializzazione delle righe di riepilogo (statistiche aggregate)
-        pooled_row = {column: None for column in columns}
+        pooled_row = {column: None for column in summary_columns}
         pooled_row["fold_index"] = "Aggregate"
         pooled_row["n_test"] = int(cov['evaluated_test_samples'])
 
@@ -585,14 +658,15 @@ class CrossValidationReport:
                 summary_df,
                 pd.DataFrame(
                     [mean_row, std_row, pooled_row],
-                    columns=columns,
+                    columns=summary_columns,
                 ).fillna(""),
             ],
             ignore_index=True,
         )
 
         # Stampa a terminale la tabella riepilogativa dei fold con le righe di riepilogo.
-        print("\nTabella riepilogativa dei fold: ")
-        print(summary_df.to_string(index=False, float_format=lambda value: f"{value:.4f}", justify="right"))
+        if not summary_df.empty:
+            print("\nTabella riepilogativa dei fold: ")
+            print_metrics_table(summary_df)
 
         # end

@@ -48,7 +48,7 @@ class TrafficDataset(Dataset):
 		if not isinstance(y_raw, np.ndarray):
 			raise TypeError("Il vettore di etichette deve essere un array NumPy.")
 
-		if X_raw.ndim != 2 or not np.issubdtype(X_raw.dtype, np.floating):
+		if X_raw.ndim < 2 or not np.issubdtype(X_raw.dtype, np.floating):
 			raise TypeError(
 				"Errore nel caricamento dell'array delle feature: \n"
 				"Atteso: array 2D di float. "

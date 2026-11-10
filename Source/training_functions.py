@@ -743,20 +743,6 @@ def test_model(
         )
 
     #   ####################################################################    #
-    #   Stampa delle metriche ottenute.
-
-    metric_text = []
-
-    for name, value in metrics.items():
-        if value is None:
-            metric_text.append(f"{name}: N/D")
-        else:
-            unit = "" if name == "test_loss" else "%"
-            metric_text.append(f"{name}: {value:.6f}{unit}")
-
-    print(" | ".join(metric_text))
-
-    #   ####################################################################    #
     #   Ritorno dei risultati.
 
     soft_output = [
