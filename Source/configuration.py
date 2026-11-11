@@ -19,6 +19,7 @@ from Source.utils import check_positive_int
 
 from pathlib import Path
 import json
+import torch
 
 #	####################################################################	#
 #	Funzioni di utilità
@@ -1078,7 +1079,10 @@ class LaunchConfig:
 	""" Whether to execute the training loop (True) or only run validation on a pre-saved model (False). """
 
 	requested_device: str
-	""" Name of the requested device for computation. Can be 'auto', 'cpu', 'cuda', or 'mps'. Default is 'auto'. """
+	""" Name of the requested device for classical computation. Can be 'auto', 'cpu', 'cuda[:index]', or 'mps'. Default is 'auto'. """
+
+	requested_dtype: str
+	""" Precision for classical computation. Can be 'float32' or 'float64'. MPS requires 'float32'. """
 
 	random_seed: int
 	""" Random seed for reproducibility. """
@@ -1094,6 +1098,7 @@ class LaunchConfig:
 			source_session_id= None,
 			exec_mode_train= True,
 			requested_device= "auto",
+			requested_dtype= "float32",
 			random_seed= int(time.time()),
 			flows_to_inspect= None,
 		)
@@ -1113,7 +1118,91 @@ class LaunchConfig:
 		)
 
 		# end
-	
+
+	def resolve_device(self) -> torch.device:
+		"""Calcola il dispositivo da utilizzare, risolvendo automaticamente in base alla configurazione della macchina corrente o validando un dispositivo esplicito.
+
+		Raises:
+			RuntimeError: Se il dispositivo richiesto non è disponibile.
+			NotImplementedError: Se il tipo di dispositivo richiesto non è supportato.
+
+		Returns:
+			torch.device: Il dispositivo da utilizzare per il calcolo.
+		"""
+
+		#	################################################################	#
+		#	CASO SPECIALE: risoluzione automatica del dispositivo.
+		#	Seleziona automaticamente il dispositivo disponibile più appropriato secondo l'ordine di preferenza: MPS, CUDA, CPU.
+
+		if self.requested_device == "auto":
+			if torch.backends.mps.is_available():
+				return torch.device("mps")
+			if torch.cuda.is_available():
+				return torch.device("cuda", torch.cuda.current_device())
+			
+			return torch.device("cpu")
+
+			# end if
+		
+		#	################################################################	#
+		#	Validazione del dispositivo richiesto.
+
+		device = torch.device(self.requested_device)
+
+		if device.type == "mps":
+			if not torch.backends.mps.is_available():
+				raise RuntimeError("Dispositivo MPS non è disponibile sulla macchina corrente.")
+
+		elif device.type == "cuda":
+			if not torch.cuda.is_available():
+				raise RuntimeError("CUDA non è disponibile sulla macchina corrente.")
+
+			index = \
+				device.index \
+				if device.index is not None \
+				else torch.cuda.current_device()
+
+			count = torch.cuda.device_count()
+			if not 0 <= index < count:
+				raise RuntimeError(
+					f"Dispositivo CUDA {index} non disponibile: "
+					f"la macchina espone {count} GPU CUDA."
+				)
+
+			device = torch.device("cuda", index)
+
+		elif device.type != "cpu":
+			raise NotImplementedError(
+				f"Dispositivo {self.requested_device} non supportato. \n"
+				f"Dispositivi validi: ['auto', 'cpu', 'cuda[:index]', 'mps']."
+			)
+
+		return device
+
+		# end
+
+	def resolve_dtype(self) -> torch.dtype:
+		"""Risoluzione del tipo di dato richiesto.
+
+		Raises:
+			NotImplementedError: Se il tipo di dato richiesto non è supportato.
+
+		Returns:
+			torch.dtype: Il tipo di dato da utilizzare per il calcolo.
+		"""
+
+		if self.requested_dtype == "float32":
+			return torch.float32
+		elif self.requested_dtype == "float64":
+			return torch.float64
+		else:
+			raise NotImplementedError(
+				f"Tipo di dato '{self.requested_dtype}' non supportato. \n"
+				f"Opzioni disponibili: ['float32', 'float64']."
+			)
+
+		# end
+
 	def __post_init__(self) -> None:
 		if self.source_session_id is not None:
 			if not isinstance(self.source_session_id, str) or not self.source_session_id.strip():
@@ -1122,12 +1211,8 @@ class LaunchConfig:
 		if not self.exec_mode_train and self.source_session_id is None:
 			raise ValueError("La modalità di sola valutazione richiede una sessione sorgente specificata tramite 'source_session_id'.")
 
-		if "cuda" not in self.requested_device:
-			if self.requested_device not in ("auto", "cpu", "mps"):
-				raise ValueError(
-					f"Dispositivo {self.requested_device} non valido.\n"
-					f"Dispositivi validi: ['auto', 'cpu', 'cuda', 'mps']."
-				)
+		if self.requested_device == "mps" and self.requested_dtype != "float32":
+			raise ValueError("Il dispositivo MPS supporta solo il tipo di dato float32.")
 
 		if self.random_seed < 0:
 			raise ValueError("Il 'random_seed' non può essere negativo.")
@@ -1135,7 +1220,7 @@ class LaunchConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nLaunchConfig(\n\tsource_session_id={self.source_session_id}, \n\texec_mode_train={self.exec_mode_train}, \n\trequested_device={self.requested_device}, \n\trandom_seed={self.random_seed}, \n\tflows_to_inspect={self.flows_to_inspect}\n)"
+		return f"\nLaunchConfig(\n\tsource_session_id={self.source_session_id}, \n\texec_mode_train={self.exec_mode_train}, \n\trequested_device={self.requested_device}, \n\trequested_dtype={self.requested_dtype}, \n\trandom_seed={self.random_seed}, \n\tflows_to_inspect={self.flows_to_inspect}\n)"
 
 		# end
 
@@ -1516,18 +1601,26 @@ class ExecutionConfig:
 	session_id: str
 	""" Unique identifier for the session. """
 
-	current_device: str
-	""" Name of the device used for computation. """
+	classical_device: str
+	""" Name of the device used for classical computation. """
 
-	dtype: str
-	""" Data type used for computation. """
-	
+	classical_dtype: str
+	""" Data type used for classical computation. """
+
+	quantum_device: str
+	""" Name of the device used for quantum computation. """
+
+	quantum_dtype: str
+	""" Data type used for quantum computation. """
+
 	@classmethod
 	def from_args(cls, session_id, device, dtype) -> "ExecutionConfig":
 		return cls(
-			session_id=session_id,
-			current_device=device,
-			dtype=dtype,
+			session_id= str(session_id),
+			classical_device= str(device),
+			classical_dtype= str(dtype),
+			quantum_device= "cpu",
+			quantum_dtype= "torch.float64",
 		)
 
 		# end
@@ -1537,10 +1630,7 @@ class ExecutionConfig:
 
 		def _from_dict(execution_dict) -> "ExecutionConfig":
 
-			if not isinstance(execution_dict, dict):
-				raise ValueError("La configurazione deve essere rappresentata da un oggetto JSON.")
-
-			required_keys = {"session_id", "current_device", "dtype"}
+			required_keys = {"session_id", "classical_device", "classical_dtype"}
 
 			missing_keys = required_keys - execution_dict.keys()
 			if missing_keys:
@@ -1551,8 +1641,8 @@ class ExecutionConfig:
 
 			try:
 				session_id = execution_dict["session_id"]
-				device = execution_dict["current_device"]
-				dtype = execution_dict["dtype"]
+				device = execution_dict["classical_device"]
+				dtype = execution_dict["classical_dtype"]
 
 			except KeyError as e:
 				raise ValueError(f"Chiave mancante nel file di configurazione: {e}") from e
@@ -1561,8 +1651,10 @@ class ExecutionConfig:
 
 			return cls(
 				session_id=session_id,
-				current_device=device,
-				dtype=dtype,
+				classical_device=device,
+				classical_dtype=dtype,
+				quantum_device="cpu",
+				quantum_dtype="torch.float64",
 			)
 
 			# end
@@ -1573,8 +1665,11 @@ class ExecutionConfig:
 			raise FileNotFoundError(f"File di configurazione non trovato: {execution_path}")
 
 		try:
-			with open(execution_path, "r", encoding="utf-8") as f:
-				execution_dict = json.load(f)["execution"]
+			with execution_path.open("r", encoding="utf-8") as stream:
+				root = json.load(stream)
+				if not isinstance(root, dict) or not isinstance(root.get("execution"), dict):
+					raise ValueError("La configurazione deve contenere un oggetto 'execution'.")
+				execution_dict = root["execution"]
 		except json.JSONDecodeError as error:
 			raise ValueError(
 				f"JSON non valido in '{execution_path}': "
@@ -1590,17 +1685,24 @@ class ExecutionConfig:
 		# end
 
 	def __post_init__(self) -> None:
-		if self.session_id is None or (self.session_id.strip() == ""):
-			raise ValueError("Identificatore della sessione mancante.")
-		if self.current_device is None or (self.current_device.strip() == ""):
-			raise ValueError("Dispositivo mancante.")
-		if self.dtype is None or (self.dtype.strip() == ""):
-			raise ValueError("Tipo di dato mancante.")
+		for name in ("session_id", "classical_device", "classical_dtype"):
+			value = getattr(self, name)
+			if not isinstance(value, str) or not value.strip():
+				raise ValueError(f"Valore mancante o non valido: {name}.")
+
+		if self.classical_dtype not in ("torch.float32", "torch.float64"):
+			raise ValueError(
+				f"Tipo di precisione '{self.classical_dtype}' non valido. \n"
+				f"Opzioni disponibili: ['torch.float32', 'torch.float64']."
+			)
+
+		if self.classical_device.split(":")[0] == "mps" and self.classical_dtype != "torch.float32":
+			raise ValueError("Il dispositivo MPS supporta solo il tipo di dato torch.float32.")
 
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nExecutionConfig(\n\tsession_id={self.session_id}, \n\tcurrent_device={self.current_device}, \n\tdtype={self.dtype}\n)"
+		return f"\nExecutionConfig(\n\tsession_id={self.session_id}, \n\tclassical_device={self.classical_device}, \n\tclassical_dtype={self.classical_dtype}, \n\tquantum_device={self.quantum_device}, \n\tquantum_dtype={self.quantum_dtype}\n)"
 
 		# end
 

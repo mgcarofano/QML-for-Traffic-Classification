@@ -516,16 +516,29 @@ class _CNNLSTMFeatureExtractor(nn.Module):
 		if self.encoder_type == "cnnlstm":
 			out = self.spatial_pool(out)
 			out = out.permute(0, 2, 1, 3).flatten(start_dim=2)
-			out, _ = self.lstm(out)
 
 			# Se è disponibile il vettore delle lunghezze, taglia l'output alla lunghezza effettiva di ciascuna sequenza.
 			# Migliora l'efficienza evitando di considerare i pacchetti di padding per la classificazione finale.
+			# if lengths is not None:
+			# 	packed = nn.utils.rnn.pack_padded_sequence(
+			# 		out, lengths.to(device="cpu", dtype=torch.long),
+			# 		batch_first=True,
+			# 		enforce_sorted=False
+			# 	)
+
+			# 	# L'elaborazione con LSTM restituisce l'ultimo hidden state per ciascuna sequenza.
+			# 	# Contiene per ogni sequenza, lo stato nascosto dopo l'ultimo timestep valido, senza elaborare i timestep di padding.
+			# 	_, (h_n, _) = self.lstm(packed)
+			# 	out = h_n[-1]
 			if lengths is not None:
+				out, _ = self.lstm(out)
 				batch_indices = torch.arange(out.size(0), device=out.device)
 				out = out[batch_indices, lengths - 1]
 
 			else:
 				# Per FlowPic (lengths=None), aggrega l'intera sequenza.
+				out, _ = self.lstm(out)
+
 				# Combina il picco massimo di attivazione nel tempo con la media globale.
 				out = 0.5 * (out.mean(dim=1) + out.amax(dim=1))
 
@@ -804,22 +817,43 @@ class QuantumBlock(nn.Module):
 	def forward(self, x):
 		if x.ndim != 2 or x.shape[-1] != self.input_dim:
 			raise ValueError(
-				"Errore in QuantumBlock:\n"
-				f"Atteso: (B,{self.input_dim})\n"
+				"Errore in QuantumBlock: \n"
+				f"Atteso: (B,{self.input_dim}) "
 				f"Ricevuto: {tuple(x.shape)}."
 			)
+
+		output_device, output_dtype = x.device, x.dtype
+
+		parameter = next(self.torch_layer.parameters())
+		logit_scale_configuration = (self.logit_scale.device, self.logit_scale.dtype)
+		quantum_layer_configuration = (parameter.device, parameter.dtype)
+
+		if logit_scale_configuration != quantum_layer_configuration:
+			raise RuntimeError(
+				"Errore in QuantumBlock: \n"
+				"Fattore di scala (logit_scale) e circuito quantistico (TorchLayer) non sono compatibili. \n"
+				f"Logit scale: {logit_scale_configuration}, Quantum layer: {quantum_layer_configuration}"
+			)
+
+		# Sposta l'input sullo stesso device e dtype del circuito quantistico.
+		x = x.to(device=parameter.device)
+		x = x.to(dtype=parameter.dtype)
 
 		# Con AmplitudeEmbedding, utilizzare la Sigmoid potrebbe causare underflow o divisioni per zero.
 		# Per ovviare a questo problema, si applica una soglia inferiore pari all'epsilon macchina del dtype (the difference between 1.0 and the next smallest representable float larger than 1.0).
 		if self.embedding == "amplitude":
-			min_positive_val = torch.finfo(x.dtype).eps
+			min_positive_val = torch.finfo(output_dtype).eps
 			x = x.clamp_min(min_positive_val)
 
 		# Dato che le probabilità di uscita dal blocco quantistico sommano a 1 (media 1 / 2^n_qubits), senza riscalamento il classificatore lineare successivo riceve ingressi molto piccoli e i logit iniziali restano quasi uguali tra le classi.
 		# Per ovviare a questo problema, moltiplichiamo le probabilità di uscita per un fattore di scala apprendibile (logit_scale), cioè che può poi essere adattato dall'ottimizzatore.
 		out = self.torch_layer(x)
-		out = out.to(dtype=x.dtype, device=x.device)
+		out = out.to(device=parameter.device, dtype=parameter.dtype)
 		out = out * self.logit_scale
+
+		# Questa conversione finale garantisce che l'output abbia lo stesso device e dtype dell'input originale.
+		out = out.to(dtype=output_dtype)
+		out = out.to(device=output_device)
 
 		return out
 

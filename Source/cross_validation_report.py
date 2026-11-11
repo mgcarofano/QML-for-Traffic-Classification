@@ -31,7 +31,7 @@ from Source.utils import \
     atomic_write, \
     check_positive_int
 
-METRIC_NAMES = ("test_loss", "test_accuracy", "test_macro_f1", "test_weighted_f1")
+METRIC_NAMES = ("test_loss", "test_accuracy", "test_macrof1", "test_weightedf1")
 
 #   ####################################################################    #
 #   Funzioni di utilità
@@ -665,7 +665,7 @@ class CrossValidationReport:
         )
 
         # Stampa a terminale la tabella riepilogativa dei fold con le righe di riepilogo.
-        if not summary_df.empty:
+        if report_status != "empty" and not summary_df.empty:
             print("\nTabella riepilogativa dei fold: ")
             print_metrics_table(summary_df)
 

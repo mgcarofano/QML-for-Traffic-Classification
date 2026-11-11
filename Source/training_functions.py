@@ -107,6 +107,17 @@ class TestResult:
     # end class
 
 #   ####################################################################    #
+#   Funzioni di utilità
+
+def synchronize_device(device):
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elif device.type == "mps":
+        torch.mps.synchronize()
+
+    # end
+
+#   ####################################################################    #
 #   Funzioni di addestramento e valutazione
 
 def train_epoch(
@@ -156,10 +167,13 @@ def train_epoch(
         inputs, labels, *extra = batch
         lengths = extra[0] if extra else None
 
-        # Sposta inputs e labels sul device di calcolo solo se necessario:
-        # - Se il device è la CPU : il trasferimento è superfluo e viene evitato.
+        # Allinea l'input al classificatore con loader esterni.
+        # - Se il device è la CPU : il trasferimento viene evitato se device e dtype coincidono.
         # - Su GPU/MPS, si abilita un trasferimento asincrono, realmente efficace solo se il batch proviene da un DataLoader con pin_memory=True.
-        inputs = inputs.to(device, non_blocking=True) if device.type != 'cpu' else inputs
+        inputs = inputs.to(
+            device=device, dtype=model.classifier.weight.dtype,
+            non_blocking=(device.type == "cuda"),
+        )
 
         # Non convertire invece le etichette nello stesso dtype degli output, poiché la funzione di loss CrossEntropyLoss richiede etichette di tipo long.
         labels = labels.to(device, dtype=torch.long, non_blocking=(device.type != "cpu"))
@@ -242,7 +256,8 @@ def evaluate(
         model, device, loader,
         criterion = None,
         stop = None,
-    ) -> tuple[float | None, float, torch.Tensor, torch.Tensor, torch.Tensor]:
+        collect_probabilities: bool = True
+    ) -> tuple[float | None, float, torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Valuta il modello su un DataLoader.
 
     La funzione è pensata per essere utilizzabile sia in fase di training (dove la loss serve per il monitoraggio delle epoche) sia in fase di testing su un modello già addestrato e caricato da checkpoint. In questo secondo caso, calcolare l'accuracy non richiede la loss function: le due metriche sono logicamente indipendenti.
@@ -253,9 +268,11 @@ def evaluate(
         loader: Il DataLoader per il set di dati di valutazione.
         criterion (opzionale): La loss function da usare per calcolare la loss media. Default è None.
         stop (opzionale): Un oggetto per il controllo dell'interruzione anticipata. Default è None.
+        collect_probabilities (opzionale): Se True, raccoglie i vettori di probabilità predette (softmax). Default è True.
 
     Returns:
-        tuple: Una tupla contenente la loss media (o None se non calcolabile), l'accuracy, tutte le predizioni e tutte le etichette e tutti i vettori delle probabilità predette (softmax).
+        tuple: Una tupla contenente la loss media (o None se non calcolabile), l'accuracy, e la MacroF1.
+        tuple: Una seconda tupla contenente tutte le predizioni, tutte le etichette e tutti i vettori delle probabilità predette (softmax). L'ultimo valore è None se collect_probabilities=False.
     """
     
     #   ################################################################    #
@@ -289,7 +306,10 @@ def evaluate(
             inputs, labels, *extra = batch
             lengths = extra[0] if extra else None
 
-            inputs = inputs.to(device, non_blocking=True) if device.type != 'cpu' else inputs
+            inputs = inputs.to(
+                device=device, dtype=model.classifier.weight.dtype,
+                non_blocking=(device.type == "cuda"),
+            )
             labels = labels.to(device, dtype=torch.long, non_blocking=(device.type != "cpu"))
 
             # Forward pass.
@@ -343,20 +363,21 @@ def evaluate(
             #   ########################################################    #
             #   Calcolo delle probabilità per ciascuna classe.
 
-            probabilities = torch.softmax(outputs, dim=1)
+            if collect_probabilities:
+                probabilities = torch.softmax(outputs, dim=1)
 
-            if not torch.allclose(
-                probabilities.sum(dim=1),
-                torch.ones(
-                    probabilities.shape[0],
-                    device=probabilities.device,
-                    dtype=probabilities.dtype
-                ),
-                atol=1e-5,
-            ):
-                raise ValueError("Le probabilità non sommano a 1.")
-            
-            all_probs.append(probabilities.cpu())
+                if not torch.allclose(
+                    probabilities.sum(dim=1),
+                    torch.ones(
+                        probabilities.shape[0],
+                        device=probabilities.device,
+                        dtype=probabilities.dtype
+                    ),
+                    atol=1e-5,
+                ):
+                    raise ValueError("Le probabilità non sommano a 1.")
+
+                all_probs.append(probabilities.cpu())
 
         # end for batch
 
@@ -365,6 +386,18 @@ def evaluate(
 
     if stop is not None:
         stop.check()
+
+    if (
+        len(all_preds) != len(all_labels)
+        or (collect_probabilities and len(all_preds) != len(all_probs))
+    ):
+        raise ValueError(
+            "Errore nel calcolo del soft-output: \n"
+            "Disallineamento tra "
+            f"predizioni ({len(all_preds)}), "
+            f"etichette ({len(all_labels)}), e "
+            f"probabilità ({len(all_probs)})."
+        )
 
     # Se non è stato fornito un criterion, la loss media resta None
     # invece di essere forzata a 0.0, per non far pensare che il
@@ -398,22 +431,24 @@ def evaluate(
             "valore non finito."
         )
 
-    if not (len(all_preds) == len(all_labels) == len(all_probs)):
-        raise ValueError(
-            "Errore nel calcolo del soft-output: \n"
-            "Disallineamento tra "
-            f"predizioni ({len(all_preds)}), "
-            f"etichette ({len(all_labels)}), e "
-            f"probabilità ({len(all_probs)})."
-        )
+    preds = torch.cat(all_preds)
+    labels = torch.cat(all_labels)
+    valid_mask = \
+        (labels != criterion.ignore_index) \
+        if criterion is not None \
+        else torch.ones_like(labels, dtype=torch.bool)
 
-    return (
-        avg_loss,
-        total_accuracy,
-        torch.cat(all_preds),
-        torch.cat(all_labels),
-        torch.cat(all_probs)
-    )
+    macro_f1 = f1_score(
+        labels[valid_mask].numpy(),
+        preds[valid_mask].numpy(),
+        labels= np.arange(model.num_classes),
+        average= "macro",
+        zero_division= 0,
+    ) * 100
+
+    return \
+        (avg_loss, total_accuracy, macro_f1), \
+        (preds, labels, torch.cat(all_probs) if collect_probabilities else None)
 
     # end
 
@@ -448,12 +483,12 @@ def compute_test_metrics(y_true, y_preds, num_classes: int) -> dict[str, float]:
     labels = np.arange(num_classes)
     metrics = {
         "test_accuracy": float(100.0 * accuracy_score(y_true, y_preds)),
-        "test_macro_f1": float(100.0 * f1_score(
+        "test_macrof1": float(100.0 * f1_score(
             y_true, y_preds, labels=labels,
             average="macro",
             zero_division=0
         )),
-        "test_weighted_f1": float(100.0 * f1_score(
+        "test_weightedf1": float(100.0 * f1_score(
             y_true, y_preds, labels=labels,
             average="weighted",
             zero_division=0
@@ -521,8 +556,10 @@ def train_model(
     with FoldInterrupt() as stop:
         for epoch in range(1, sc.training.epochs +1):
 
+            synchronize_device(device)
+
             # Salva il timestamp di inizio epoca per calcolare la durata dell'epoca corrente.
-            epoch_start_time = time.time()
+            epoch_start_time = time.perf_counter()
 
             try:
 
@@ -540,21 +577,17 @@ def train_model(
                     stop=stop,
                 )
 
-                val_loss, val_acc, val_preds, val_true, _ = evaluate(
+                synchronize_device(device)
+                val_metrics, _ = evaluate(
                     model, device,
                     val_loader,
                     criterion,
                     stop=stop,
+                    collect_probabilities=False,
                 )
 
-                valid_val = val_true != criterion.ignore_index
-                val_macrof1 = f1_score(
-                    val_true[valid_val].numpy(),
-                    val_preds[valid_val].numpy(),
-                    labels= np.arange(model.num_classes),
-                    average= "macro",
-                    zero_division= 0,
-                ) * 100
+                val_loss, val_acc, val_macrof1 = val_metrics
+                synchronize_device(device)
 
                 metrics = {
                     "train_loss": float(train_loss),
@@ -602,6 +635,7 @@ def train_model(
 
                 # Salvataggio del modello corrente.
                 atomic_write(fold_model_path, lambda stream: torch.save(model.state_dict(), stream))
+                synchronize_device(device)
 
                 # Aggiornamento del miglior punteggio e reset del contatore di patience.
                 best_score = current_score
@@ -622,8 +656,10 @@ def train_model(
             #	########################################################	#
             #   Finalizzazione dell'epoca.
 
+            synchronize_device(device)
+
             # Calcola la durata dell'epoca corrente e il tempo totale trascorso dall'inizio dell'addestramento.
-            epoch_end_time = time.time()
+            epoch_end_time = time.perf_counter()
             epoch_duration = epoch_end_time - epoch_start_time
             elapsed_time += epoch_duration
 
@@ -678,7 +714,7 @@ def train_model(
         # Ricarica i pesi del modello in base al miglior punteggio di validazione sulla metrica monitorata.
         model.load_state_dict(torch.load(
             fold_model_path,
-            map_location=device,
+            map_location="cpu",
             weights_only=True,
         ))
 
@@ -721,11 +757,14 @@ def test_model(
     #   ####################################################################    #
     #   Valutazione del modello sul Test set e verifica dei risultati.
 
-    test_loss, test_acc, y_preds, y_true, y_probs = evaluate(
+    test_metrics, test_output = evaluate(
         model, device,
         test_loader,
         criterion
     )
+
+    test_loss, test_acc, test_macrof1 = test_metrics
+    y_preds, y_true, y_probs = test_output
 
     if len(metadata_test) != y_preds.numel():
         raise ValueError(
@@ -740,6 +779,12 @@ def test_model(
         raise ValueError(
             "Errore nel calcolo del soft-output: \n"
             "Il valore di accuracy non è coerente con le predizioni."
+        )
+
+    if not np.isclose(test_macrof1, metrics["test_macrof1"], rtol=0, atol=1e-9):
+        raise ValueError(
+            "Errore nel calcolo del soft-output: \n"
+            "Il valore di macro F1 non è coerente con le predizioni."
         )
 
     #   ####################################################################    #

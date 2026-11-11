@@ -74,6 +74,7 @@ import random
 import re
 import time
 import traceback
+import warnings
 from Source.utils import \
 	parse_seconds, \
 	check_positive_int, \
@@ -191,68 +192,7 @@ def allocate_session(start_time: int, results_dir="Results") -> tuple[str, Path]
 
 	# end
 
-def resolve_device(requested: str = "auto") -> torch.device:
-	"""Calcola il dispositivo da utilizzare, risolvendo automaticamente in base alla configurazione della macchina corrente o validando un dispositivo esplicito.
-
-	Args:
-		requested (str): Nome del dispositivo richiesto. Se impostato su "auto", la funzione selezionerà automaticamente il dispositivo disponibile più appropriato sulla macchina corrente secondo l'ordine di preferenza: MPS, CUDA, CPU.
-
-	Raises:
-		RuntimeError: Se il dispositivo richiesto non è disponibile.
-		NotImplementedError: Se il tipo di dispositivo richiesto non è supportato.
-
-	Returns:
-		torch.device: Il dispositivo da utilizzare per il calcolo.
-	"""
-
-	#	################################################################	#
-	#	CASO SPECIALE: risoluzione automatica del dispositivo.
-
-	if requested == "auto":
-		if torch.backends.mps.is_available():
-			return torch.device("mps")
-		if torch.cuda.is_available():
-			return torch.device("cuda", torch.cuda.current_device())
-		
-		return torch.device("cpu")
-
-		# end if
-	
-	#	################################################################	#
-	#	Validazione del dispositivo richiesto.
-
-	device = torch.device(requested)
-
-	if device.type == "mps":
-		if not torch.backends.mps.is_available():
-			raise RuntimeError("Dispositivo MPS non è disponibile sulla macchina corrente.")
-
-	elif device.type == "cuda":
-		if not torch.cuda.is_available():
-			raise RuntimeError("CUDA non è disponibile sulla macchina corrente.")
-
-		index = \
-			device.index \
-			if device.index is not None \
-			else torch.cuda.current_device()
-
-		count = torch.cuda.device_count()
-		if not 0 <= index < count:
-			raise RuntimeError(f"Dispositivo CUDA {index} non disponibile: la macchina espone {count} GPU CUDA.")
-
-		device = torch.device("cuda", index)
-
-	elif device.type != "cpu":
-		raise NotImplementedError(
-			f"Dispositivo non supportato: {device.type!r}."
-			f"Dispositivi supportati: ['cpu', 'cuda', 'mps']."
-		)
-
-	return device
-
-	# end
-
-def resolve_checkpoint_session(execution_config: ExecutionConfig) -> Path | None:
+def resolve_checkpoint_session(execution_config: ExecutionConfig) -> tuple[Path, list]:
 	"""Verifica la disponibilità dei checkpoint della sessione di training
 	e confronta l'ambiente di esecuzione corrente con quello salvato nella configurazione.
 
@@ -261,7 +201,7 @@ def resolve_checkpoint_session(execution_config: ExecutionConfig) -> Path | None
 
 	Raises:
 		FileNotFoundError: Se uno o più checkpoint della sessione di training sono mancanti.
-		RuntimeError: Se l'ambiente di esecuzione corrente non è compatibile con quello salvato nella configurazione.
+		UserWarning: Se l'ambiente di esecuzione corrente non è compatibile con quello salvato nella configurazione.
 
 	Returns:
 		Path: Percorso della directory contenente i checkpoint della sessione di training, o None se non applicabile.
@@ -312,18 +252,26 @@ def resolve_checkpoint_session(execution_config: ExecutionConfig) -> Path | None
 	#	Verifica la compatibilità dell'ambiente di esecuzione.
 
 	checkpoint_execution = ExecutionConfig.from_json(checkpoint_dir / "config.json")
-	source_environment = (checkpoint_execution.current_device, str(checkpoint_execution.dtype))
-	current_environment = (execution_config.current_device, str(execution_config.dtype))
+	source_environment = (
+		checkpoint_execution.classical_device, checkpoint_execution.classical_dtype,
+		checkpoint_execution.quantum_device, checkpoint_execution.quantum_dtype,
+	)
+	current_environment = (
+		execution_config.classical_device, execution_config.classical_dtype,
+		execution_config.quantum_device, execution_config.quantum_dtype,
+	)
 
 	if source_environment != current_environment:
-		raise RuntimeError(
+		warnings.warn(
 			"La configurazione attuale della macchina non è compatibile con quella salvata nel file di configurazione: \n"
-			f"Atteso: {source_environment} \n"
-			f"Ricevuto: {current_environment}"
+			f"Sorgente: {source_environment}. Corrente: {current_environment} \n"
+			"Si procederà con il caricamento dei pesi su CPU e la copia nei moduli già collocati. \n"
+			"Non è garantita l'equivalenza numerica bit-a-bit.",
+			UserWarning, stacklevel=2,
 		)
 
 	# Restituisce la directory dei checkpoint se i controlli precedenti sono stati superati.
-	return checkpoint_dir, skipped_folds
+	return checkpoint_dir, list(skipped_folds)
 
 	# end
 
@@ -824,11 +772,12 @@ def apply_data_preprocessing(X, scaler, lengths):
 #	####################################################################	#
 #	Configurazione dei componenti di addestramento.
 
-def init_model(device, fold_index: int, num_classes: int) -> _BaseModel:
-	"""Inizializza e restituisce il modello selezionato.
+def init_model(device, dtype, fold_index: int, num_classes: int) -> _BaseModel:
+	"""Inizializza e restituisce il modello selezionato. Il blocco classico utilizza il dispositivo e la precisione specificati, mentre il blocco quantum utilizza CPU/float64.
 
 	Args:
-		device: Dispositivo su cui eseguire il modello (CPU, GPU o MPS).
+		device: Dispositivo della parte classica (CPU, GPU o MPS).
+		dtype: Precisione numerica per la parte classica.
 		fold_index (int): Indice del fold corrente per la cross-validation.
 		num_classes (int): Numero di classi per la classificazione.
 
@@ -862,14 +811,18 @@ def init_model(device, fold_index: int, num_classes: int) -> _BaseModel:
 		session_config, runtime_config
 	)
 
-	# Scelta del tipo di dato appropriato in base al dispositivo.
-	model = model.float() if device.type == "mps" else model.double()
+	# Inizializzazione classica su CPU nella precisione richiesta.
+	model = model.to(device="cpu", dtype=dtype)
 
-	# Inizializzazione dei pesi del modello su CPU.
+	# Inizializzazione dei pesi del modello.
 	model.apply(weight_init)
 
-	# Trasferimento del modello sul dispositivo selezionato.
-	model = model.to(device)
+	# Trasferimento dei blocchi del modello sul dispositivo selezionato.
+	for name, block in model.named_children():
+		if model.is_quantum and name == "processing_block":
+			block.to(device="cpu", dtype=torch.float64)
+		else:
+			block.to(device=device, dtype=dtype)
 
 	return model
 
@@ -1202,24 +1155,29 @@ def main(terminal_log: TerminalLog):
 	report_dir = output_dir / "cv_report"
 
 	# Dispositivo utilizzato per il calcolo.
-	device = resolve_device(runtime_config.launch.requested_device)
-	print(f"Dispositivo selezionato: {device.type}")
+	device = runtime_config.launch.resolve_device()
+	print(f"Dispositivo selezionato: {str(device)}")
 	if device.type == "cuda":
-		print(f"GPU: {torch.cuda.get_device_name(0)}")
+		print(f"GPU: {torch.cuda.get_device_name(device)}")
 
 	# Tipo di dato utilizzato per il calcolo.
-	dtype = torch.float32 if device.type == "mps" else torch.float64
-	print(f"Tipo di dato selezionato: {dtype}")
+	dtype = runtime_config.launch.resolve_dtype()
+	print(f"Tipo di dato selezionato: {str(dtype)}")
 
 	#	-----------------------------------------------------------------	#
 	#	Verifica e salvataggio dei parametri nel file di configurazione.
 
-	execution_config = ExecutionConfig.from_args(session_id, device.type, str(dtype))
+	execution_config = ExecutionConfig.from_args(session_id, str(device), str(dtype))
+	runtime_config.debug_print(
+		"Piano di esecuzione: \n"
+		f"{execution_config}"
+	)
+
 	if not runtime_config.launch.exec_mode_train and runtime_config.use_config_file():
 		checkpoint_dir, skipped_folds = resolve_checkpoint_session(execution_config)
 	else:
 		checkpoint_dir = None
-		skipped_folds = set()
+		skipped_folds = []
 
 	atomic_dump_json(
 		config_path,
@@ -1595,7 +1553,7 @@ def main(terminal_log: TerminalLog):
 		#	------------------------------------------------------------	#
 		#	Inizializzazione del modello.
 
-		model = init_model(device, fold_index, num_classes)
+		model = init_model(device, dtype, fold_index, num_classes)
 
 		# Stampa e salvataggio delle informazioni sul modello.
 		if fold_index == 0:
@@ -1643,7 +1601,7 @@ def main(terminal_log: TerminalLog):
 			print("Il modello non verrà addestrato, ma solo valutato sul test set.")
 
 			# Si caricano i pesi salvati del modello dalla directory di output specificata.
-			weights = torch.load(fold_model_path, map_location=device, weights_only=True)
+			weights = torch.load(fold_model_path, map_location="cpu", weights_only=True)
 
 			# Verifica la compatibilità tra il modello corrente e i pesi salvati.
 			check_model_compatibility(model, weights)
@@ -1689,7 +1647,7 @@ def main(terminal_log: TerminalLog):
 
 			criterion = build_loss_function(
 				y_train, num_classes, device,
-				next(model.parameters()).dtype,
+				model.classifier.weight.dtype,
 			)
 			if criterion is None:
 				raise ValueError("La funzione di loss non è stata creata correttamente.")

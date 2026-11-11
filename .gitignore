@@ -10,3 +10,6 @@ _old
 *.pth
 /_old
 /Results
+Copy.sh
+Find.sh
+Run.sh
