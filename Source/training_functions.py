@@ -109,6 +109,104 @@ class TestResult:
 #   ####################################################################    #
 #   Funzioni di utilità
 
+def print_training_table(history: pd.DataFrame, last_n: int = 3, best_epoch: int | None = None) -> None:
+    """Stampa i risultati di addestramento e validazione delle ultime epoche completate. Se best_epoch è fornito, aggiunge o evidenzia l'epoca migliore.
+
+    Le durate sono espresse in secondi nello storico.
+    Accuracy e macro-F1 sono già espresse in percentuale.
+    La macro-F1 di training non viene calcolata ed è mostrata come "-".
+
+    Args:
+        history: Storico delle epoche completate.
+        last_n: Numero massimo di epoche da stampare. Default a 3.
+        best_epoch: Epoca migliore da evidenziare, se disponibile. Default a None. Se non rientra nelle ultime last_n, viene aggiunta come riga extra.
+    """
+
+    def format_time(value):
+        return "N/D" if pd.isna(value) else parse_seconds(float(value))
+
+    def format_metric(value, percentage=True):
+        if pd.isna(value):
+            return "N/D"
+        return f"{float(value):.4f}" + ("%" if percentage else "")
+
+    #   ################################################################    #
+    #   Validazione dei parametri di input.
+
+    if last_n < 1:
+        raise ValueError("last_n deve essere maggiore o uguale a 1.")
+
+    if history.empty:
+        return
+
+    #   ################################################################    #
+    #   Preparazione della tabella di output.
+
+    train_rows = []
+    val_rows = []
+    epoch_labels = []
+
+    selected = history.tail(last_n)
+    columns = ["epoch", "time", "loss", "accuracy", "macro_f1"]
+
+    if best_epoch is not None:
+        best_rows = history.loc[history["epoch"] == best_epoch]
+
+        # Se l’epoca non è presente nello storico, viene ignorata.
+        if not best_rows.empty and not selected["epoch"].eq(best_epoch).any():
+            selected = pd.concat([best_rows.tail(1), selected], ignore_index=True)
+
+        # end if
+    
+    for row in selected.to_dict(orient="records"):
+        current_epoch = int(row["epoch"])
+
+        train_rows.append({
+            "epoch": current_epoch,
+            "time": format_time(row.get("train_time")),
+            "loss": format_metric(row["train_loss"], percentage=False),
+            "accuracy": format_metric(row["train_accuracy"]),
+            "macro_f1": "-",
+        })
+
+        val_rows.append({
+            "epoch": current_epoch,
+            "time": format_time(row.get("val_time")),
+            "loss": format_metric(row["val_loss"], percentage=False),
+            "accuracy": format_metric(row["val_accuracy"]),
+            "macro_f1": format_metric(row["val_macrof1"]),
+        })
+
+        epoch_labels.append("Best" if current_epoch == best_epoch else "")
+
+        # end for
+
+    #   ################################################################    #
+    #   Composizione e stampa della tabella.
+
+    rows = [
+        # Riga vuota per etichetta 'Training'
+        dict.fromkeys(columns, ""),
+        *train_rows,
+
+        # Riga vuota per separare i gruppi.
+        dict.fromkeys(columns, ""),
+
+        # Riga vuota per etichetta 'Validation'
+        dict.fromkeys(columns, ""),
+        *val_rows,
+    ]
+
+    print("\n" + 
+        pd.DataFrame(
+            rows,
+            index= ["Training", *epoch_labels, "", "Validation", *epoch_labels],
+            columns= columns
+        ).to_string(justify="right")
+    )
+
+    # end
+
 def synchronize_device(device):
     if device.type == "cuda":
         torch.cuda.synchronize(device)
@@ -537,8 +635,8 @@ def train_model(
     # Questo dizionario terrà traccia delle metriche di addestramento e validazione per ogni epoca.
     train_history_df = pd.DataFrame(columns=[
         "epoch", "time",
-        "train_loss", "train_accuracy",
-        "val_loss", "val_accuracy", "val_macrof1",
+        "train_time", "train_loss", "train_accuracy",
+        "val_time", "val_loss", "val_accuracy", "val_macrof1",
     ])
 
     # Inizializza le variabili per il monitoraggio della metrica di valutazione selezionata.
@@ -570,6 +668,8 @@ def train_model(
                 #	####################################################	#
                 #   Calcola le metriche di addestramento per Train/Val.
 
+                # Addestramento.
+                train_start_time = time.perf_counter()
                 train_loss, train_acc = train_epoch(
                     model, device,
                     train_loader,
@@ -578,6 +678,10 @@ def train_model(
                 )
 
                 synchronize_device(device)
+                train_duration = time.perf_counter() - train_start_time
+
+                # Validazione.
+                val_start_time = time.perf_counter()
                 val_metrics, _ = evaluate(
                     model, device,
                     val_loader,
@@ -586,9 +690,11 @@ def train_model(
                     collect_probabilities=False,
                 )
 
-                val_loss, val_acc, val_macrof1 = val_metrics
                 synchronize_device(device)
+                val_duration = time.perf_counter() - val_start_time
 
+                # Raccolta delle metriche.
+                val_loss, val_acc, val_macrof1 = val_metrics
                 metrics = {
                     "train_loss": float(train_loss),
                     "train_accuracy": float(train_acc),
@@ -667,21 +773,14 @@ def train_model(
             train_history_df.loc[len(train_history_df)] = {
                 "epoch": epoch,
                 "time": epoch_duration,
+                "train_time": train_duration,
+                "val_time": val_duration,
                 **metrics
             }
 
-            # Stampa in console le metriche dell'epoca corrente.
-            print(
-                f"\nTrain Loss: {train_loss:.4f} "
-                f"| Train Accuracy: {train_acc:.4f}%\n"
-
-                f"Val Loss: {val_loss:.4f} "
-                f"| Val Accuracy: {val_acc:.4f}% "
-                f"| Val Macro F1: {(val_macrof1):.4f}%\n"
-
-                f"Epoch time: {parse_seconds(epoch_duration)} "
-                f"| Elapsed time: {parse_seconds(elapsed_time)}"
-            )
+            # Stampa in console le metriche delle ultime tre epoche completate.
+            print_training_table(train_history_df, best_epoch=best_epoch)
+            print(f"\nElapsed time: {parse_seconds(elapsed_time)}")
 
             # Controlla se è stato richiesta l'interruzione del training.
             if stop.requested:
