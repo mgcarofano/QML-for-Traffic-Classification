@@ -1018,10 +1018,10 @@ class ModelConfig:
 
 	def __repr__(self) -> str:
 		model_type = "quantum" if self.is_quantum else "classic"
-		model_params = repr(self.quantum) if self.is_quantum else ""
+		model_params = f"\n{self.quantum!r}" if self.is_quantum else ""
 
 		return \
-			f"[MODEL] {self.name} ({model_type}) \n" \
+			f"[MODEL] {self.name} ({model_type})" \
 			f"{model_params}"
 
 		# end
@@ -1064,8 +1064,11 @@ class FlagsConfig:
 		)
 
 	def __repr__(self) -> str:
-		return f"\nFlagsConfig(\n\tdebug={self.debug}, \n\tdebug_cycle={self.debug_cycle}, \n\tis_flowpic={self.is_flowpic}, \n\tsave_output={self.save_output}\n)"
-
+		return \
+			f"[FLAGS] " \
+			f"Print debug? {self.debug} | Print debug in traffic converter? {self.debug_cycle}\n" \
+			f"        Is FlowPic? {self.is_flowpic} | Save output? {self.save_output}"
+	
 		# end
 
 	# end class
@@ -1220,7 +1223,21 @@ class LaunchConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nLaunchConfig(\n\tsource_session_id={self.source_session_id}, \n\texec_mode_train={self.exec_mode_train}, \n\trequested_device={self.requested_device}, \n\trequested_dtype={self.requested_dtype}, \n\trandom_seed={self.random_seed}, \n\tflows_to_inspect={self.flows_to_inspect}\n)"
+
+		mode_str = "Training" if self.exec_mode_train else "Evaluation"
+		session_id_str = f" | Esperimento sorgente: {self.source_session_id}" if self.source_session_id is not None else ""
+		flows_str = f"\n[FLOWS TO INSPECT] {', '.join(map(str, self.flows_to_inspect))}" if self.flows_to_inspect is not None else ""
+
+		return \
+			"[LAUNCH] " \
+			f"{mode_str}" \
+			f"{session_id_str}" \
+			"\n[REQUESTED] " \
+			f"Device: {self.requested_device} | " \
+			f"Data type: {self.requested_dtype} | " \
+			f"Random seed: {self.random_seed} " \
+			f"{flows_str}"
+			
 
 		# end
 
@@ -1275,7 +1292,16 @@ class EnvironmentConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nEnvironmentConfig(\n\ttorch_version={self.torch_version}, \n\tnumpy_version={self.numpy_version}, \n\tpandas_version={self.pandas_version}, \n\tscipy_version={self.scipy_version}, \n\tsklearn_version={self.sklearn_version}, \n\tmatplotlib_version={self.matplotlib_version}, \n\tseaborn_version={self.seaborn_version}, \n\tpennylane_version={self.pennylane_version}\n)"
+		return \
+			f"[ENVIRONMENT] \n" \
+			f"\ttorch_version = {self.torch_version} \n" \
+			f"\tnumpy_version = {self.numpy_version} \n" \
+			f"\tpandas_version = {self.pandas_version} \n" \
+			f"\tscipy_version = {self.scipy_version} \n" \
+			f"\tsklearn_version = {self.sklearn_version} \n" \
+			f"\tmatplotlib_version = {self.matplotlib_version} \n" \
+			f"\tseaborn_version = {self.seaborn_version} \n" \
+			f"\tpennylane_version = {self.pennylane_version}"
 
 		# end
 
@@ -1562,6 +1588,13 @@ class RuntimeConfig:
 		return _from_dict(runtime_dict)
 
 		# end
+	
+	def __post_init__(self) -> None:
+		if self.launch.flows_to_inspect is not None:
+			object.__setattr__(self.flags, "debug", True)
+			object.__setattr__(self.flags, "debug_cycle", True)
+
+		# end
 
 	def use_config_file(self) -> bool:
 		return self.launch.source_session_id is not None
@@ -1587,10 +1620,14 @@ class RuntimeConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\n[RUNTIME INFORMATION]" \
-			f"\n{repr(self.flags)}, " \
-			f"\n{repr(self.launch)}, " \
-			f"\n{repr(self.environment)}"
+
+		env_str = f"\n{self.environment!r}" if self.flags.debug else ""
+
+		return \
+			f"[RUNTIME INFORMATION]\n" \
+			f"{self.flags!r}\n" \
+			f"{self.launch!r}" \
+			f"{env_str}"
 
 		# end
 
@@ -1615,9 +1652,14 @@ class ExecutionConfig:
 
 	@classmethod
 	def from_args(cls, session_id, device, dtype) -> "ExecutionConfig":
+
+		dev_str = str(device)
+		if device.type == "cuda":
+			dev_str += f" ({torch.cuda.get_device_name(device)})"
+
 		return cls(
 			session_id= str(session_id),
-			classical_device= str(device),
+			classical_device= dev_str,
 			classical_dtype= str(dtype),
 			quantum_device= "cpu",
 			quantum_dtype= "torch.float64",
@@ -1702,7 +1744,11 @@ class ExecutionConfig:
 		# end
 
 	def __repr__(self) -> str:
-		return f"\nExecutionConfig(\n\tsession_id={self.session_id}, \n\tclassical_device={self.classical_device}, \n\tclassical_dtype={self.classical_dtype}, \n\tquantum_device={self.quantum_device}, \n\tquantum_dtype={self.quantum_dtype}\n)"
+		return \
+			"[EXECUTION INFORMATION] \n" \
+			f"[ID] {self.session_id} \n" \
+			f"[CLASSIC BRANCH] {self.classical_device} | {self.classical_dtype} \n" \
+			f"[QUANTUM BRANCH] {self.quantum_device} | {self.quantum_dtype}"
 
 		# end
 

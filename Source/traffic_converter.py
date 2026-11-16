@@ -63,11 +63,8 @@ def mirage_pickle_converter(
 	#   ####################################################################    #
 	#   INIZIALIZZAZIONE
 
-	debug = rc.flags.debug or (rc.launch.flows_to_inspect is not None)
-	debug_cycle = rc.flags.debug_cycle or (rc.launch.flows_to_inspect is not None)
-
 	file_path = Path(f"{sc.dataset.path}/{sc.dataset.name}.pickle")
-	if debug:
+	if rc.flags.debug:
 		print(f"[DEBUG] Inizio conversione del file: {file_path}")
 
 	dataset = []
@@ -108,7 +105,7 @@ def mirage_pickle_converter(
 		# Durata minima in millisecondi che una finestra deve coprire per essere considerata valida.
 		min_duration = sc.traffic.filters.min_duration
 
-	if debug:
+	if rc.flags.debug:
 		print(f"[DEBUG] Parametri di filtro\n")
 		print(f"MIN_PACKETS: {min_packets}" if min_packets is not None else "")
 		print(f"MIN_DIM: {min_dim}" if min_dim is not None else "")
@@ -154,7 +151,7 @@ def mirage_pickle_converter(
 			leave = False,
 
 			# Nasconde la barra di avanzamento se il debug è attivo, per evitare output ridondanti.
-			disable = debug_cycle,
+			disable = rc.flags.debug_cycle,
 		)
 
 		#   ################################################################    #
@@ -165,7 +162,7 @@ def mirage_pickle_converter(
 			#   ############################################################    #
 			#   Stampa un messaggio di debug all'inizio per monitorare l'avanzamento.
 
-			if debug_cycle:
+			if rc.flags.debug_cycle:
 				print(f"[DEBUG] Elaborazione del flusso n.{i}")
 				print(f"[DEBUG] Etichetta: {label}")
 				print(f"[DEBUG] Numero di pacchetti nel flusso: {flow.shape[0]}\n")
@@ -178,7 +175,7 @@ def mirage_pickle_converter(
 			# Si salta il flusso se non contiene pacchetti reali.
 			if len(real_rows) == 0:
 				counter["no_real_packets"] += 1
-				if debug_cycle:
+				if rc.flags.debug_cycle:
 					print(f"[DEBUG] Flusso n.{i} scartato: nessun pacchetto reale trovato.")
 				continue
 
@@ -193,7 +190,7 @@ def mirage_pickle_converter(
 			# nell'ordine corrispondente ai timestamp.
 			sizes = real_rows[:, 1].astype(int)
 
-			if debug_cycle:
+			if rc.flags.debug_cycle:
 				print(f"[DEBUG] Timestamp e dimensioni pacchetti:")
 				print(pd.DataFrame({'Size': sizes, 'Timestamp': ts}), "\n")
 
@@ -208,7 +205,7 @@ def mirage_pickle_converter(
 				or np.any(np.diff(ts) < 0)
 			):
 				counter["invalid_duration"] += 1
-				if debug_cycle:
+				if rc.flags.debug_cycle:
 					print(f"[DEBUG] Flusso n.{i} scartato per durata non valida.")
 				continue
 
@@ -216,7 +213,7 @@ def mirage_pickle_converter(
 				filter_1 = sizes.shape[0]
 				if filter_1 < min_packets:
 					counter["insufficient_packets"] += 1
-					if debug_cycle:
+					if rc.flags.debug_cycle:
 						print(f"[DEBUG] Flusso n.{i} scartato per numero pacchetti insufficiente ({filter_1}).")
 					continue
 
@@ -224,7 +221,7 @@ def mirage_pickle_converter(
 				filter_2 = np.sum(sizes)
 				if filter_2 < min_dim:
 					counter["insufficient_dim"] += 1
-					if debug_cycle:
+					if rc.flags.debug_cycle:
 						print(f"[DEBUG] Flusso n.{i} scartato per dimensione insufficiente ({filter_2} byte).")
 					continue
 
@@ -232,7 +229,7 @@ def mirage_pickle_converter(
 				filter_3 = ts[-1] - ts[0]
 				if filter_3 < min_duration:
 					counter["insufficient_tps"] += 1
-					if debug_cycle:
+					if rc.flags.debug_cycle:
 						print(f"[DEBUG] Flusso n.{i} scartato per durata insufficiente ({filter_3:.4f} millisecondi).")
 					continue
 
@@ -244,20 +241,20 @@ def mirage_pickle_converter(
 				ts = np.pad(ts, (len(padding_rows), 0), mode='constant', constant_values=0.0)
 				sizes = np.pad(sizes, (len(padding_rows), 0), mode='constant', constant_values=0.0)
 
-				if debug_cycle:
+				if rc.flags.debug_cycle:
 					print(f"[DEBUG] Flusso n.{i} contiene {len(real_rows)} pacchetti reali e {len(padding_rows)} pacchetti di padding.")
 					print(f"[DEBUG] sizes.shape = {sizes.shape}, ts.shape = {ts.shape}")
 				
 				# end if
 
-			if debug_cycle:
+			if rc.flags.debug_cycle:
 				print(f"[DEBUG] Pacchetti reali del flusso n.{i}:")
 				print(pd.DataFrame(real_rows, columns=['DIR', 'PL', 'TCPWIN', 'IAT']), "\n")
 
 			hist = session_2d_histogram(
 				sizes, ts,
 				sc.traffic.mtu, sc.traffic.bin_size,
-				plot = debug_cycle,
+				plot = rc.flags.debug_cycle,
 				title = f"Flusso n.{i} ({label})"
 			)
 
@@ -296,7 +293,7 @@ def mirage_pickle_converter(
 	})
 
 	# Se il flag di debug è attivo, si stampano informazioni dettagliate sui flussi specificati.
-	if debug:
+	if rc.flags.debug:
 		print(f"\n[DEBUG] Conversione completata.")
 		print(debug_counter)
 		print(f"\n[DEBUG] Numero totale di flussi nel file: {len(x_raw)}")

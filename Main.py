@@ -1138,7 +1138,10 @@ def main(terminal_log: TerminalLog):
 
 	# Identificatore della sessione corrente e directory di output corrispondente.
 	session_id, output_dir = allocate_session(total_start_time)
-	print(f"Identificatore della sessione selezionato: {session_id}")
+	device = runtime_config.launch.resolve_device()
+	dtype = runtime_config.launch.resolve_dtype()
+
+	execution_config = ExecutionConfig.from_args(session_id, device, dtype)
 
 	# Percorso per il log del terminale.
 	terminal_log_path = output_dir / "terminal.log"
@@ -1154,24 +1157,15 @@ def main(terminal_log: TerminalLog):
 	# Percorso per il report della cross-validation.
 	report_dir = output_dir / "cv_report"
 
-	# Dispositivo utilizzato per il calcolo.
-	device = runtime_config.launch.resolve_device()
-	print(f"Dispositivo selezionato: {str(device)}")
-	if device.type == "cuda":
-		print(f"GPU: {torch.cuda.get_device_name(device)}")
-
-	# Tipo di dato utilizzato per il calcolo.
-	dtype = runtime_config.launch.resolve_dtype()
-	print(f"Tipo di dato selezionato: {str(dtype)}")
+	# Stampa le configurazioni correnti.
+	print(
+		f"\n{session_config!r}" + "\n\n"
+		f"{runtime_config!r}" + "\n\n"
+		f"{execution_config!r}"
+	)
 
 	#	-----------------------------------------------------------------	#
 	#	Verifica e salvataggio dei parametri nel file di configurazione.
-
-	execution_config = ExecutionConfig.from_args(session_id, str(device), str(dtype))
-	runtime_config.debug_print(
-		"Piano di esecuzione: \n"
-		f"{execution_config}"
-	)
 
 	if not runtime_config.launch.exec_mode_train and runtime_config.use_config_file():
 		checkpoint_dir, skipped_folds = resolve_checkpoint_session(execution_config)
@@ -1194,10 +1188,10 @@ def main(terminal_log: TerminalLog):
 	print(f"Percorso del file di configurazione per la sessione corrente: {config_path}")
 
 	if runtime_config.flags.save_output:
-		print(f"Directory del report finale della cross-validation: {report_dir}")
+		print(f"\nDirectory del report finale della cross-validation: {report_dir}")
 
 	if checkpoint_dir is not None:
-		print(f"Directory dei checkpoint della sessione di origine: {checkpoint_dir}")
+		print(f"\nDirectory dei checkpoint della sessione di origine: {checkpoint_dir}")
 
 	#	-----------------------------------------------------------------	#
 	#	Caricamento o generazione (opzionale) del dataset.
@@ -1655,10 +1649,6 @@ def main(terminal_log: TerminalLog):
 			#	--------------------------------------------------------	#
 			#	Esecuzione del loop di addestramento.
 
-			# Stampa la configurazione della sessione solo per il primo fold.
-			if fold_index == 0:
-				print(f"\n{repr(session_config)}")
-
 			print(f"\n#  {'+'*10}  #")
 
 			training_start_time = time.time()
@@ -1766,16 +1756,6 @@ def main(terminal_log: TerminalLog):
 					f"Il punteggio nello storico ({history_score:.2f}) "
 					f"non corrisponde al miglior punteggio ({best_score:.2f})."
 				)
-
-			best_score_str = \
-				f"{best_score:.4f}" \
-				if session_config.training.monitored_metric == "val_loss" \
-				else f"{best_score:.4f}%"
-
-			print(
-				f"Migliore epoca: {best_epoch} | "
-				f"{session_config.training.monitored_metric}: {best_score_str}"
-			)
 			
 			# Salva lo storico delle metriche di addestramento e validazione in un file CSV.
 			if runtime_config.flags.save_output:
@@ -1982,16 +1962,6 @@ if __name__ == "__main__":
 			# Creazione degli oggetti con i parametri di sessione e runtime.
 			session_config = SessionConfig.from_args(args)
 			runtime_config = RuntimeConfig.from_args(args)
-
-			# Stampa di debug dei parametri di configurazione.
-			runtime_config.debug_print(
-				f"Parametri di sessione in 'session_config':"
-				f"\n{session_config}"
-			)
-			runtime_config.debug_print(
-				f"Parametri di runtime in 'runtime_config':"
-				f"\n{runtime_config}"
-			)
 
 			# Esecuzione della funzione principale del programma.
 			main(terminal_log)

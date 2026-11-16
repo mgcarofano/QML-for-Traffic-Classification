@@ -778,7 +778,7 @@ def train_model(
                 **metrics
             }
 
-            # Stampa in console le metriche delle ultime tre epoche completate.
+            # Stampa in console delle metriche aggiornate.
             print_training_table(train_history_df, best_epoch=best_epoch)
             print(f"\nElapsed time: {parse_seconds(elapsed_time)}")
 
